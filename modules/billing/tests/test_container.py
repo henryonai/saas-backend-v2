@@ -1,7 +1,6 @@
 """Checks the real wiring: settings from env, secret from SSM Parameter Store."""
 import boto3
 import pytest
-from pydantic import ValidationError
 
 from billing import container
 from billing.settings import BillingSettings
@@ -23,15 +22,18 @@ def test_secret_is_read_from_ssm(monkeypatch):
     monkeypatch.setenv("PAYMENT_WEBHOOK_SECRET_PARAM", "/saas/test/webhook-secret")
 
     service = container.get_billing_service()
-    assert service.provider.webhook_secret == "from-ssm"
+    assert service.provider.webhook_secret() == "from-ssm"
 
 
-def test_secret_source_is_required(monkeypatch):
+def test_api_function_starts_without_any_secret(monkeypatch):
     monkeypatch.setenv("BILLING_TABLE", "billing-dev")
     monkeypatch.delenv("PAYMENT_WEBHOOK_SECRET_PARAM", raising=False)
     monkeypatch.delenv("PAYMENT_WEBHOOK_SECRET", raising=False)
-    with pytest.raises(ValidationError, match="PAYMENT_WEBHOOK_SECRET"):
-        BillingSettings(_env_file=None)
+    service = container.get_billing_service()   # no SSM access needed to start checkout
+    assert "plan=pro" in service.provider.create_checkout("t1", "pro", "a@x.com")
+
+    with pytest.raises(RuntimeError, match="PAYMENT_WEBHOOK_SECRET"):
+        service.provider.webhook_secret()       # but a webhook would fail clearly
 
 
 def test_secret_is_hidden_when_printed(monkeypatch):

@@ -5,16 +5,20 @@ the token, so they never need to call the accounts module.
 
 The frontend must send the ID token to the API (V1 trigger customizes it).
 """
+from aws_lambda_powertools import Logger
+
 from accounts.container import get_account_service
 from accounts.service import AccountService
 
+logger = Logger()
+
 
 def add_claims(event: dict, service: AccountService) -> dict:
-    user_id = event["request"]["userAttributes"]["sub"]
-    claims = service.token_claims_for(user_id)
+    claims = service.token_claims_for(event["request"]["userAttributes"]["sub"])
     event["response"]["claimsOverrideDetails"] = {"claimsToAddOrOverride": claims}
     return event
 
 
+@logger.inject_lambda_context
 def handler(event: dict, context) -> dict:
     return add_claims(event, get_account_service())

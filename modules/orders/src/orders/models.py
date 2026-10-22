@@ -1,30 +1,28 @@
-from datetime import datetime, timezone
-from enum import Enum
-from uuid import uuid4
+"""
+What the orders module stores and works with. The repository saves these;
+the service returns them. What the API accepts and returns is in schemas.py.
+"""
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from shared.ids import sortable_id
 
-class OrderStatus(str, Enum):
+
+class OrderStatus(StrEnum):
     PENDING = "pending"
     PAID = "paid"
     SHIPPED = "shipped"
     CANCELLED = "cancelled"
 
 
-class OrderCreate(BaseModel):
-    item: str = Field(min_length=1, max_length=200)
-    quantity: int = Field(gt=0, le=100)
-    price_cents: int = Field(ge=0)  # money as integer cents, never float
-
-
-class OrderUpdateStatus(BaseModel):
-    status: OrderStatus
-
-
-class Order(OrderCreate):
-    order_id: str = Field(default_factory=lambda: str(uuid4()))
+class Order(BaseModel):
+    order_id: str = Field(default_factory=sortable_id)  # sorts by creation time
     tenant_id: str
     created_by: str
+    item: str
+    quantity: int
+    price_cents: int  # money as integer cents, never float
     status: OrderStatus = OrderStatus.PENDING
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())

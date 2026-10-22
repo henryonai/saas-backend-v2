@@ -10,11 +10,9 @@ from functools import lru_cache
 
 import boto3
 
-from shared.events import EventBridgePublisher
-
 from accounts.identity import CognitoIdentity
-from accounts.repository import MemberRepository, TenantRepository
-from accounts.service import AccountService
+from accounts.repository import AccountRepository
+from accounts.service import AccountService, InvitationLimits
 from accounts.settings import AccountsSettings
 
 
@@ -26,10 +24,12 @@ def get_settings() -> AccountsSettings:
 @lru_cache
 def get_account_service() -> AccountService:
     settings = get_settings()
-    table = boto3.resource("dynamodb").Table(settings.accounts_table)
     return AccountService(
-        tenants=TenantRepository(table),
-        members=MemberRepository(table),
+        accounts=AccountRepository(boto3.resource("dynamodb").Table(settings.accounts_table)),
         identity=CognitoIdentity(boto3.client("cognito-idp"), settings.user_pool_id),
-        publisher=EventBridgePublisher(boto3.client("events"), settings.event_bus_name),
+        invitation_limits=InvitationLimits(
+            days=settings.invitation_days,
+            per_day=settings.invites_per_day,
+            pending_per_email=settings.max_pending_invitations_per_email,
+        ),
     )

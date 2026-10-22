@@ -8,11 +8,15 @@ class FakeContext:
     invoked_function_arn = "arn:aws:lambda:ap-southeast-1:123456789012:function:test"
     aws_request_id = "test-request"
 
+    def get_remaining_time_in_millis(self) -> int:
+        return 30_000
+
 
 def claims(user_id: str, tenant_id: str | None = None, role: str | None = None,
-           plan: str = "free") -> dict:
-    """JWT claims as the accounts login trigger would produce them."""
-    c = {"sub": user_id, "email": f"{user_id}@example.com"}
+           plan: str = "free", email_verified: bool = True) -> dict:
+    """ID token claims as the accounts login trigger would produce them."""
+    c = {"sub": user_id, "email": f"{user_id}@example.com", "token_use": "id",
+         "email_verified": "true" if email_verified else "false"}
     if tenant_id:
         c.update(tenant_id=tenant_id, role=role, plan=plan)
     return c

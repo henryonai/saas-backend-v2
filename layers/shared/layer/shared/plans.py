@@ -14,6 +14,15 @@ PLANS: dict[str, dict] = {
 DEFAULT_PLAN = "free"
 
 
+def is_plan(name: str | None) -> bool:
+    return name in PLANS
+
+
+def get_plan(name: str | None) -> dict:
+    """The plan's details. Unknown names fall back to the default plan."""
+    return PLANS.get(name or DEFAULT_PLAN, PLANS[DEFAULT_PLAN])
+
+
 def get_limit(plan: str | None, limit_name: str) -> int | None:
     """Returns the limit for a plan, or None for unlimited."""
-    return PLANS.get(plan or DEFAULT_PLAN, PLANS[DEFAULT_PLAN])[limit_name]
+    return get_plan(plan)[limit_name]

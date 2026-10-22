@@ -25,3 +25,11 @@ members = ["layers/shared", "modules/*", "testkit"]
 # modules have test files with the same name (e.g. test_api.py).
 addopts = "--import-mode=importlib"
 testpaths = ["layers/shared/tests", "modules"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "UP", "SIM"]
+ignore = ["B904"]   # services re-raise as business errors on purpose

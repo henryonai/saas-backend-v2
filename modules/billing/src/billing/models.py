@@ -1,5 +1,7 @@
-from typing import Literal
-
+"""
+What the billing module stores and works with. The repository saves these;
+the service returns them. What the API accepts and returns is in schemas.py.
+"""
 from pydantic import BaseModel
 
 
@@ -11,19 +13,11 @@ class Subscription(BaseModel):
     # can include owner details without asking the accounts module.
     owner_id: str = ""
     owner_email: str = ""
-
-
-class CheckoutRequest(BaseModel):
-    plan: Literal["pro", "business"]
-
-
-class CheckoutResponse(BaseModel):
-    checkout_url: str
-
-
-class BillingSummary(BaseModel):
-    plan: str
-    plan_name: str
-    price_usd_month: int
-    status: str
-    limits: dict
+    # Increases with every change; listeners use it to ignore late events.
+    revision: int = 0
+    # The provider event that last set each field, so older or repeated
+    # webhooks don't overwrite newer information (see service.py).
+    plan_changed_at: int = 0
+    plan_event_id: str = ""
+    status_changed_at: int = 0
+    status_event_id: str = ""
