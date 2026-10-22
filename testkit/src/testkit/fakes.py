@@ -7,8 +7,8 @@ class FakePublisher:
     def __init__(self):
         self.events: list[dict] = []
 
-    def publish(self, event_type: str, tenant_id: str, **data) -> None:
-        self.events.append({"type": event_type, "detail": {"tenant_id": tenant_id, **data}})
+    def publish(self, event_type: str, detail: dict) -> None:
+        self.events.append({"type": event_type, "detail": detail})
 
     def types(self) -> list[str]:
         return [e["type"] for e in self.events]

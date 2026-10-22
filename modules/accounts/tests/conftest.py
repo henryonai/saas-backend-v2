@@ -1,6 +1,6 @@
 """
-Builds a real AccountService on a fake table with fake Cognito and events,
-and injects it into the HTTP app with dependency_overrides. No monkeypatching.
+Builds a real AccountService on a fake table with a fake Cognito, and injects
+it into the HTTP app with dependency_overrides. No monkeypatching.
 """
 from types import SimpleNamespace
 
@@ -8,32 +8,41 @@ import pytest
 
 from accounts.container import get_account_service
 from accounts.handler import app, handler
-from accounts.repository import MemberRepository, TenantRepository
+from accounts.pre_token import add_claims
+from accounts.repository import AccountRepository
 from accounts.service import AccountService
 from testkit.aws import create_table
-from testkit.fakes import FakePublisher
 from testkit.http import call, claims
+from testkit.outbox import outbox_events
+
+INVITES_PER_DAY = 5
 
 
 class FakeIdentity:
-    """Stands in for Cognito: returns predictable user ids."""
+    """Stands in for Cognito: records who was signed out."""
 
     def __init__(self):
-        self.created: list[str] = []
+        self.signed_out: list[str] = []
 
-    def create_user(self, email: str) -> str:
-        self.created.append(email)
-        return "user-" + email.split("@")[0]
+    def sign_out(self, user_id: str) -> None:
+        self.signed_out.append(user_id)
 
 
 @pytest.fixture
 def ctx():
     table = create_table("accounts-test", with_gsi1=True)
-    publisher, identity = FakePublisher(), FakeIdentity()
-    service = AccountService(tenants=TenantRepository(table), members=MemberRepository(table),
-                             identity=identity, publisher=publisher)
+    identity = FakeIdentity()
+    service = AccountService(accounts=AccountRepository(table), identity=identity,
+                             invites_per_day=INVITES_PER_DAY)
     app.dependency_overrides[get_account_service] = lambda: service
-    yield SimpleNamespace(service=service, publisher=publisher, identity=identity,
+
+    def login(user_id: str) -> dict:
+        """What the login trigger adds to the token for this user."""
+        event = add_claims({"request": {"userAttributes": {"sub": user_id}}, "response": {}}, service)
+        return event["response"]["claimsOverrideDetails"]["claimsToAddOrOverride"]
+
+    yield SimpleNamespace(table=table, service=service, identity=identity, login=login,
+                          events=lambda: outbox_events(table),
                           api=lambda *a, **kw: call(handler, *a, **kw))
     app.dependency_overrides.clear()
 
@@ -44,3 +53,19 @@ def owner(ctx):
     status, tenant = ctx.api("POST", "/tenants", claims("alice"), {"name": "Acme"})
     assert status == 201
     return claims("alice", tenant["tenant_id"], "owner")
+
+
+@pytest.fixture
+def join(ctx, owner):
+    """Invites `name`, who signs in and accepts; returns their refreshed token claims."""
+
+    def _join(name: str, role: str = "member") -> dict:
+        status, _ = ctx.api("POST", "/users/invite", owner, {"email": f"{name}@example.com", "role": role})
+        assert status == 201
+        status, _ = ctx.api("POST", f"/invitations/{owner['tenant_id']}/accept", claims(name))
+        assert status == 200
+        token = ctx.login(name)
+        assert token["tenant_id"] == owner["tenant_id"] and token["role"] == role
+        return claims(name, token["tenant_id"], token["role"])
+
+    return _join

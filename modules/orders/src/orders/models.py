@@ -1,11 +1,12 @@
-from datetime import datetime, timezone
-from enum import Enum
-from uuid import uuid4
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from shared.ids import sortable_id
 
-class OrderStatus(str, Enum):
+
+class OrderStatus(StrEnum):
     PENDING = "pending"
     PAID = "paid"
     SHIPPED = "shipped"
@@ -23,8 +24,13 @@ class OrderUpdateStatus(BaseModel):
 
 
 class Order(OrderCreate):
-    order_id: str = Field(default_factory=lambda: str(uuid4()))
+    order_id: str = Field(default_factory=sortable_id)  # sorts by creation time
     tenant_id: str
     created_by: str
     status: OrderStatus = OrderStatus.PENDING
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+class OrderPage(BaseModel):
+    items: list[Order]
+    next_cursor: str | None = None  # pass back as ?cursor= to get the next page

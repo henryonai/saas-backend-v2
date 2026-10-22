@@ -1,9 +1,11 @@
 """
 Billing table:
-  pk = TENANT#<tenant_id>   sk = SUBSCRIPTION   -> subscription
-  pk = WEBHOOK#<event_id>   sk = WEBHOOK        -> processed webhook (idempotency)
+  pk = TENANT#<tenant_id>   sk = SUBSCRIPTION   subscription
+  pk = OUTBOX#<event_id>    sk = OUTBOX         events to publish (shared/outbox.py)
 """
-from botocore.exceptions import ClientError
+from shared.dynamo import transact
+from shared.events import Event
+from shared.outbox import outbox_put
 
 from billing.models import Subscription
 
@@ -17,48 +19,42 @@ class SubscriptionRepository:
         self.table = table
 
     def get(self, tenant_id: str) -> Subscription | None:
-        item = self.table.get_item(Key=_key(tenant_id)).get("Item")
+        item = self.table.get_item(Key=_key(tenant_id), ConsistentRead=True).get("Item")
         if not item:
             return None
         return Subscription.model_validate({k: v for k, v in item.items() if k not in ("pk", "sk")})
 
     def save_owner(self, tenant_id: str, owner_id: str, owner_email: str) -> None:
-        """Creates the record if missing; never overwrites plan/status."""
+        """Creates the record if missing; never overwrites plan, status or revision."""
         self.table.update_item(
             Key=_key(tenant_id),
             UpdateExpression=("SET tenant_id = :t, owner_id = :oid, owner_email = :oem, "
-                              "#p = if_not_exists(#p, :free), #s = if_not_exists(#s, :active)"),
+                              "#p = if_not_exists(#p, :free), #s = if_not_exists(#s, :active), "
+                              "revision = if_not_exists(revision, :zero)"),
             ExpressionAttributeNames={"#p": "plan", "#s": "status"},
             ExpressionAttributeValues={":t": tenant_id, ":oid": owner_id, ":oem": owner_email,
-                                       ":free": "free", ":active": "active"},
+                                       ":free": "free", ":active": "active", ":zero": 0},
         )
 
-    def update(self, tenant_id: str, plan: str, status: str) -> None:
-        self.table.update_item(
-            Key=_key(tenant_id),
-            UpdateExpression="SET tenant_id = :t, #p = :p, #s = :s",
-            ExpressionAttributeNames={"#p": "plan", "#s": "status"},
-            ExpressionAttributeValues={":t": tenant_id, ":p": plan, ":s": status},
-        )
-
-
-class ProcessedEventRepository:
-    """Providers can send the same webhook twice; we handle each id once."""
-
-    def __init__(self, table):
-        self.table = table
-
-    def mark(self, event_id: str) -> bool:
-        """True the first time, False if already processed."""
-        try:
-            self.table.put_item(Item={"pk": f"WEBHOOK#{event_id}", "sk": "WEBHOOK"},
-                                ConditionExpression="attribute_not_exists(pk)")
-            return True
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                return False
-            raise
-
-    def unmark(self, event_id: str) -> None:
-        """Undo a mark when processing failed, so the provider's retry works."""
-        self.table.delete_item(Key={"pk": f"WEBHOOK#{event_id}", "sk": "WEBHOOK"})
+    def save_change(self, sub: Subscription, expected_revision: int, events: list[Event]) -> None:
+        """
+        Saves the new plan/status and its events in one transaction, only if
+        nobody changed the subscription since it was read at expected_revision.
+        Raises ConditionFailed({"subscription"}) otherwise.
+        """
+        update = {"Update": {
+            "Key": _key(sub.tenant_id),
+            "UpdateExpression": ("SET tenant_id = :t, #p = :p, #s = :s, revision = :rev, "
+                                 "plan_changed_at = :pat, plan_event_id = :pid, "
+                                 "status_changed_at = :sat, status_event_id = :sid"),
+            "ConditionExpression": ("attribute_not_exists(pk) OR attribute_not_exists(revision)"
+                                    " OR revision = :expected"),
+            "ExpressionAttributeNames": {"#p": "plan", "#s": "status"},
+            "ExpressionAttributeValues": {
+                ":t": sub.tenant_id, ":p": sub.plan, ":s": sub.status, ":rev": sub.revision,
+                ":pat": sub.plan_changed_at, ":pid": sub.plan_event_id,
+                ":sat": sub.status_changed_at, ":sid": sub.status_event_id, ":expected": expected_revision,
+            },
+        }}
+        events_ops = {f"event_{i}": outbox_put(e) for i, e in enumerate(events)}
+        transact(self.table, subscription=update, **events_ops)

@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
@@ -6,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class TenantCreate(BaseModel):
@@ -20,6 +21,8 @@ class Tenant(BaseModel):
     # A local copy of the plan, kept up to date by SubscriptionChanged events.
     plan: str = "free"
     subscription_status: str = "active"
+    subscription_revision: int = 0  # billing's revision of the plan copied here
+    seats_used: int = 1  # members, limited by the plan
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -28,8 +31,24 @@ class Member(BaseModel):
     user_id: str
     email: str
     role: Literal["owner", "admin", "member"]
-    status: Literal["active", "invited"] = "active"
     created_at: str = Field(default_factory=now_iso)
+
+
+INVITATION_DAYS = 7
+
+
+class Invitation(BaseModel):
+    """Pending until the invited person accepts or declines it, or it expires."""
+    tenant_id: str
+    tenant_name: str
+    email: str
+    role: Literal["admin", "member"]
+    invited_by: str
+    created_at: str = Field(default_factory=now_iso)
+    expires_at: int = Field(default_factory=lambda: int(time.time()) + INVITATION_DAYS * 24 * 3600)
+
+    def expired(self) -> bool:
+        return self.expires_at <= time.time()
 
 
 class InviteRequest(BaseModel):

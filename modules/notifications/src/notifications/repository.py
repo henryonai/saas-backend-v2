@@ -1,8 +1,12 @@
 """
-Notifications table:  pk = TENANT#<t>#USER#<u>   sk = NOTIF#<notification_id>
+Notifications table:
+  pk = TENANT#<t>#USER#<u>      sk = NOTIF#<notification_id>
+  pk = IDEMPOTENCY#<function>   sk = <hash>     processed events (Powertools, expire)
 """
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+
+from shared.dynamo import is_condition_failure
 
 from notifications.models import Notification
 
@@ -19,9 +23,17 @@ class NotificationRepository:
     def __init__(self, table):
         self.table = table
 
-    def save(self, n: Notification) -> None:
-        self.table.put_item(Item={"pk": _pk(n.tenant_id, n.user_id),
-                                  "sk": f"NOTIF#{n.notification_id}", **n.model_dump()})
+    def save(self, n: Notification) -> bool:
+        """False if a notification with this id already exists (a repeated event)."""
+        try:
+            self.table.put_item(Item={"pk": _pk(n.tenant_id, n.user_id),
+                                      "sk": f"NOTIF#{n.notification_id}", **n.model_dump()},
+                                ConditionExpression="attribute_not_exists(pk)")
+            return True
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
 
     def list(self, tenant_id: str, user_id: str, limit: int) -> list[Notification]:
         result = self.table.query(
@@ -43,6 +55,6 @@ class NotificationRepository:
             )
             return True
         except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            if is_condition_failure(e):
                 return False
             raise

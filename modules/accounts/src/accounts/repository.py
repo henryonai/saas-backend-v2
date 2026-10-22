@@ -3,15 +3,31 @@ The only code that touches the accounts table. The table is injected
 (not looked up from a global), so tests pass a fake one.
 
 Key design:
-  pk                  sk               what
-  TENANT#<tenant_id>  PROFILE          tenant
-  TENANT#<tenant_id>  USER#<user_id>   member  (gsi1: USER#<user_id> -> tenant)
-"""
-from boto3.dynamodb.conditions import Key
+  pk                  sk                  what
+  TENANT#<tenant_id>  PROFILE             tenant (seats_used = members)
+  TENANT#<tenant_id>  USER#<user_id>      member
+  TENANT#<tenant_id>  INVITE#<email>      invitation (gsi1: EMAIL#<email>; removed by TTL when expired)
+  TENANT#<tenant_id>  INVITES_SENT#<day>  invitations sent that day (rate limit, expires)
+  USER#<user_id>      MEMBERSHIP          the user's tenant (at most one per user)
+  OUTBOX#<event_id>   OUTBOX              events to publish (shared/outbox.py)
 
-from accounts.models import Member, Tenant
+Rules that must hold even under concurrent requests (one workspace per user,
+the seat limit, owner protection) are DynamoDB conditions, not "read, then
+write" code.
+"""
+import time
+
+from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
+
+from shared.dynamo import ConditionFailed, is_condition_failure, transact
+from shared.events import Event
+from shared.outbox import outbox_put
+
+from accounts.models import Invitation, Member, Tenant
 
 KEY_FIELDS = ("pk", "sk", "gsi1pk", "gsi1sk")
+DAY_SECONDS = 24 * 60 * 60
 
 
 def _clean(item: dict) -> dict:
@@ -22,63 +38,202 @@ def _tenant_pk(tenant_id: str) -> str:
     return f"TENANT#{tenant_id}"
 
 
-class TenantRepository:
+def _profile(tenant_id: str) -> dict:
+    return {"pk": _tenant_pk(tenant_id), "sk": "PROFILE"}
+
+
+def _member_key(tenant_id: str, user_id: str) -> dict:
+    return {"pk": _tenant_pk(tenant_id), "sk": f"USER#{user_id}"}
+
+
+def _membership_key(user_id: str) -> dict:
+    return {"pk": f"USER#{user_id}", "sk": "MEMBERSHIP"}
+
+
+def _invite_key(tenant_id: str, email: str) -> dict:
+    return {"pk": _tenant_pk(tenant_id), "sk": f"INVITE#{email}"}
+
+
+def _seats(tenant_id: str, change: int, max_seats: int | None = None) -> dict:
+    update = {
+        "Key": _profile(tenant_id),
+        "UpdateExpression": "ADD seats_used :change",
+        "ConditionExpression": "attribute_exists(pk)",
+        "ExpressionAttributeValues": {":change": change},
+    }
+    if max_seats is not None:
+        update["ConditionExpression"] += " AND (attribute_not_exists(seats_used) OR seats_used < :max)"
+        update["ExpressionAttributeValues"][":max"] = max_seats
+    return {"Update": update}
+
+
+class AccountRepository:
     def __init__(self, table):
         self.table = table
 
-    def save(self, tenant: Tenant) -> None:
-        self.table.put_item(Item={"pk": _tenant_pk(tenant.tenant_id), "sk": "PROFILE",
-                                  **tenant.model_dump()})
+    # ---------- tenants ----------
 
-    def get(self, tenant_id: str) -> Tenant | None:
-        item = self.table.get_item(Key={"pk": _tenant_pk(tenant_id), "sk": "PROFILE"}).get("Item")
-        return Tenant.model_validate(_clean(item)) if item else None
-
-    def update_subscription(self, tenant_id: str, plan: str, status: str) -> None:
-        self.table.update_item(
-            Key={"pk": _tenant_pk(tenant_id), "sk": "PROFILE"},
-            UpdateExpression="SET #p = :p, subscription_status = :s",
-            ExpressionAttributeNames={"#p": "plan"},
-            ExpressionAttributeValues={":p": plan, ":s": status},
+    def create_tenant(self, tenant: Tenant, owner: Member) -> None:
+        """Raises ConditionFailed({"membership"}) if the owner already has a workspace."""
+        transact(
+            self.table,
+            membership=self._put_membership(owner),
+            tenant={"Put": {"Item": {**_profile(tenant.tenant_id), **tenant.model_dump()}}},
+            member={"Put": {"Item": self._member_item(owner)}},
         )
 
+    def get_tenant(self, tenant_id: str) -> Tenant | None:
+        item = self.table.get_item(Key=_profile(tenant_id)).get("Item")
+        return Tenant.model_validate(_clean(item)) if item else None
 
-class MemberRepository:
-    def __init__(self, table):
-        self.table = table
+    def apply_subscription(self, tenant_id: str, plan: str, status: str, revision: int) -> bool:
+        """Updates the plan copy unless it already has this or a newer revision. False if skipped."""
+        try:
+            self.table.update_item(
+                Key=_profile(tenant_id),
+                UpdateExpression="SET #p = :p, subscription_status = :s, subscription_revision = :r",
+                ConditionExpression=("attribute_exists(pk) AND (attribute_not_exists(subscription_revision)"
+                                     " OR subscription_revision < :r)"),
+                ExpressionAttributeNames={"#p": "plan"},
+                ExpressionAttributeValues={":p": plan, ":s": status, ":r": revision},
+            )
+            return True
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
 
-    def save(self, m: Member) -> None:
-        self.table.put_item(Item={
-            "pk": _tenant_pk(m.tenant_id), "sk": f"USER#{m.user_id}",
-            "gsi1pk": f"USER#{m.user_id}", "gsi1sk": _tenant_pk(m.tenant_id),
-            **m.model_dump(),
-        })
+    # ---------- members ----------
 
-    def get(self, tenant_id: str, user_id: str) -> Member | None:
-        item = self.table.get_item(
-            Key={"pk": _tenant_pk(tenant_id), "sk": f"USER#{user_id}"}
-        ).get("Item")
+    def get_membership(self, user_id: str) -> str | None:
+        """The user's tenant id. Strongly consistent: right after sign-up, the token refresh sees it."""
+        item = self.table.get_item(Key=_membership_key(user_id), ConsistentRead=True).get("Item")
+        return item["tenant_id"] if item else None
+
+    def get_member(self, tenant_id: str, user_id: str) -> Member | None:
+        item = self.table.get_item(Key=_member_key(tenant_id, user_id), ConsistentRead=True).get("Item")
         return Member.model_validate(_clean(item)) if item else None
 
-    def list(self, tenant_id: str) -> list[Member]:
+    def list_members(self, tenant_id: str) -> list[Member]:
         result = self.table.query(
             KeyConditionExpression=Key("pk").eq(_tenant_pk(tenant_id)) & Key("sk").begins_with("USER#")
         )
         return [Member.model_validate(_clean(i)) for i in result["Items"]]
 
-    def find_by_user(self, user_id: str) -> Member | None:
+    def change_role(self, tenant_id: str, user_id: str, role: str) -> bool:
+        """False if the member no longer exists or is the owner."""
+        try:
+            self.table.update_item(
+                Key=_member_key(tenant_id, user_id),
+                UpdateExpression="SET #r = :r",
+                ConditionExpression="attribute_exists(pk) AND #r <> :owner",
+                ExpressionAttributeNames={"#r": "role"},
+                ExpressionAttributeValues={":r": role, ":owner": "owner"},
+            )
+            return True
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+
+    def remove_member(self, tenant_id: str, user_id: str) -> bool:
+        """Removes the member and frees their seat. False if not found (or the owner)."""
+        try:
+            transact(
+                self.table,
+                member={"Delete": {
+                    "Key": _member_key(tenant_id, user_id),
+                    "ConditionExpression": "attribute_exists(pk) AND #r <> :owner",
+                    "ExpressionAttributeNames": {"#r": "role"},
+                    "ExpressionAttributeValues": {":owner": "owner"},
+                }},
+                membership={"Delete": {"Key": _membership_key(user_id)}},
+                seats=_seats(tenant_id, -1),
+            )
+            return True
+        except ConditionFailed:
+            return False
+
+    # ---------- invitations ----------
+
+    def invite(self, invitation: Invitation, event: Event, invites_per_day: int) -> None:
+        """
+        Saves the invitation and its event, and counts it against today's
+        invite limit, in one transaction. Raises ConditionFailed with
+        "invitation" (already invited) or "daily_limit".
+        """
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        transact(
+            self.table,
+            invitation={"Put": {
+                "Item": {**_invite_key(invitation.tenant_id, invitation.email),
+                         "gsi1pk": f"EMAIL#{invitation.email}",
+                         "gsi1sk": f"{invitation.created_at}#{invitation.tenant_id}",
+                         **invitation.model_dump()},
+                # An expired invitation (not yet removed by TTL) may be replaced.
+                "ConditionExpression": "attribute_not_exists(pk) OR expires_at <= :now",
+                "ExpressionAttributeValues": {":now": int(time.time())},
+            }},
+            daily_limit={"Update": {
+                "Key": {"pk": _tenant_pk(invitation.tenant_id), "sk": f"INVITES_SENT#{day}"},
+                "UpdateExpression": "ADD sent :one SET expires_at = :expires",
+                "ConditionExpression": "attribute_not_exists(sent) OR sent < :limit",
+                "ExpressionAttributeValues": {":one": 1, ":limit": invites_per_day,
+                                              ":expires": int(time.time()) + 2 * DAY_SECONDS},
+            }},
+            event=outbox_put(event),
+        )
+
+    def get_invitation(self, tenant_id: str, email: str) -> Invitation | None:
+        item = self.table.get_item(Key=_invite_key(tenant_id, email), ConsistentRead=True).get("Item")
+        return Invitation.model_validate(_clean(item)) if item else None
+
+    def list_invitations(self, tenant_id: str) -> list[Invitation]:
         result = self.table.query(
-            IndexName="gsi1", KeyConditionExpression=Key("gsi1pk").eq(f"USER#{user_id}"), Limit=1,
+            KeyConditionExpression=Key("pk").eq(_tenant_pk(tenant_id)) & Key("sk").begins_with("INVITE#")
         )
-        return Member.model_validate(_clean(result["Items"][0])) if result["Items"] else None
+        return [Invitation.model_validate(_clean(i)) for i in result["Items"]]
 
-    def update_role(self, tenant_id: str, user_id: str, role: str) -> None:
-        self.table.update_item(
-            Key={"pk": _tenant_pk(tenant_id), "sk": f"USER#{user_id}"},
-            UpdateExpression="SET #r = :r",
-            ExpressionAttributeNames={"#r": "role"},
-            ExpressionAttributeValues={":r": role},
+    def invitations_for(self, email: str) -> list[Invitation]:
+        """Invitations sent to this email by any workspace, oldest first."""
+        result = self.table.query(IndexName="gsi1", KeyConditionExpression=Key("gsi1pk").eq(f"EMAIL#{email}"))
+        return [Invitation.model_validate(_clean(i)) for i in result["Items"]]
+
+    def delete_invitation(self, tenant_id: str, email: str) -> bool:
+        """False if there is no such invitation."""
+        try:
+            self.table.delete_item(Key=_invite_key(tenant_id, email), ConditionExpression="attribute_exists(pk)")
+            return True
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+
+    def accept_invitation(self, invitation: Invitation, member: Member, max_seats: int | None) -> None:
+        """
+        Turns the invitation into a membership and takes a seat, in one
+        transaction. Raises ConditionFailed with "membership" (already in a
+        workspace), "invitation" (cancelled or expired) or "seats" (full).
+        """
+        transact(
+            self.table,
+            membership=self._put_membership(member),
+            member={"Put": {"Item": self._member_item(member)}},
+            invitation={"Delete": {
+                "Key": _invite_key(invitation.tenant_id, invitation.email),
+                "ConditionExpression": "attribute_exists(pk) AND expires_at > :now",
+                "ExpressionAttributeValues": {":now": int(time.time())},
+            }},
+            seats=_seats(invitation.tenant_id, +1, max_seats),
         )
 
-    def delete(self, tenant_id: str, user_id: str) -> None:
-        self.table.delete_item(Key={"pk": _tenant_pk(tenant_id), "sk": f"USER#{user_id}"})
+    # ---------- helpers ----------
+
+    @staticmethod
+    def _member_item(m: Member) -> dict:
+        return {**_member_key(m.tenant_id, m.user_id), **m.model_dump()}
+
+    @staticmethod
+    def _put_membership(m: Member) -> dict:
+        return {"Put": {"Item": {**_membership_key(m.user_id), "tenant_id": m.tenant_id},
+                        "ConditionExpression": "attribute_not_exists(pk)"}}

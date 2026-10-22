@@ -16,6 +16,10 @@ class InvalidRequest(AppError):
     status_code = 400
 
 
+class Unauthorized(AppError):
+    status_code = 401
+
+
 class PlanLimitReached(AppError):
     """The plan doesn't allow this. The frontend should show 'Upgrade'."""
 
@@ -32,3 +36,13 @@ class NotFound(AppError):
 
 class Conflict(AppError):
     status_code = 409
+
+
+class TooManyRequests(AppError):
+    status_code = 429
+
+
+class ServiceBusy(AppError):
+    """Temporary, e.g. too many changes to one item at once. Safe to retry."""
+
+    status_code = 503

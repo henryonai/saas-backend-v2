@@ -2,7 +2,10 @@
 Payment provider interface. The rest of billing only knows these two methods.
 
 To go live, write one class with the same methods for your provider (Paddle,
-Lemon Squeezy, Airwallex, VNPay, ...) and return it from container.py.
+Lemon Squeezy, Airwallex, VNPay, ...) and return it from container.py. Map the
+provider's event id and creation time to BillingEvent: billing uses them to
+skip repeated webhooks and webhooks that arrive out of order. Real providers
+also sign a timestamp; reject old ones to limit replays.
 
 DevPaymentProvider fakes the checkout page but verifies webhook signatures
 for real (HMAC-SHA256), like production providers do.
@@ -10,6 +13,7 @@ for real (HMAC-SHA256), like production providers do.
 import hashlib
 import hmac
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -22,6 +26,7 @@ class BillingEvent:
     event_type: str  # subscription.activated / subscription.cancelled / payment.failed
     tenant_id: str
     plan: str | None
+    occurred_at: int  # when the provider created the event (epoch seconds)
 
 
 class PaymentProvider(Protocol):
@@ -30,7 +35,8 @@ class PaymentProvider(Protocol):
 
 
 class DevPaymentProvider:
-    def __init__(self, webhook_secret: str, app_url: str):
+    def __init__(self, webhook_secret: Callable[[], str], app_url: str):
+        # A function, so the secret is only read when a webhook arrives.
         self.webhook_secret = webhook_secret
         self.app_url = app_url
 
@@ -40,12 +46,17 @@ class DevPaymentProvider:
         return f"{self.app_url}/dev-checkout?tenant_id={tenant_id}&plan={plan}"
 
     def sign(self, raw_body: str) -> str:
-        return hmac.new(self.webhook_secret.encode(), raw_body.encode(), hashlib.sha256).hexdigest()
+        return hmac.new(self.webhook_secret().encode(), raw_body.encode(), hashlib.sha256).hexdigest()
 
     def parse_webhook(self, headers: dict, raw_body: str) -> BillingEvent:
         signature = {k.lower(): v for k, v in headers.items()}.get("x-signature", "")
-        if not hmac.compare_digest(signature, self.sign(raw_body)):  # timing-safe compare
+        # Compare bytes: timing-safe, and works for any header value.
+        if not hmac.compare_digest(signature.encode(), self.sign(raw_body).encode()):
             raise InvalidRequest("Invalid webhook signature")
-        data = json.loads(raw_body)
-        return BillingEvent(event_id=data["id"], event_type=data["type"],
-                            tenant_id=data["tenant_id"], plan=data.get("plan"))
+        try:
+            data = json.loads(raw_body)
+            return BillingEvent(event_id=str(data["id"]), event_type=data["type"],
+                                tenant_id=data["tenant_id"], plan=data.get("plan"),
+                                occurred_at=int(data["created"]))
+        except (ValueError, KeyError, TypeError) as e:
+            raise InvalidRequest(f"Malformed webhook: {e}") from e

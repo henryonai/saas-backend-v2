@@ -1,5 +1,5 @@
 """
-Accounts module: tenants (workspaces) + their users and roles.
+Accounts module: tenants (workspaces), their users, roles and invitations.
 
 Owns: the accounts table.
 Publishes: UserInvited
