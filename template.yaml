@@ -44,6 +44,26 @@ Parameters:
     Type: Number
     Default: 30
     AllowedValues: [7, 14, 30, 60, 90, 180, 365]
+  AssistantCodeBucket:
+    Type: String
+    Default: ""
+    Description: S3 bucket with the assistant's code zip (scripts/package-assistant.py prints it). Empty = no assistant.
+  AssistantCodeKey:
+    Type: String
+    Default: ""
+    Description: Key of that zip. It changes with the code, which is what makes CloudFormation update the agent.
+  AssistantModelId:
+    Type: String
+    Default: global.anthropic.claude-sonnet-5-5
+    Description: Bedrock model or inference profile the assistant uses
+  AssistantSandboxNetwork:
+    Type: String
+    Default: SANDBOX
+    AllowedValues: [SANDBOX, PUBLIC]
+    Description: >-
+      Network for the assistant's terminal. SANDBOX = no internet (AWS says S3 stays reachable,
+      but the sandbox has no AWS role). PUBLIC = internet (pip install, curl), so the model's
+      commands could also send data out.
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
@@ -51,6 +71,7 @@ Conditions:
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
   HasAppUrl: !Not [!Equals [!Ref AppUrl, ""]]
   HasCorsOrigin: !Not [!Equals [!Ref CorsOrigin, ""]]
+  HasAssistant: !And [!Not [!Equals [!Ref AssistantCodeBucket, ""]], !Not [!Equals [!Ref AssistantCodeKey, ""]]]
 
 Globals:
   Function:
@@ -689,6 +710,168 @@ Resources:
           - { ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 10 }
           - { ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 10 }
 
+  # =====================================================================
+  # Module: assistant  (AI agent on Amazon Bedrock AgentCore Runtime)
+  # Not a Lambda function: AgentCore runs the code zip that
+  # scripts/package-assistant.py uploads, one microVM per conversation.
+  # Created only when AssistantCodeBucket and AssistantCodeKey are set.
+  # =====================================================================
+  AssistantTable:
+    Type: AWS::DynamoDB::Table
+    Condition: HasAssistant
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # old monthly usage
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  # Conversation checkpoints (short-term) and what the agent learns about each
+  # user (long-term). The namespaces must match assistant/memory.py.
+  AssistantMemory:
+    Type: AWS::BedrockAgentCore::Memory
+    Condition: HasAssistant
+    DeletionPolicy: Retain                # users' conversations outlive the stack, like the tables
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub saas_${Stage}_assistant
+      Description: Assistant conversations and long-term memories, per user and workspace
+      EventExpiryDuration: !If [IsProd, 90, 30]   # days a conversation is kept
+      MemoryStrategies:
+        - SemanticMemoryStrategy:
+            Name: facts
+            NamespaceTemplates: ["/actors/{actorId}/facts/"]
+        - UserPreferenceMemoryStrategy:
+            Name: preferences
+            NamespaceTemplates: ["/actors/{actorId}/preferences/"]
+
+  # The bash tool's terminal: a separate microVM per conversation, so the
+  # model's commands never run next to the agent's credentials. No
+  # ExecutionRoleArn: commands in it can't call any AWS API.
+  AssistantSandbox:
+    Type: AWS::BedrockAgentCore::CodeInterpreterCustom
+    Condition: HasAssistant
+    Properties:
+      Name: !Sub saas_${Stage}_sandbox
+      Description: The assistant's terminal (bash tool), one session per conversation
+      NetworkConfiguration: { NetworkMode: !Ref AssistantSandboxNetwork }
+
+  AssistantRuntimeRole:
+    Type: AWS::IAM::Role
+    Condition: HasAssistant
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: bedrock-agentcore.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { aws:SourceAccount: !Ref AWS::AccountId }
+              ArnLike: { aws:SourceArn: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*" }
+      Policies:
+        - PolicyName: assistant
+          PolicyDocument:
+            Statement:
+              - Sid: Code
+                Effect: Allow
+                Action: [s3:GetObject]
+                Resource: !Sub arn:aws:s3:::${AssistantCodeBucket}/${AssistantCodeKey}
+              - Sid: Model
+                Effect: Allow
+                Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+                Resource:
+                  - arn:aws:bedrock:*::foundation-model/*      # regional models a profile routes to
+                  - arn:aws:bedrock:::foundation-model/*       # global cross-Region inference
+                  - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
+              - Sid: Memory               # what AgentCoreMemorySaver and assistant/memory.py call
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:CreateEvent
+                  - bedrock-agentcore:GetEvent
+                  - bedrock-agentcore:ListEvents
+                  - bedrock-agentcore:RetrieveMemoryRecords
+                Resource: !GetAtt AssistantMemory.MemoryArn
+              - Sid: Usage
+                Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource: !GetAtt AssistantTable.Arn
+              - Sid: Sandbox                # assistant/sandbox.py
+                Effect: Allow
+                Action: [bedrock-agentcore:StartCodeInterpreterSession, bedrock-agentcore:InvokeCodeInterpreter]
+                Resource: !GetAtt AssistantSandbox.CodeInterpreterArn
+              - Sid: WorkloadIdentity       # as in AWS's execution role; not ...ForUserId (no IdP check)
+                Effect: Allow
+                Action: [bedrock-agentcore:GetWorkloadAccessToken, bedrock-agentcore:GetWorkloadAccessTokenForJWT]
+                Resource:
+                  - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default
+                  - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/saas_${Stage}_assistant-*
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogStreams]
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*
+              - Sid: LogGroups
+                Effect: Allow
+                Action: [logs:DescribeLogGroups]
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+              - Sid: Traces
+                Effect: Allow
+                Action: [xray:PutTraceSegments, xray:PutTelemetryRecords, xray:GetSamplingRules, xray:GetSamplingTargets]
+                Resource: "*"
+              - Sid: Metrics
+                Effect: Allow
+                Action: [cloudwatch:PutMetricData]
+                Resource: "*"
+                Condition: { StringEquals: { cloudwatch:namespace: bedrock-agentcore } }
+
+  AssistantRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Condition: HasAssistant
+    Properties:
+      AgentRuntimeName: !Sub saas_${Stage}_assistant
+      Description: Assistant for signed-in users (LangChain agent)
+      RoleArn: !GetAtt AssistantRuntimeRole.Arn
+      AgentRuntimeArtifact:
+        CodeConfiguration:
+          Code: { S3: { Bucket: !Ref AssistantCodeBucket, Prefix: !Ref AssistantCodeKey } }
+          Runtime: PYTHON_3_13
+          EntryPoint: [opentelemetry-instrument, main.py]   # traces to CloudWatch (enable Transaction Search once)
+      NetworkConfiguration: { NetworkMode: PUBLIC }
+      ProtocolConfiguration: HTTP
+      # Only this user pool's ID tokens get in, like the HTTP API: access
+      # tokens carry no aud, and the token_use rule rejects anything else.
+      AuthorizerConfiguration:
+        CustomJWTAuthorizer:
+          DiscoveryUrl: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration
+          AllowedAudience: [!Ref UserPoolClient]
+          CustomClaims:
+            - InboundTokenClaimName: token_use
+              InboundTokenClaimValueType: STRING
+              AuthorizingClaimMatchValue:
+                ClaimMatchOperator: EQUALS
+                ClaimMatchValue: { MatchValueString: id }
+      RequestHeaderConfiguration:
+        RequestHeaderAllowlist: [Authorization]   # the verified token reaches the code (claims, and the tools' API calls)
+      LifecycleConfiguration:
+        IdleRuntimeSessionTimeout: 900    # an idle conversation's microVM stops after 15 minutes; the conversation is in Memory
+        MaxLifetime: 28800
+      EnvironmentVariables:
+        POWERTOOLS_SERVICE_NAME: assistant
+        POWERTOOLS_LOG_LEVEL: INFO
+        PYTHONUNBUFFERED: "1"             # logs reach CloudWatch even if the microVM stops right after
+        ASSISTANT_TABLE: !Ref AssistantTable
+        MEMORY_ID: !GetAtt AssistantMemory.MemoryId
+        API_URL: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+        MODEL_ID: !Ref AssistantModelId
+        REGION: !Ref AWS::Region
+        SANDBOX_ID: !GetAtt AssistantSandbox.CodeInterpreterId
+
 Outputs:
   ApiUrl:
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
@@ -709,3 +892,7 @@ Outputs:
     Value: !Ref WebBucket
   WebDistributionId:
     Value: !Ref WebDistribution
+  AssistantUrl:
+    Condition: HasAssistant
+    Description: POST here with the ID token (Bearer) and a session id header; the answer streams back as SSE
+    Value: !Sub "https://bedrock-agentcore.${AWS::Region}.amazonaws.com/runtimes/${AssistantRuntime.AgentRuntimeId}/invocations?qualifier=DEFAULT&accountId=${AWS::AccountId}"
