@@ -287,12 +287,18 @@ Resources:
               Action: [cognito-idp:AdminUserGlobalSignOut]   # on role change / removal
               Resource: !GetAtt UserPool.Arn
       Events:
-        Tenants:     { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /tenants, Method: ANY } }
-        TenantsAny:  { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: ANY } }
-        Users:       { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /users, Method: ANY } }
-        UsersAny:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: ANY } }
-        Invitations:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /invitations, Method: ANY } }
-        InvitationsAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/invitations/{proxy+}", Method: ANY } }
+        # One event per method, never ANY: an ANY route also catches the browser's CORS
+        # preflight (OPTIONS) and sends it to the JWT authorizer, which answers 401. With no
+        # OPTIONS route, API Gateway answers preflights itself (CorsConfiguration).
+        TenantsPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /tenants, Method: POST } }
+        TenantsAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: GET } }
+        UsersGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /users, Method: GET } }
+        UsersAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: GET } }
+        UsersAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: POST } }
+        UsersAnyPatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: PATCH } }
+        UsersAnyDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: DELETE } }
+        InvitationsGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /invitations, Method: GET } }
+        InvitationsAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/invitations/{proxy+}", Method: POST } }
 
   AccountsPreTokenFunction:
     Type: AWS::Serverless::Function
@@ -416,8 +422,10 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref OrdersTable }
       Events:
-        Orders:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /orders, Method: ANY } }
-        OrdersAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/orders/{proxy+}", Method: ANY } }
+        OrdersGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /orders, Method: GET } }
+        OrdersPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /orders, Method: POST } }
+        OrdersAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/orders/{proxy+}", Method: GET } }
+        OrdersAnyPatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/orders/{proxy+}", Method: PATCH } }
 
   # =====================================================================
   # Module: notifications  (/notifications, SQS worker)
@@ -452,8 +460,8 @@ Resources:
               Action: [dynamodb:Query, dynamodb:UpdateItem]   # list and mark as read
               Resource: !GetAtt NotificationsTable.Arn
       Events:
-        List:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /notifications, Method: ANY } }
-        ListAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/notifications/{proxy+}", Method: ANY } }
+        ListGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /notifications, Method: GET } }
+        ListAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/notifications/{proxy+}", Method: POST } }
 
   NotificationsDLQ:
     Type: AWS::SQS::Queue
@@ -567,8 +575,8 @@ Resources:
               Action: [dynamodb:GetItem, dynamodb:UpdateItem]   # summary and checkout; no webhook secret
               Resource: !GetAtt BillingTable.Arn
       Events:
-        Billing:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /billing, Method: ANY } }
-        BillingAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/billing/{proxy+}", Method: ANY } }
+        BillingGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /billing, Method: GET } }
+        BillingAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/billing/{proxy+}", Method: POST } }
 
   BillingWebhookFunction:
     Type: AWS::Serverless::Function

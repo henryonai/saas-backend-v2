@@ -1,0 +1,23 @@
+{
+  "default": "free",
+  "plans": {
+    "free": {
+      "name": "Free",
+      "price_usd_month": 0,
+      "max_users": 3,
+      "max_orders": 100
+    },
+    "pro": {
+      "name": "Pro",
+      "price_usd_month": 29,
+      "max_users": 20,
+      "max_orders": 10000
+    },
+    "business": {
+      "name": "Business",
+      "price_usd_month": 99,
+      "max_users": 200,
+      "max_orders": null
+    }
+  }
+}

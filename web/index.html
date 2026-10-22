@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Workspace</title>
+    <script>
+      // Applied before the first paint, so a dark-theme user never sees a flash of
+      // the light page. Mirrors src/shared/theme/theme.ts and src/shared/i18n/index.ts
+      // (storage keys and defaults): keep them in sync.
+      (function () {
+        var root = document.documentElement;
+        function read(key) {
+          try {
+            return localStorage.getItem(key);
+          } catch (_) {
+            return null;
+          }
+        }
+        var mode = read('saas.theme');
+        if (mode !== 'light' && mode !== 'dark') mode = 'system';
+        var dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+        root.classList.toggle('dark', dark);
+        root.style.colorScheme = dark ? 'dark' : 'light';
+        var lang = read('saas.lang');
+        if (lang === 'en' || lang === 'vi') root.lang = lang;
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
