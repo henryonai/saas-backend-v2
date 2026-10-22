@@ -1,0 +1,322 @@
+{
+  "app": {
+    "name": "Workspace"
+  },
+  "common": {
+    "cancel": "Cancel",
+    "copied": "Copied",
+    "copy": "Copy",
+    "home": "Go home",
+    "loadMore": "Load more",
+    "retry": "Try again",
+    "signOut": "Sign out",
+    "unlimited": "Unlimited",
+    "viewAll": "View all",
+    "you": "You"
+  },
+  "errors": {
+    "title": "Something went wrong",
+    "busy": "This item is busy right now. Try again in a moment.",
+    "generic": "Something went wrong. Please try again.",
+    "network": "Can't reach the server. Check your connection and try again.",
+    "notFound": "This page doesn't exist, or you don't have access to it.",
+    "notFoundTitle": "Page not found",
+    "server": "The server had a problem. Please try again.",
+    "signedOut": "You were signed out. Sign in again to continue."
+  },
+  "config": {
+    "title": "This app isn't configured yet",
+    "description": "Set these in web/.env.local. The script below writes them from the stack's outputs:"
+  },
+  "prefs": {
+    "language": "Language",
+    "languages": {
+      "en": "English",
+      "vi": "Tiếng Việt"
+    },
+    "theme": "Theme",
+    "themes": {
+      "light": "Light",
+      "dark": "Dark",
+      "system": "System"
+    }
+  },
+  "roles": {
+    "owner": "Owner",
+    "admin": "Admin",
+    "member": "Member"
+  },
+  "nav": {
+    "account": "Account",
+    "billing": "Billing",
+    "notifications": "Notifications",
+    "orders": "Orders",
+    "overview": "Overview",
+    "plan": "{{plan}} plan",
+    "team": "Team",
+    "toggleSidebar": "Toggle sidebar"
+  },
+  "auth": {
+    "backToSignIn": "Back to sign in",
+    "code": "Code",
+    "email": "Email",
+    "newPassword": "New password",
+    "password": "Password",
+    "passwordHint": "At least {{min}} characters.",
+    "signIn": {
+      "title": "Sign in",
+      "description": "Welcome back. Sign in with your email and password.",
+      "submit": "Sign in",
+      "forgot": "Forgot password?",
+      "noAccount": "No account yet?",
+      "signUpLink": "Create one",
+      "invitedHint": "Invited to a workspace? Sign in, or create an account, with the email address the invitation was sent to.",
+      "totpTitle": "Two-step verification",
+      "totpDescription": "Enter the 6-digit code from your authenticator app."
+    },
+    "signUp": {
+      "title": "Create an account",
+      "description": "You'll get a code by email to confirm your address.",
+      "submit": "Create account",
+      "emailHint": "If you were invited, use the address the invitation was sent to.",
+      "haveAccount": "Already have an account?",
+      "signInLink": "Sign in"
+    },
+    "confirm": {
+      "title": "Check your email",
+      "description": "We sent a 6-digit code to {{email}}.",
+      "descriptionNoEmail": "Enter your email and the 6-digit code we sent you.",
+      "submit": "Confirm",
+      "resend": "Send a new code",
+      "resent": "A new code is on its way.",
+      "confirmed": "Email confirmed. Sign in to continue."
+    },
+    "forgot": {
+      "title": "Reset your password",
+      "description": "Enter your email and we'll send you a code to set a new password.",
+      "sendCode": "Send code",
+      "resetTitle": "Set a new password",
+      "resetDescription": "If {{email}} has an account, we sent it a 6-digit code.",
+      "submit": "Set password",
+      "done": "Password changed. Sign in with your new password."
+    },
+    "signedOut": {
+      "expired": "Your session ended. Sign in again to continue.",
+      "left": "You left the workspace. Sign in again to create or join another one."
+    },
+    "errors": {
+      "emailTaken": "An account with this email already exists. Sign in instead.",
+      "expiredCode": "This code has expired. Ask for a new one.",
+      "invalidPassword": "Use a password of at least 12 characters.",
+      "tooManyAttempts": "Too many attempts. Wait a few minutes and try again.",
+      "unsupportedStep": "This account needs a sign-in step this app doesn't support yet.",
+      "wrongCode": "That code isn't right. Check it and try again.",
+      "wrongPassword": "Incorrect email or password."
+    }
+  },
+  "welcome": {
+    "title": "Welcome",
+    "description": "You're signed in as {{email}}. Join a workspace you were invited to, or create your own.",
+    "invitations": {
+      "title": "Invitations",
+      "description": "Workspaces that invited this email address. Nothing happens unless you accept.",
+      "empty": "No invitations for you right now.",
+      "from": "{{inviter}} invited you as {{role}}",
+      "expires": "expires {{date}}",
+      "accept": "Accept",
+      "accepted": "You joined {{workspace}}.",
+      "decline": "Decline"
+    },
+    "create": {
+      "title": "Create a workspace",
+      "description": "You'll be its owner. You can invite people once it exists.",
+      "name": "Workspace name",
+      "namePlaceholder": "Acme Inc.",
+      "nameRequired": "Give your workspace a name.",
+      "submit": "Create workspace",
+      "created": "{{workspace}} is ready."
+    }
+  },
+  "overview": {
+    "description": "Your workspace at a glance.",
+    "plan": "Plan",
+    "managePlan": "Manage",
+    "members": "Members",
+    "manageTeam": "Manage",
+    "orderLimit": "Orders allowed",
+    "viewOrders": "View",
+    "recentOrders": "Recent orders"
+  },
+  "orders": {
+    "title": "Orders",
+    "description": "Every order in this workspace, newest first.",
+    "columns": {
+      "item": "Item",
+      "quantity": "Quantity",
+      "unitPrice": "Unit price",
+      "total": "Total",
+      "status": "Status",
+      "created": "Created"
+    },
+    "status": {
+      "pending": "Pending",
+      "paid": "Paid",
+      "shipped": "Shipped",
+      "cancelled": "Cancelled"
+    },
+    "actions": {
+      "pending": "Mark as pending",
+      "paid": "Mark as paid",
+      "shipped": "Mark as shipped",
+      "cancelled": "Cancel order"
+    },
+    "empty": {
+      "title": "No orders yet",
+      "description": "Orders you create will show up here."
+    },
+    "new": {
+      "open": "New order",
+      "title": "New order",
+      "description": "Prices are in US dollars.",
+      "item": "Item",
+      "itemRequired": "Say what is ordered.",
+      "quantity": "Quantity",
+      "quantityInvalid": "A whole number from 1 to {{max}}.",
+      "unitPrice": "Unit price",
+      "priceInvalid": "An amount like 12 or 12.50.",
+      "total": "Total",
+      "submit": "Create order",
+      "created": "Order for {{item}} created."
+    },
+    "detail": {
+      "back": "All orders",
+      "title": "Details",
+      "createdBy": "Created by",
+      "id": "Order ID",
+      "final": "This order can't change any more.",
+      "changed": "Status changed to {{status}}.",
+      "cancelTitle": "Cancel this order?",
+      "cancelDescription": "A cancelled order can't be reopened."
+    }
+  },
+  "team": {
+    "title": "Team",
+    "description": "The people in this workspace.",
+    "seats": "{{used}} of {{max}} seats used",
+    "seatsUnlimited": "{{used}} seats used",
+    "tabs": {
+      "members": "Members",
+      "invitations": "Invitations"
+    },
+    "columns": {
+      "email": "Email",
+      "role": "Role",
+      "joined": "Joined",
+      "actions": "Actions"
+    },
+    "roleChanged": "{{email}} is now {{role}}. They'll sign in again to use their new role.",
+    "remove": "Remove",
+    "removeTitle": "Remove {{email}}?",
+    "removeDescription": "They lose access to this workspace right away, and their seat is freed.",
+    "removed": "{{email}} was removed.",
+    "leave": "Leave workspace",
+    "leaveTitle": "Leave this workspace?",
+    "leaveDescription": "You lose access right away and are signed out. To come back, someone has to invite you again.",
+    "invite": {
+      "open": "Invite",
+      "title": "Invite someone",
+      "description": "They get an email, and join only if they accept. Invitations expire after 7 days.",
+      "emailInvalid": "Enter a valid email address.",
+      "roleHint": {
+        "member": "Members work with orders and see the team.",
+        "admin": "Admins can also invite, remove people and change roles."
+      },
+      "submit": "Send invitation",
+      "sent": "Invitation sent to {{email}}.",
+      "verifyFirst": "Verify your email address before inviting people."
+    },
+    "invitations": {
+      "invitedBy": "Invited by",
+      "expires": "Expires",
+      "cancel": "Cancel invitation",
+      "cancelTitle": "Cancel the invitation to {{email}}?",
+      "cancelDescription": "The link in their email stops working.",
+      "cancelled": "Invitation to {{email}} cancelled.",
+      "emptyTitle": "No pending invitations",
+      "emptyDescription": "Invitations waiting for an answer show up here."
+    }
+  },
+  "billing": {
+    "title": "Billing",
+    "description": "Your workspace's plan and what it allows.",
+    "currentPlan": "Current plan",
+    "status": {
+      "active": "Active",
+      "past_due": "Payment due",
+      "cancelled": "Cancelled"
+    },
+    "free": "Free forever.",
+    "price": "${{price}} a month.",
+    "perMonth": "/ month",
+    "isCurrent": "Current plan",
+    "upgradeTo": "Upgrade to {{plan}}",
+    "upgraded": "You're on the {{plan}} plan now.",
+    "ownerOnly": "Only the workspace owner can change the plan.",
+    "cancelled": "The subscription was cancelled: this workspace is on the Free plan.",
+    "features": {
+      "users": "Up to {{value}} members",
+      "usersUnlimited": "Unlimited members",
+      "orders": "Up to {{value}} orders",
+      "ordersUnlimited": "Unlimited orders"
+    },
+    "pastDue": {
+      "title": "Payment failed",
+      "description": "We couldn't take the last payment. Update the payment method with the payment provider to keep this plan."
+    },
+    "waiting": {
+      "title": "Waiting for the payment to be confirmed…",
+      "stillTitle": "No confirmation yet",
+      "description": "The {{plan}} plan starts as soon as the payment provider confirms the payment. This page updates by itself.",
+      "checkAgain": "Check again",
+      "dismiss": "Stop waiting"
+    }
+  },
+  "devCheckout": {
+    "title": "Test checkout",
+    "description": "This stack uses the development payment provider: nothing is charged for the {{plan}} plan.",
+    "instructions": "To finish the upgrade, run this from the repository root. It sends the signed webhook a real provider would send after a payment:",
+    "cancel": "Cancel",
+    "done": "Back to billing"
+  },
+  "notifications": {
+    "title": "Notifications",
+    "description": "What happened in your workspace.",
+    "bell": "Notifications, {{unread}} unread",
+    "empty": "You're all caught up.",
+    "emptyTitle": "No notifications",
+    "markAll": "Mark all as read",
+    "viewAll": "View all"
+  },
+  "upgrade": {
+    "title": "Your plan's limit is reached",
+    "seePlans": "See plans",
+    "askOwner": "Ask the workspace owner to upgrade the plan."
+  },
+  "account": {
+    "title": "Account",
+    "description": "Your sign-in details and preferences.",
+    "profile": "Profile",
+    "verified": "Verified",
+    "unverified": "Not verified",
+    "workspace": "Workspace",
+    "preferences": "Preferences",
+    "password": {
+      "title": "Change password",
+      "description": "You stay signed in on this device.",
+      "current": "Current password",
+      "submit": "Change password",
+      "changed": "Password changed.",
+      "wrongCurrent": "The current password isn't right."
+    }
+  }
+}

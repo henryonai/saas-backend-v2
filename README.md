@@ -15,6 +15,7 @@ saas-backend/
 │   ├── export-requirements.sh  # uv.lock -> requirements.txt files for sam build
 │   ├── smoke-test.py           # end-to-end check of a deployed stack (after sam deploy)
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
+│   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
 │   └── replay-outbox.py        # publish saved events again after an outage
 ├── layers/shared/              # package "saas-shared"
 │   ├── pyproject.toml          # powertools, pydantic, pydantic-settings
@@ -48,6 +49,7 @@ saas-backend/
 │       │   └── ...             # other entry points (worker, webhook, triggers)
 │       └── tests/
 ├── testkit/                    # package "saas-testkit": test helpers and fakes (not deployed)
+├── web/                        # the React app (see web/README.md)
 ├── template.yaml               # one section per module
 ├── samconfig.toml              # dev / prod settings
 └── .env.example
@@ -266,6 +268,25 @@ the accounts and notifications workers. It needs AWS credentials for the stack
 (to create the user and read the webhook secret), so use it on dev, not prod.
 The test user's login is saved in `.aws-sam/smoke-user.json`.
 
+## Frontend
+
+`web/` is the React app (Vite, TanStack Router and Query, shadcn/ui, English
+and Vietnamese). It signs in with Cognito and calls the HTTP API with the ID
+token, so it needs a deployed stack:
+
+```bash
+cd web
+pnpm install
+./scripts/env-from-stack.sh saas-dev   # ApiUrl, UserPoolId, UserPoolClientId -> .env.local
+pnpm dev                               # http://localhost:5173 (the dev AppUrl)
+```
+
+Its API types and plan catalog are generated from this code (`pnpm gen:api`);
+CI fails if they are out of date. With `DevPaymentProvider`, checkout lands on
+the app's `/dev-checkout` page, which shows the `scripts/dev-pay.py` command
+that sends the signed webhook a real provider would send. See
+[web/README.md](web/README.md).
+
 ## Operations
 
 - **Logs:** all functions log JSON (Powertools) into one log group per stack,
@@ -328,7 +349,8 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
 - Replace `DevPaymentProvider` in `billing/container.py` with a real provider
   (map its event id and creation time; reject webhooks with old timestamps).
   If it offers it, fetch the current subscription from its API instead of
-  trusting event order
+  trusting event order. Point its return URL at the app's `/billing` page,
+  which waits for the webhook
 - Review the rate limits and the invitation rules (`INVITATION_DAYS`,
   `INVITES_PER_DAY`, `MAX_PENDING_INVITATIONS_PER_EMAIL`)
 - Deploy prod to its own AWS account

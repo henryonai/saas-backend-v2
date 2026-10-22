@@ -1,0 +1,322 @@
+{
+  "app": {
+    "name": "Workspace"
+  },
+  "common": {
+    "cancel": "Hủy",
+    "copied": "Đã sao chép",
+    "copy": "Sao chép",
+    "home": "Về trang chủ",
+    "loadMore": "Xem thêm",
+    "retry": "Thử lại",
+    "signOut": "Đăng xuất",
+    "unlimited": "Không giới hạn",
+    "viewAll": "Xem tất cả",
+    "you": "Bạn"
+  },
+  "errors": {
+    "title": "Đã có lỗi xảy ra",
+    "busy": "Mục này đang bận. Vui lòng thử lại sau giây lát.",
+    "generic": "Đã có lỗi xảy ra. Vui lòng thử lại.",
+    "network": "Không kết nối được tới máy chủ. Kiểm tra kết nối mạng rồi thử lại.",
+    "notFound": "Trang này không tồn tại, hoặc bạn không có quyền truy cập.",
+    "notFoundTitle": "Không tìm thấy trang",
+    "server": "Máy chủ gặp sự cố. Vui lòng thử lại.",
+    "signedOut": "Bạn đã bị đăng xuất. Hãy đăng nhập lại để tiếp tục."
+  },
+  "config": {
+    "title": "Ứng dụng chưa được cấu hình",
+    "description": "Hãy khai báo các biến này trong web/.env.local. Lệnh bên dưới ghi chúng từ output của stack:"
+  },
+  "prefs": {
+    "language": "Ngôn ngữ",
+    "languages": {
+      "en": "English",
+      "vi": "Tiếng Việt"
+    },
+    "theme": "Giao diện",
+    "themes": {
+      "light": "Sáng",
+      "dark": "Tối",
+      "system": "Theo hệ thống"
+    }
+  },
+  "roles": {
+    "owner": "Chủ sở hữu",
+    "admin": "Quản trị viên",
+    "member": "Thành viên"
+  },
+  "nav": {
+    "account": "Tài khoản",
+    "billing": "Thanh toán",
+    "notifications": "Thông báo",
+    "orders": "Đơn hàng",
+    "overview": "Tổng quan",
+    "plan": "Gói {{plan}}",
+    "team": "Thành viên",
+    "toggleSidebar": "Ẩn/hiện thanh bên"
+  },
+  "auth": {
+    "backToSignIn": "Quay lại đăng nhập",
+    "code": "Mã xác nhận",
+    "email": "Email",
+    "newPassword": "Mật khẩu mới",
+    "password": "Mật khẩu",
+    "passwordHint": "Ít nhất {{min}} ký tự.",
+    "signIn": {
+      "title": "Đăng nhập",
+      "description": "Chào mừng bạn quay lại. Đăng nhập bằng email và mật khẩu.",
+      "submit": "Đăng nhập",
+      "forgot": "Quên mật khẩu?",
+      "noAccount": "Chưa có tài khoản?",
+      "signUpLink": "Tạo tài khoản",
+      "invitedHint": "Được mời vào một workspace? Hãy đăng nhập, hoặc tạo tài khoản, bằng đúng địa chỉ email đã nhận lời mời.",
+      "totpTitle": "Xác minh hai bước",
+      "totpDescription": "Nhập mã 6 chữ số từ ứng dụng xác thực của bạn."
+    },
+    "signUp": {
+      "title": "Tạo tài khoản",
+      "description": "Bạn sẽ nhận được mã qua email để xác nhận địa chỉ.",
+      "submit": "Tạo tài khoản",
+      "emailHint": "Nếu bạn được mời, hãy dùng địa chỉ email đã nhận lời mời.",
+      "haveAccount": "Đã có tài khoản?",
+      "signInLink": "Đăng nhập"
+    },
+    "confirm": {
+      "title": "Kiểm tra email của bạn",
+      "description": "Chúng tôi đã gửi mã 6 chữ số tới {{email}}.",
+      "descriptionNoEmail": "Nhập email và mã 6 chữ số chúng tôi đã gửi cho bạn.",
+      "submit": "Xác nhận",
+      "resend": "Gửi mã mới",
+      "resent": "Mã mới đang được gửi tới bạn.",
+      "confirmed": "Đã xác nhận email. Hãy đăng nhập để tiếp tục."
+    },
+    "forgot": {
+      "title": "Đặt lại mật khẩu",
+      "description": "Nhập email, chúng tôi sẽ gửi mã để bạn đặt mật khẩu mới.",
+      "sendCode": "Gửi mã",
+      "resetTitle": "Đặt mật khẩu mới",
+      "resetDescription": "Nếu {{email}} có tài khoản, chúng tôi đã gửi tới đó một mã 6 chữ số.",
+      "submit": "Đặt mật khẩu",
+      "done": "Đã đổi mật khẩu. Hãy đăng nhập bằng mật khẩu mới."
+    },
+    "signedOut": {
+      "expired": "Phiên đăng nhập đã kết thúc. Hãy đăng nhập lại để tiếp tục.",
+      "left": "Bạn đã rời workspace. Hãy đăng nhập lại để tạo hoặc tham gia workspace khác."
+    },
+    "errors": {
+      "emailTaken": "Email này đã có tài khoản. Hãy đăng nhập.",
+      "expiredCode": "Mã đã hết hạn. Hãy yêu cầu mã mới.",
+      "invalidPassword": "Hãy dùng mật khẩu có ít nhất 12 ký tự.",
+      "tooManyAttempts": "Bạn đã thử quá nhiều lần. Hãy đợi vài phút rồi thử lại.",
+      "unsupportedStep": "Tài khoản này cần một bước đăng nhập mà ứng dụng chưa hỗ trợ.",
+      "wrongCode": "Mã không đúng. Hãy kiểm tra và thử lại.",
+      "wrongPassword": "Email hoặc mật khẩu không đúng."
+    }
+  },
+  "welcome": {
+    "title": "Chào mừng",
+    "description": "Bạn đang đăng nhập với {{email}}. Hãy tham gia workspace đã mời bạn, hoặc tạo workspace của riêng bạn.",
+    "invitations": {
+      "title": "Lời mời",
+      "description": "Các workspace đã mời địa chỉ email này. Không có gì thay đổi cho tới khi bạn chấp nhận.",
+      "empty": "Hiện chưa có lời mời nào cho bạn.",
+      "from": "{{inviter}} mời bạn với vai trò {{role}}",
+      "expires": "hết hạn {{date}}",
+      "accept": "Chấp nhận",
+      "accepted": "Bạn đã tham gia {{workspace}}.",
+      "decline": "Từ chối"
+    },
+    "create": {
+      "title": "Tạo workspace",
+      "description": "Bạn sẽ là chủ sở hữu. Sau khi tạo, bạn có thể mời người khác.",
+      "name": "Tên workspace",
+      "namePlaceholder": "Công ty ABC",
+      "nameRequired": "Hãy đặt tên cho workspace.",
+      "submit": "Tạo workspace",
+      "created": "{{workspace}} đã sẵn sàng."
+    }
+  },
+  "overview": {
+    "description": "Tổng quan workspace của bạn.",
+    "plan": "Gói",
+    "managePlan": "Quản lý",
+    "members": "Thành viên",
+    "manageTeam": "Quản lý",
+    "orderLimit": "Số đơn hàng cho phép",
+    "viewOrders": "Xem",
+    "recentOrders": "Đơn hàng gần đây"
+  },
+  "orders": {
+    "title": "Đơn hàng",
+    "description": "Tất cả đơn hàng trong workspace, mới nhất trước.",
+    "columns": {
+      "item": "Mặt hàng",
+      "quantity": "Số lượng",
+      "unitPrice": "Đơn giá",
+      "total": "Thành tiền",
+      "status": "Trạng thái",
+      "created": "Ngày tạo"
+    },
+    "status": {
+      "pending": "Chờ xử lý",
+      "paid": "Đã thanh toán",
+      "shipped": "Đã giao",
+      "cancelled": "Đã hủy"
+    },
+    "actions": {
+      "pending": "Chuyển về chờ xử lý",
+      "paid": "Đánh dấu đã thanh toán",
+      "shipped": "Đánh dấu đã giao",
+      "cancelled": "Hủy đơn hàng"
+    },
+    "empty": {
+      "title": "Chưa có đơn hàng",
+      "description": "Các đơn hàng bạn tạo sẽ hiện ở đây."
+    },
+    "new": {
+      "open": "Tạo đơn hàng",
+      "title": "Đơn hàng mới",
+      "description": "Giá tính bằng đô la Mỹ (USD).",
+      "item": "Mặt hàng",
+      "itemRequired": "Hãy nhập mặt hàng cần đặt.",
+      "quantity": "Số lượng",
+      "quantityInvalid": "Một số nguyên từ 1 đến {{max}}.",
+      "unitPrice": "Đơn giá",
+      "priceInvalid": "Một số tiền như 12 hoặc 12.50.",
+      "total": "Thành tiền",
+      "submit": "Tạo đơn hàng",
+      "created": "Đã tạo đơn hàng {{item}}."
+    },
+    "detail": {
+      "back": "Tất cả đơn hàng",
+      "title": "Chi tiết",
+      "createdBy": "Người tạo",
+      "id": "Mã đơn hàng",
+      "final": "Đơn hàng này không thể thay đổi nữa.",
+      "changed": "Đã đổi trạng thái thành: {{status}}.",
+      "cancelTitle": "Hủy đơn hàng này?",
+      "cancelDescription": "Đơn hàng đã hủy không thể mở lại."
+    }
+  },
+  "team": {
+    "title": "Thành viên",
+    "description": "Những người trong workspace này.",
+    "seats": "Đã dùng {{used}}/{{max}} chỗ",
+    "seatsUnlimited": "Đã dùng {{used}} chỗ",
+    "tabs": {
+      "members": "Thành viên",
+      "invitations": "Lời mời"
+    },
+    "columns": {
+      "email": "Email",
+      "role": "Vai trò",
+      "joined": "Ngày tham gia",
+      "actions": "Thao tác"
+    },
+    "roleChanged": "{{email}} giờ là {{role}}. Họ sẽ cần đăng nhập lại để dùng vai trò mới.",
+    "remove": "Xóa",
+    "removeTitle": "Xóa {{email}}?",
+    "removeDescription": "Họ mất quyền truy cập workspace ngay lập tức, và chỗ của họ được giải phóng.",
+    "removed": "Đã xóa {{email}}.",
+    "leave": "Rời workspace",
+    "leaveTitle": "Rời workspace này?",
+    "leaveDescription": "Bạn mất quyền truy cập ngay và sẽ bị đăng xuất. Muốn quay lại, cần có người mời bạn lần nữa.",
+    "invite": {
+      "open": "Mời",
+      "title": "Mời thành viên",
+      "description": "Họ sẽ nhận được email, và chỉ tham gia khi chấp nhận. Lời mời hết hạn sau 7 ngày.",
+      "emailInvalid": "Hãy nhập một địa chỉ email hợp lệ.",
+      "roleHint": {
+        "member": "Thành viên làm việc với đơn hàng và xem được danh sách thành viên.",
+        "admin": "Quản trị viên có thể mời, xóa người và đổi vai trò."
+      },
+      "submit": "Gửi lời mời",
+      "sent": "Đã gửi lời mời tới {{email}}.",
+      "verifyFirst": "Hãy xác minh địa chỉ email trước khi mời người khác."
+    },
+    "invitations": {
+      "invitedBy": "Người mời",
+      "expires": "Hết hạn",
+      "cancel": "Hủy lời mời",
+      "cancelTitle": "Hủy lời mời gửi tới {{email}}?",
+      "cancelDescription": "Liên kết trong email của họ sẽ không còn tác dụng.",
+      "cancelled": "Đã hủy lời mời gửi tới {{email}}.",
+      "emptyTitle": "Không có lời mời đang chờ",
+      "emptyDescription": "Các lời mời đang chờ trả lời sẽ hiện ở đây."
+    }
+  },
+  "billing": {
+    "title": "Thanh toán",
+    "description": "Gói của workspace và những gì gói cho phép.",
+    "currentPlan": "Gói hiện tại",
+    "status": {
+      "active": "Đang hoạt động",
+      "past_due": "Chưa thanh toán",
+      "cancelled": "Đã hủy"
+    },
+    "free": "Miễn phí vĩnh viễn.",
+    "price": "${{price}} mỗi tháng.",
+    "perMonth": "/ tháng",
+    "isCurrent": "Gói hiện tại",
+    "upgradeTo": "Nâng cấp lên {{plan}}",
+    "upgraded": "Workspace đã chuyển sang gói {{plan}}.",
+    "ownerOnly": "Chỉ chủ sở hữu workspace mới đổi được gói.",
+    "cancelled": "Gói trả phí đã bị hủy: workspace này đang dùng gói Free.",
+    "features": {
+      "users": "Tối đa {{value}} thành viên",
+      "usersUnlimited": "Không giới hạn thành viên",
+      "orders": "Tối đa {{value}} đơn hàng",
+      "ordersUnlimited": "Không giới hạn đơn hàng"
+    },
+    "pastDue": {
+      "title": "Thanh toán không thành công",
+      "description": "Chúng tôi không thu được khoản thanh toán gần nhất. Hãy cập nhật phương thức thanh toán với nhà cung cấp để giữ gói này."
+    },
+    "waiting": {
+      "title": "Đang chờ xác nhận thanh toán…",
+      "stillTitle": "Chưa có xác nhận",
+      "description": "Gói {{plan}} bắt đầu ngay khi nhà cung cấp thanh toán xác nhận. Trang này sẽ tự cập nhật.",
+      "checkAgain": "Kiểm tra lại",
+      "dismiss": "Dừng chờ"
+    }
+  },
+  "devCheckout": {
+    "title": "Thanh toán thử",
+    "description": "Stack này dùng nhà cung cấp thanh toán cho môi trường dev: gói {{plan}} không bị tính tiền.",
+    "instructions": "Để hoàn tất nâng cấp, hãy chạy lệnh này ở thư mục gốc của repository. Lệnh gửi webhook có chữ ký, giống webhook mà nhà cung cấp thật gửi sau khi thanh toán:",
+    "cancel": "Hủy",
+    "done": "Quay lại thanh toán"
+  },
+  "notifications": {
+    "title": "Thông báo",
+    "description": "Những gì đã diễn ra trong workspace của bạn.",
+    "bell": "Thông báo, {{unread}} chưa đọc",
+    "empty": "Bạn đã xem hết thông báo.",
+    "emptyTitle": "Không có thông báo",
+    "markAll": "Đánh dấu tất cả đã đọc",
+    "viewAll": "Xem tất cả"
+  },
+  "upgrade": {
+    "title": "Đã đạt giới hạn của gói",
+    "seePlans": "Xem các gói",
+    "askOwner": "Hãy nhờ chủ sở hữu workspace nâng cấp gói."
+  },
+  "account": {
+    "title": "Tài khoản",
+    "description": "Thông tin đăng nhập và tùy chọn của bạn.",
+    "profile": "Hồ sơ",
+    "verified": "Đã xác minh",
+    "unverified": "Chưa xác minh",
+    "workspace": "Workspace",
+    "preferences": "Tùy chọn",
+    "password": {
+      "title": "Đổi mật khẩu",
+      "description": "Bạn vẫn đăng nhập trên thiết bị này.",
+      "current": "Mật khẩu hiện tại",
+      "submit": "Đổi mật khẩu",
+      "changed": "Đã đổi mật khẩu.",
+      "wrongCurrent": "Mật khẩu hiện tại không đúng."
+    }
+  }
+}

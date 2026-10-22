@@ -21,3 +21,35 @@ jobs:
         run: uvx ruff check .
       - name: Lint template
         run: uvx cfn-lint template.yaml
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install (fails if pnpm-lock.yaml is out of date)
+        run: pnpm install --frozen-lockfile
+      - name: API types and plans match the backend
+        run: |
+          uv sync --all-packages --locked
+          pnpm gen:api
+          test -z "$(git status --porcelain src/shared/api/generated)" || { git status --short src/shared/api/generated; exit 1; }
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Tests
+        run: pnpm test
+      - name: Build
+        run: pnpm build
