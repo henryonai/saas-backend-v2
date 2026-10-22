@@ -10,7 +10,10 @@ saas-backend/
 ├── pyproject.toml              # uv workspace root: dev tools, pytest and ruff config
 ├── uv.lock                     # exact versions of every package (commit it)
 ├── .python-version             # 3.13, same as the Lambda runtime
-├── .github/workflows/ci.yml    # tests, lint, lockfile and requirements checks
+├── .github/
+│   ├── workflows/ci.yml        # tests, lint, lockfile and requirements checks
+│   ├── workflows/deploy.yml    # deploy an environment (run by hand)
+│   └── deploy-role.yaml        # the AWS role deploy.yml uses (once per environment)
 ├── scripts/
 │   ├── export-requirements.sh  # uv.lock -> requirements.txt files for sam build
 │   ├── smoke-test.py           # end-to-end check of a deployed stack (after sam deploy)
@@ -289,6 +292,44 @@ CI fails if they are out of date. With `DevPaymentProvider`, checkout lands on
 the app's `/dev-checkout` page, which shows the `scripts/dev-pay.py` command
 that sends the signed webhook a real provider would send. See
 [web/README.md](web/README.md).
+
+## CI/CD
+
+**CI** (`.github/workflows/ci.yml`) runs on every pull request and push to
+`main`: the backend's tests and linters, and the frontend's typecheck, lint,
+tests and build.
+
+**CD** (`.github/workflows/deploy.yml`) is run by hand for now: on GitHub,
+Actions > deploy > Run workflow, then pick the branch and the environment.
+It runs the CI checks, then `sam deploy` and `web/scripts/deploy.sh` for that
+environment (its `[<env>.deploy]` settings in `samconfig.toml`). Prod deploys
+only from `main`, one deploy per environment runs at a time, and the run's
+summary links the app.
+
+GitHub signs in to AWS with OIDC, so no AWS keys are stored in GitHub. Once
+per environment, in the account it deploys to:
+
+1. Create its deploy role. It may do everything except IAM, and in IAM only
+   its own stack's roles (`<stack>-*`). Use `CreateOidcProvider=false` if the
+   account already has GitHub's OIDC provider (the second environment in an
+   account does):
+
+   ```bash
+   aws cloudformation deploy --template-file .github/deploy-role.yaml \
+     --stack-name saas-dev-github-deploy --capabilities CAPABILITY_NAMED_IAM \
+     --parameter-overrides GitHubRepo=<owner>/<repo> Environment=dev StackName=saas-dev
+   ```
+
+2. Create the GitHub environment (Settings > Environments, or the API) and
+   give it a variable `AWS_ROLE_ARN` with the stack's `RoleArn` output:
+
+   ```bash
+   gh api -X PUT repos/<owner>/<repo>/environments/dev
+   gh variable set AWS_ROLE_ARN --env dev --body <RoleArn>
+   ```
+
+Before the first prod run, do what "Before production" lists: at least create
+the SSM webhook secret and replace the example values in `samconfig.toml`.
 
 ## Operations
 

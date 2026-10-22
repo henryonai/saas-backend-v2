@@ -1,0 +1,91 @@
+name: deploy
+
+# Manual for now: Actions > deploy > Run workflow, then pick the branch and the
+# environment. It runs the CI checks, then deploys the backend (sam deploy) and
+# the web app (web/scripts/deploy.sh) to that environment's stack, with the AWS
+# role in the environment's AWS_ROLE_ARN variable ("CI/CD" in the README).
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment (a config-env in samconfig.toml)
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+# One deploy per environment at a time: a second one waits for the first.
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write          # GitHub's OIDC token, exchanged for the environment's AWS role
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+    steps:
+      - name: Production deploys only from main
+        if: inputs.environment == 'prod' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Deploy prod from main, not ${GITHUB_REF}"
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"   # sam build installs dependencies for the Lambda runtime
+
+      - name: Read samconfig.toml
+        id: config
+        run: |
+          python - "$ENVIRONMENT" >> "$GITHUB_OUTPUT" <<'PY'
+          import sys, tomllib
+          config = tomllib.load(open("samconfig.toml", "rb"))
+          print("region=" + config["default"]["global"]["parameters"]["region"])
+          print("stack=" + config[sys.argv[1]]["deploy"]["parameters"]["stack_name"])
+          PY
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ steps.config.outputs.region }}
+
+      - uses: aws-actions/setup-sam@v3
+        with:
+          use-installer: true
+
+      - name: Deploy the backend
+        # The run itself is the confirmation: samconfig's confirm_changeset is for people at a terminal.
+        run: |
+          sam build
+          sam deploy --config-env "$ENVIRONMENT" --no-confirm-changeset --no-fail-on-empty-changeset
+
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Deploy the web app
+        working-directory: web
+        env:
+          STACK: ${{ steps.config.outputs.stack }}
+        run: |
+          pnpm install --frozen-lockfile
+          ./scripts/deploy.sh "$STACK" | tee deploy.log
+          echo "Deployed **${STACK}** from \`${GITHUB_REF_NAME}\` (${GITHUB_SHA::7}): $(sed -n 's/^Published: //p' deploy.log)" >> "$GITHUB_STEP_SUMMARY"

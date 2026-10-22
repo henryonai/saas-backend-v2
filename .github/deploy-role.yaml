@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  The AWS role that .github/workflows/deploy.yml uses for one GitHub environment.
+  GitHub signs in with OIDC, so no AWS keys are stored in GitHub. Deploy it once
+  per environment, in the account that environment deploys to (see "CI/CD" in the README).
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Description: The repository allowed to deploy (owner/name)
+  Environment:
+    Type: String
+    Description: The GitHub environment that uses this role (a config-env in samconfig.toml)
+  StackName:
+    Type: String
+    Description: The stack that environment deploys (its stack_name in samconfig.toml)
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: "false if this account already has GitHub's OIDC provider (there is one per account)"
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackName}-github-deploy"
+      Description: !Sub "GitHub Actions deploys ${StackName} from ${GitHubRepo} (environment ${Environment})"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Only jobs of this repository running in this GitHub environment.
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:environment:${Environment}"
+      # Everything but IAM and Organizations: what sam deploy and web/scripts/deploy.sh touch.
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/PowerUserAccess]
+      Policies:
+        # In IAM, only the roles of its own stack: CloudFormation names them <stack>-<resource>-<id>.
+        - PolicyName: own-stack-roles
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRoleTags
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${StackName}-*"
+              - Effect: Deny            # not even its own: it must not raise its own rights
+                Action: "iam:*"
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${StackName}-github-deploy"
+              - Effect: Allow           # roles AWS services create for themselves, defined by AWS
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+
+Outputs:
+  RoleArn:
+    Description: The AWS_ROLE_ARN variable of the GitHub environment
+    Value: !GetAtt DeployRole.Arn
