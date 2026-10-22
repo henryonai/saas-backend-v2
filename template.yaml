@@ -1,0 +1,375 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: "Multi-tenant SaaS backend (accounts, orders, notifications, billing)"
+
+# One template, one section per module. Each module has its own functions and
+# its own table. When a module moves to its own repository, move its section.
+
+Parameters:
+  Stage:
+    Type: String
+    AllowedValues: [dev, prod]
+    Default: dev
+  PaymentWebhookSecretParam:
+    Type: String
+    Default: /saas/dev/payment-webhook-secret
+    Description: Name of an SSM SecureString parameter holding the webhook secret (create it first)
+  EmailSender:
+    Type: String
+    Default: ""
+    Description: Verified SES sender address. Empty = emails are only logged.
+  AppUrl:
+    Type: String
+    Default: http://localhost:5173
+  CorsOrigin:
+    Type: String
+    Default: "*"
+    Description: Your frontend URL in production
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 10
+    Layers: [!Ref SharedLayer]
+    Environment:
+      Variables:
+        EVENT_BUS_NAME: default
+        POWERTOOLS_LOG_LEVEL: INFO
+
+Resources:
+  # =====================================================================
+  # Shared: layer, login (Cognito), HTTP API
+  # =====================================================================
+  SharedLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: layers/shared/layer/
+      CompatibleRuntimes: [python3.13]
+      CompatibleArchitectures: [arm64]
+    Metadata:
+      BuildMethod: python3.13
+      BuildArchitecture: arm64
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub saas-${Stage}
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy: { MinimumLength: 8 }
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Ref CorsOrigin]
+        AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
+        AllowHeaders: [content-type, authorization]
+      Auth:
+        DefaultAuthorizer: CognitoJwt   # every route requires login unless stated
+        Authorizers:
+          CognitoJwt:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+              audience: [!Ref UserPoolClient]
+
+  # =====================================================================
+  # Module: accounts  (/tenants, /users, login trigger, plan listener)
+  # =====================================================================
+  AccountsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+        - { AttributeName: gsi1pk, AttributeType: S }
+        - { AttributeName: gsi1sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  AccountsApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/accounts/src/
+      Handler: accounts.handler.handler
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: accounts
+          ACCOUNTS_TABLE: !Ref AccountsTable
+          USER_POOL_ID: !Ref UserPool
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }
+        - EventBridgePutEventsPolicy: { EventBusName: default }
+        - Statement:
+            - Effect: Allow
+              Action: [cognito-idp:AdminCreateUser]
+              Resource: !GetAtt UserPool.Arn
+      Events:
+        Tenants:     { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /tenants, Method: ANY } }
+        TenantsAny:  { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: ANY } }
+        Users:       { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /users, Method: ANY } }
+        UsersAny:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: ANY } }
+
+  AccountsPreTokenFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/accounts/src/
+      Handler: accounts.pre_token.handler
+      Timeout: 5                        # login waits for this
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: accounts
+          ACCOUNTS_TABLE: !Ref AccountsTable
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref AccountsTable }
+      Events:
+        PreToken:
+          Type: Cognito
+          Properties: { UserPool: !Ref UserPool, Trigger: PreTokenGeneration }
+
+  AccountsSubscriptionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/accounts/src/
+      Handler: accounts.subscriptions.handler
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: accounts
+          ACCOUNTS_TABLE: !Ref AccountsTable
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }
+      Events:
+        SubscriptionChanged:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source: [saas.app]
+              detail-type: [SubscriptionChanged]
+            RetryPolicy: { MaximumRetryAttempts: 10 }
+
+  # =====================================================================
+  # Module: orders  (/orders)
+  # =====================================================================
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  OrdersApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/orders/src/
+      Handler: orders.handler.handler
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: orders
+          ORDERS_TABLE: !Ref OrdersTable
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref OrdersTable }
+        - EventBridgePutEventsPolicy: { EventBusName: default }
+      Events:
+        Orders:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /orders, Method: ANY } }
+        OrdersAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/orders/{proxy+}", Method: ANY } }
+
+  # =====================================================================
+  # Module: notifications  (/notifications, SQS worker)
+  # =====================================================================
+  NotificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+
+  NotificationsApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/notifications/src/
+      Handler: notifications.handler.handler
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: notifications
+          NOTIFICATIONS_TABLE: !Ref NotificationsTable
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref NotificationsTable }
+      Events:
+        List:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /notifications, Method: ANY } }
+        ListAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/notifications/{proxy+}", Method: ANY } }
+
+  NotificationsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600   # keep failed messages 14 days
+
+  NotificationsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 180            # 6x the worker timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt NotificationsDLQ.Arn
+        maxReceiveCount: 5
+
+  NotificationsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: default
+      EventPattern:
+        source: [saas.app]
+        detail-type: [OrderCreated, UserInvited, SubscriptionChanged, PaymentFailed]
+      Targets:
+        - { Id: NotificationsQueue, Arn: !GetAtt NotificationsQueue.Arn }
+
+  NotificationsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref NotificationsQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt NotificationsQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt NotificationsRule.Arn }
+
+  NotificationsWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/notifications/src/
+      Handler: notifications.worker.handler
+      Timeout: 30
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: notifications
+          NOTIFICATIONS_TABLE: !Ref NotificationsTable
+          EMAIL_SENDER: !Ref EmailSender
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref NotificationsTable }
+        - Statement:
+            - { Effect: Allow, Action: [ses:SendEmail], Resource: "*" }
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt NotificationsQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  NotificationsDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Notifications keep failing (messages in the dead-letter queue)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt NotificationsDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+
+  # =====================================================================
+  # Module: billing  (/billing, payment webhook)
+  # =====================================================================
+  BillingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  BillingApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/billing/src/
+      Handler: billing.handler.handler
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: billing
+          BILLING_TABLE: !Ref BillingTable
+          PAYMENT_WEBHOOK_SECRET_PARAM: !Ref PaymentWebhookSecretParam
+          APP_URL: !Ref AppUrl
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref BillingTable }
+        - EventBridgePutEventsPolicy: { EventBusName: default }
+        - Statement:
+            - Effect: Allow
+              Action: [ssm:GetParameter]
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${PaymentWebhookSecretParam}"
+      Events:
+        Billing:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /billing, Method: ANY } }
+        BillingAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/billing/{proxy+}", Method: ANY } }
+
+  BillingWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/billing/src/
+      Handler: billing.webhook.handler
+      Timeout: 15
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: billing
+          BILLING_TABLE: !Ref BillingTable
+          PAYMENT_WEBHOOK_SECRET_PARAM: !Ref PaymentWebhookSecretParam
+          APP_URL: !Ref AppUrl
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref BillingTable }
+        - EventBridgePutEventsPolicy: { EventBusName: default }
+        - Statement:
+            - Effect: Allow
+              Action: [ssm:GetParameter]
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${PaymentWebhookSecretParam}"
+      Events:
+        Webhook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /webhooks/payments
+            Method: POST
+            Auth: { Authorizer: NONE }   # provider calls this; signature is checked in code
+
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  WebhookUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/webhooks/payments"

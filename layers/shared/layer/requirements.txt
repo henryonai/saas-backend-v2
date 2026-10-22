@@ -1,0 +1,5 @@
+# Installed into the shared Lambda layer, so every module function gets them.
+# (boto3 is already included in the Lambda runtime.)
+aws-lambda-powertools>=3.0,<4.0
+pydantic>=2.7,<3.0
+pydantic-settings>=2.3,<3.0

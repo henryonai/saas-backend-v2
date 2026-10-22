@@ -1,0 +1,40 @@
+# Same code, different values per environment:
+#   sam deploy --config-env dev
+#   sam deploy --config-env prod
+version = 0.1
+
+[default.global.parameters]
+region = "ap-southeast-1"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[dev.deploy.parameters]
+stack_name = "saas-dev"
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = false
+parameter_overrides = [
+  "Stage=dev",
+  "PaymentWebhookSecretParam=/saas/dev/payment-webhook-secret",
+  "AppUrl=http://localhost:5173",
+  "CorsOrigin=*",
+]
+
+[dev.sync.parameters]
+stack_name = "saas-dev"
+watch = true
+
+[prod.deploy.parameters]
+stack_name = "saas-prod"
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = true   # always review changes before they hit production
+parameter_overrides = [
+  "Stage=prod",
+  "PaymentWebhookSecretParam=/saas/prod/payment-webhook-secret",
+  "AppUrl=https://app.example.com",
+  "CorsOrigin=https://app.example.com",
+  "EmailSender=no-reply@example.com",
+]
