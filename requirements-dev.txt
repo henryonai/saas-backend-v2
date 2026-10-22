@@ -1,5 +1,0 @@
-# Local development and tests only (not deployed).
--r layers/shared/layer/requirements.txt
-boto3
-moto[dynamodb,events,ssm]>=5.0
-pytest>=8.0

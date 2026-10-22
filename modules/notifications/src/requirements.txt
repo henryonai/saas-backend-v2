@@ -1,2 +1,1 @@
-# Dependencies come from the shared layer (layers/shared/layer/requirements.txt).
-# Add packages here only if this module alone needs them.
+# Generated from uv.lock by scripts/export-requirements.sh. Do not edit: change pyproject.toml instead.

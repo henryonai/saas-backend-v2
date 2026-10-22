@@ -1,0 +1,20 @@
+[project]
+name = "saas-accounts"
+version = "0.1.0"
+requires-python = ">=3.13"
+# Add packages only this module needs. Shared ones come from saas-shared (the layer).
+dependencies = ["saas-shared"]
+
+[dependency-groups]
+dev = ["saas-testkit"]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "accounts"
+
+[tool.uv.sources]
+saas-shared = { workspace = true }
+saas-testkit = { workspace = true }

@@ -1,0 +1,19 @@
+# The shared package. Deployed as the SharedLayer (template.yaml); modules
+# depend on it here so their imports are explicit and versionable.
+[project]
+name = "saas-shared"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "aws-lambda-powertools>=3.0,<4.0",
+    "pydantic>=2.7,<3.0",
+    "pydantic-settings>=2.3,<3.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "layer"     # code stays in layer/shared/, where SAM builds the layer from
+module-name = "shared"

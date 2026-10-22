@@ -11,8 +11,19 @@ from accounts.handler import app, handler
 from accounts.repository import MemberRepository, TenantRepository
 from accounts.service import AccountService
 from testkit.aws import create_table
-from testkit.fakes import FakeIdentity, FakePublisher
+from testkit.fakes import FakePublisher
 from testkit.http import call, claims
+
+
+class FakeIdentity:
+    """Stands in for Cognito: returns predictable user ids."""
+
+    def __init__(self):
+        self.created: list[str] = []
+
+    def create_user(self, email: str) -> str:
+        self.created.append(email)
+        return "user-" + email.split("@")[0]
 
 
 @pytest.fixture

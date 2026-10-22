@@ -1,0 +1,27 @@
+# Workspace root: one uv.lock and one .venv for the whole repository.
+# It is not deployed. Lambda code is built by `sam build` from requirements.txt
+# files, which scripts/export-requirements.sh generates from uv.lock.
+[project]
+name = "saas-backend"
+version = "0.1.0"
+requires-python = "==3.13.*"   # same as Runtime in template.yaml
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "boto3",                        # provided by the Lambda runtime, so never bundled
+    "moto[dynamodb,events,ssm]>=5.0",
+    "pytest>=8.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["layers/shared", "modules/*", "testkit"]
+
+[tool.pytest.ini_options]
+# Each module's tests live inside the module. importlib mode lets several
+# modules have test files with the same name (e.g. test_api.py).
+addopts = "--import-mode=importlib"
+testpaths = ["layers/shared/tests", "modules"]

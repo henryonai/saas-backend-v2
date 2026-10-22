@@ -9,7 +9,6 @@ from notifications.repository import NotificationRepository
 from notifications.service import NotificationService
 from notifications.worker import process_batch
 from testkit.aws import create_table
-from testkit.fakes import FakeEmailSender
 from testkit.http import FakeContext, call
 
 
@@ -25,6 +24,16 @@ def sqs_event(*messages: tuple[str, dict]) -> dict:
             "eventSourceARN": "arn:aws:sqs:ap-southeast-1:123456789012:notifications",
         })
     return {"Records": records}
+
+
+class FakeEmailSender:
+    """Records emails instead of sending them with SES."""
+
+    def __init__(self):
+        self.sent: list[tuple[str, str, str]] = []
+
+    def send(self, to: str, subject: str, body: str) -> None:
+        self.sent.append((to, subject, body))
 
 
 @pytest.fixture

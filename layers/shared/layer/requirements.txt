@@ -1,5 +1,28 @@
-# Installed into the shared Lambda layer, so every module function gets them.
-# (boto3 is already included in the Lambda runtime.)
-aws-lambda-powertools>=3.0,<4.0
-pydantic>=2.7,<3.0
-pydantic-settings>=2.3,<3.0
+# Generated from uv.lock by scripts/export-requirements.sh. Do not edit: change pyproject.toml instead.
+annotated-types==0.8.0
+    # via pydantic
+aws-lambda-powertools==3.36.0
+    # via saas-shared
+jmespath==1.1.0
+    # via aws-lambda-powertools
+pydantic==2.14.1
+    # via
+    #   pydantic-settings
+    #   saas-shared
+pydantic-core==2.50.1
+    # via pydantic
+pydantic-settings==2.16.1
+    # via saas-shared
+python-dotenv==1.2.4
+    # via pydantic-settings
+typing-extensions==4.16.0
+    # via
+    #   aws-lambda-powertools
+    #   pydantic
+    #   pydantic-core
+    #   pydantic-settings
+    #   typing-inspection
+typing-inspection==0.4.4
+    # via
+    #   pydantic
+    #   pydantic-settings

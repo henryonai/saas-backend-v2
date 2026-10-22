@@ -7,9 +7,15 @@ Four self-contained modules: **accounts, orders, notifications, billing**.
 
 ```
 saas-backend/
-├── layers/shared/
+├── pyproject.toml              # uv workspace root: dev tools + pytest config
+├── uv.lock                     # exact versions of every package (commit it)
+├── .python-version             # 3.13, same as the Lambda runtime
+├── scripts/
+│   └── export-requirements.sh  # uv.lock -> requirements.txt files for sam build
+├── layers/shared/              # package "saas-shared"
+│   ├── pyproject.toml          # powertools, pydantic, pydantic-settings
 │   ├── layer/                  # deployed as a Lambda layer
-│   │   ├── requirements.txt    # powertools, pydantic, pydantic-settings
+│   │   ├── requirements.txt    # generated, do not edit
 │   │   └── shared/             # plumbing only, no business logic
 │   │       ├── auth.py         # CurrentUser + get_current_user (Depends)
 │   │       ├── errors.py       # NotFound, Forbidden, PlanLimitReached ...
@@ -19,7 +25,9 @@ saas-backend/
 │   │       └── settings.py     # BaseAppSettings (pydantic-settings)
 │   └── tests/
 ├── modules/
-│   └── <module>/               # each folder is close to a ready-made repository
+│   └── <module>/               # package "saas-<module>", close to a ready-made repository
+│       ├── pyproject.toml      # depends on saas-shared; add module-only packages here
+│       ├── src/requirements.txt  # generated, do not edit
 │       ├── src/<module>/
 │       │   ├── settings.py     # this module's config (env vars)
 │       │   ├── models.py       # Pydantic models
@@ -30,7 +38,7 @@ saas-backend/
 │       │   ├── handler.py      # Lambda entry point for the HTTP API
 │       │   └── ...             # other entry points (worker, webhook, triggers)
 │       └── tests/
-├── testkit/                    # test helpers and fakes (not deployed)
+├── testkit/                    # package "saas-testkit": test helpers and fakes (not deployed)
 ├── template.yaml               # one section per module
 ├── samconfig.toml              # dev / prod settings
 └── .env.example
@@ -113,18 +121,36 @@ app.dependency_overrides[get_order_service] = lambda: OrderService(fake_repo, Fa
 - For local runs, copy `.env.example` to `.env` (never commit `.env`).
 - Dev and prod run the same code with different values (`samconfig.toml`).
 
+## Dependencies (uv)
+
+The repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/):
+the shared layer, each module and the testkit are packages, with one `uv.lock`
+for all of them.
+
+```bash
+uv sync --all-packages                  # install everything (plain `uv sync` skips the modules)
+uv add --package saas-billing stripe    # a package only billing needs
+uv add --package saas-shared httpx      # a package every module gets (through the layer)
+./scripts/export-requirements.sh        # after any change above, before sam build
+```
+
+`sam build` installs dependencies with pip from `requirements.txt`, so the
+script writes those files from `uv.lock`: exact versions for the layer, and for
+each module only what it adds on top of the layer. Commit them together with
+`uv.lock`. boto3 is not bundled because the Lambda runtime provides it.
+
 ## Tests (offline)
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-pytest                      # everything
-pytest modules/orders       # one module
+uv sync --all-packages
+uv run pytest                   # everything
+uv run pytest modules/orders    # one module
 ```
 
 ## Deploy
 
 ```bash
+./scripts/export-requirements.sh
 sam build
 sam deploy --config-env dev
 sam sync --config-env dev   # fast code sync while developing
@@ -137,18 +163,32 @@ in the `Authorization` header.
 
 ## Adding a module
 
-1. Copy `modules/orders` as a starting point and rename the package.
+1. Copy `modules/orders` as a starting point and rename the package (folder,
+   `src/<name>/`, and `name` / `module-name` in its `pyproject.toml`).
 2. Give it its own settings, table, container and tests.
-3. Add its path to `pytest.ini`.
+3. Run `uv sync --all-packages` and `./scripts/export-requirements.sh`
+   (the workspace picks up `modules/*` automatically).
 4. Add a section to `template.yaml` (table + functions + routes).
 5. Talk to other modules only through events or the token.
 
 ## Moving a module to its own repository
 
-Copy `modules/<name>/`, `layers/shared/` and `testkit/`, move its section of
-`template.yaml`, and give it its own HTTP API (or put several APIs behind a
-custom domain with path mappings). No code changes are needed, because it
-doesn't import other modules.
+Copy `modules/<name>/`, move its section of `template.yaml`, and give it its
+own HTTP API (or put several APIs behind a custom domain with path mappings).
+No code changes are needed, because it doesn't import other modules.
+
+Point its dependencies at a tagged version of this repository instead of the
+workspace, in the module's `pyproject.toml`:
+
+```toml
+[tool.uv.sources]
+saas-shared = { git = "https://github.com/<you>/saas-backend-v2", subdirectory = "layers/shared", tag = "shared-v0.1.0" }
+saas-testkit = { git = "https://github.com/<you>/saas-backend-v2", subdirectory = "testkit", tag = "shared-v0.1.0" }
+```
+
+Its template still needs the shared layer: either build one from `saas-shared`
+the same way this template does, or list `saas-shared` in its requirements so
+it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
 
 ## Before production
 
