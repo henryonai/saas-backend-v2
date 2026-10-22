@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 .aws-sam/
 .DS_Store
+docs/openapi/
