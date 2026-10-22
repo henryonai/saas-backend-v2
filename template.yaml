@@ -26,11 +26,16 @@ Parameters:
       (sign-up codes) through SES; empty = Cognito's built-in sender, limited to ~50 emails a day.
   AppUrl:
     Type: String
-    Default: http://localhost:5173
+    Default: ""
+    Description: >-
+      The app's address, used in checkout and invitation links. Empty = the app this stack
+      hosts (the WebUrl output); set it when you serve the app from your own domain.
   CorsOrigin:
     Type: String
-    Default: "*"
-    Description: Your frontend URL in production
+    Default: ""
+    Description: >-
+      The origin allowed to call the API from a browser. Empty = the app this stack hosts;
+      "*" lets any origin call it (dev, so a local dev server works too).
   AlertEmail:
     Type: String
     Default: ""
@@ -44,6 +49,8 @@ Conditions:
   IsProd: !Equals [!Ref Stage, prod]
   UseSes: !And [!Not [!Equals [!Ref EmailSender, ""]], !Not [!Equals [!Ref SesIdentity, ""]]]
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  HasAppUrl: !Not [!Equals [!Ref AppUrl, ""]]
+  HasCorsOrigin: !Not [!Equals [!Ref CorsOrigin, ""]]
 
 Globals:
   Function:
@@ -130,7 +137,7 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       CorsConfiguration:
-        AllowOrigins: [!Ref CorsOrigin]
+        AllowOrigins: [!If [HasCorsOrigin, !Ref CorsOrigin, !Sub "https://${WebDistribution.DomainName}"]]
         AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
         AllowHeaders: [content-type, authorization]
       DefaultRouteSettings:               # protects the functions (and your bill) from floods
@@ -510,7 +517,7 @@ Resources:
           POWERTOOLS_SERVICE_NAME: notifications
           NOTIFICATIONS_TABLE: !Ref NotificationsTable
           EMAIL_SENDER: !Ref EmailSender
-          APP_URL: !Ref AppUrl
+          APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref NotificationsTable }
         - Statement:
@@ -568,7 +575,7 @@ Resources:
         Variables:
           POWERTOOLS_SERVICE_NAME: billing
           BILLING_TABLE: !Ref BillingTable
-          APP_URL: !Ref AppUrl
+          APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
       Policies:
         - Statement:
             - Effect: Allow
@@ -589,7 +596,7 @@ Resources:
           POWERTOOLS_SERVICE_NAME: billing
           BILLING_TABLE: !Ref BillingTable
           PAYMENT_WEBHOOK_SECRET_PARAM: !Ref PaymentWebhookSecretParam
-          APP_URL: !Ref AppUrl
+          APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref BillingTable }
         - Statement:
@@ -605,6 +612,83 @@ Resources:
             Method: POST
             Auth: { Authorizer: NONE }   # provider calls this; signature is checked in code
 
+  # =====================================================================
+  # Web app (web/): a private S3 bucket behind CloudFront.
+  # web/scripts/deploy.sh builds the app and uploads it.
+  # =====================================================================
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:     # only CloudFront reads it (WebBucketPolicy)
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFrontReads
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}"
+          - Sid: HttpsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource: [!GetAtt WebBucket.Arn, !Sub "${WebBucket.Arn}/*"]
+            Condition: { Bool: { aws:SecureTransport: false } }
+
+  WebOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-web"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName} web app"
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_200        # North America, Europe, Asia; not the costliest regions
+        Origins:
+          - Id: web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOriginAccessControl.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          Compress: true
+          # AWS managed policies: CachingOptimized (follows the Cache-Control that deploy.sh
+          # sets on each file) and SecurityHeadersPolicy (HSTS, nosniff, frame and referrer rules).
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+        # The app routes in the browser: a path that is not a file (/orders/123) gets
+        # index.html. S3 answers 403 for a missing key, since CloudFront may not list the bucket.
+        CustomErrorResponses:
+          - { ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 10 }
+          - { ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 10 }
+
 Outputs:
   ApiUrl:
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
@@ -618,3 +702,10 @@ Outputs:
     Value: !Ref EventBus
   AlertsTopicArn:
     Value: !Ref AlertsTopic
+  WebUrl:
+    Description: The app, once web/scripts/deploy.sh has uploaded it
+    Value: !Sub "https://${WebDistribution.DomainName}"
+  WebBucketName:
+    Value: !Ref WebBucket
+  WebDistributionId:
+    Value: !Ref WebDistribution

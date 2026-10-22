@@ -18,8 +18,8 @@ confirm_changeset = false
 parameter_overrides = [
   "Stage=dev",
   "PaymentWebhookSecretParam=/saas/dev/payment-webhook-secret",
-  "AppUrl=http://localhost:5173",
-  "CorsOrigin=*",
+  'AppUrl=""',        # empty (quoted: SAM refuses a bare "AppUrl="): links open WebUrl
+  "CorsOrigin=*",     # any origin, so a local dev server can call the API too
 ]
 
 [dev.sync.parameters]
