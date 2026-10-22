@@ -15,22 +15,27 @@ Use in a route with dependency injection:
     def list_orders(user: Annotated[CurrentUser, Depends(get_current_user)]): ...
 """
 from dataclasses import dataclass
+from typing import Literal, get_args
 
 from aws_lambda_powertools.event_handler.request import Request
 
 from shared.errors import Forbidden, Unauthorized
 
-ROLE_OWNER = "owner"
-ROLE_ADMIN = "admin"
-ROLE_MEMBER = "member"
+Role = Literal["owner", "admin", "member"]
+ROLE_OWNER: Role = "owner"
+ROLE_ADMIN: Role = "admin"
+ROLE_MEMBER: Role = "member"
 
 
 @dataclass(frozen=True)
 class CurrentUser:
     user_id: str
     email: str
-    tenant_id: str | None  # None right after sign-up, before creating a workspace
-    role: str | None
+    # The workspace claims come together: all three are set, or all are None
+    # (right after sign-up, before creating or joining a workspace, or after
+    # leaving one). get_current_user enforces this.
+    tenant_id: str | None
+    role: Role | None
     plan: str | None
     email_verified: bool = False
 
@@ -54,12 +59,21 @@ def get_current_user(request: Request) -> CurrentUser:
     # tenant claims. Only ID tokens are customized by the login trigger.
     if claims.get("token_use") != "id":
         raise Unauthorized("Send the ID token in the Authorization header")
+
+    workspace = [claims.get(name) or None for name in ("tenant_id", "role", "plan")]
+    # The login trigger always sets all three or none; anything else is not a token we issued.
+    if any(workspace) and not all(workspace):
+        raise Unauthorized("Token has incomplete workspace claims; sign in again")
+    tenant_id, role, plan = workspace
+    if role is not None and role not in get_args(Role):
+        raise Unauthorized(f"Token has an unknown role {role!r}; sign in again")
+
     return CurrentUser(
         user_id=claims["sub"],
         email=claims.get("email", ""),
-        tenant_id=claims.get("tenant_id") or None,
-        role=claims.get("role") or None,
-        plan=claims.get("plan") or None,
+        tenant_id=tenant_id,
+        role=role,
+        plan=plan,
         # API Gateway passes claim values as strings.
         email_verified=str(claims.get("email_verified", "")).lower() == "true",
     )

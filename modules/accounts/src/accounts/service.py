@@ -9,25 +9,33 @@ to these actions immediately.
 Invitations are only joined when the invited person accepts one, signed in
 with that (verified) email. Nobody is added to a workspace without saying yes.
 """
+import time
+from dataclasses import dataclass
+
 from shared.auth import ROLE_ADMIN, ROLE_OWNER, CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import Conflict, Forbidden, NotFound, PlanLimitReached, TooManyRequests
-from shared.events import Event
 from shared.plans import get_limit
 
+from accounts import events
 from accounts.identity import IdentityProvider
 from accounts.models import Invitation, InviteRequest, Member, Tenant, TenantCreate
 from accounts.repository import AccountRepository
 
-# Limits how many workspaces can have open invitations for one email (anti-spam).
-MAX_PENDING_INVITATIONS_PER_EMAIL = 5
+@dataclass(frozen=True)
+class InvitationLimits:
+    """Invitation rules, read from settings by the container."""
+    days: int                # how long an invitation can be accepted
+    per_day: int             # invitations a workspace can send per day
+    pending_per_email: int   # open invitations one email can have
 
 
 class AccountService:
-    def __init__(self, accounts: AccountRepository, identity: IdentityProvider, invites_per_day: int):
+    def __init__(self, accounts: AccountRepository, identity: IdentityProvider,
+                 invitation_limits: InvitationLimits):
         self.accounts = accounts
         self.identity = identity
-        self.invites_per_day = invites_per_day
+        self.limits = invitation_limits
 
     # ---------- tenants ----------
 
@@ -91,20 +99,18 @@ class AccountService:
         pending = self._pending(self.accounts.list_invitations(tenant_id))
         if max_users is not None and len(members) + len(pending) >= max_users:
             raise PlanLimitReached(f"Your {tenant.plan} plan allows {max_users} users. Upgrade to invite more.")
-        if len(self._pending(self.accounts.invitations_for(email))) >= MAX_PENDING_INVITATIONS_PER_EMAIL:
+        if len(self._pending(self.accounts.invitations_for(email))) >= self.limits.pending_per_email:
             raise TooManyRequests(f"{email} has too many pending invitations")
 
         invitation = Invitation(tenant_id=tenant_id, tenant_name=tenant.name, email=email,
-                                role=data.role, invited_by=user.email)
-        # Fat event: notifications gets everything it needs to send the email.
-        event = Event("UserInvited", tenant_id, {"email": email, "role": data.role,
-                                                  "invited_by": user.email, "tenant_name": tenant.name})
+                                role=data.role, invited_by=user.email,
+                                expires_at=int(time.time()) + self.limits.days * 24 * 3600)
         try:
-            self.accounts.invite(invitation, event, self.invites_per_day)
+            self.accounts.invite(invitation, events.user_invited(invitation), self.limits.per_day)
         except ConditionFailed as e:
             if "invitation" in e.failed:
                 raise Conflict(f"{email} is already invited")
-            raise TooManyRequests(f"You can send {self.invites_per_day} invitations a day. Try again tomorrow.")
+            raise TooManyRequests(f"You can send {self.limits.per_day} invitations a day. Try again tomorrow.")
         return invitation
 
     def list_invitations(self, user: CurrentUser) -> list[Invitation]:

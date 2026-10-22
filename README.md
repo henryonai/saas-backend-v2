@@ -39,6 +39,7 @@ saas-backend/
 │       │   ├── models.py       # Pydantic models
 │       │   ├── repository.py   # the only code touching this module's table
 │       │   ├── service.py      # business rules; all dependencies passed in
+│       │   ├── events.py       # events this module publishes (its contract)
 │       │   ├── container.py    # builds the service once (composition root)
 │       │   ├── api.py          # HTTP routes, using Depends()
 │       │   ├── handler.py      # Lambda entry point for the HTTP API
@@ -61,7 +62,8 @@ saas-backend/
    the service. Workers, webhooks and triggers call the container directly.
 5. **Only `container.py` reads settings.** Everything else gets plain values.
 6. **`tenant_id` comes from the login token, never from the request.**
-7. **Events are saved with the change, never sent directly.** The repository
+7. **Each module defines the events it publishes in its `events.py`**, and
+   saves them with the change, never sends them directly. The repository
    writes the event into its table in the same transaction (the outbox), and
    the relay publishes it. No change without its event, no event without its change.
 8. **Rules that must survive concurrent requests are DynamoDB conditions**
@@ -124,8 +126,9 @@ carries the new plan. The frontend should refresh the token after checkout.
 ## Security model
 
 - **Tokens:** the frontend sends the Cognito **ID token** (it carries the
-  custom claims). Access tokens are rejected (401). ID tokens last **15
-  minutes**; refresh tokens 30 days.
+  custom claims). Access tokens are rejected (401), and so are tokens whose
+  workspace claims (`tenant_id`, `role`, `plan`) are not all present or all
+  absent. ID tokens last **15 minutes**; refresh tokens 30 days.
 - **Roles change immediately where it matters:** the accounts module checks
   the caller's role in its own table, not in the token, for everything it
   does. Removing or demoting someone also signs them out (refresh tokens
@@ -294,5 +297,6 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
   (map its event id and creation time; reject webhooks with old timestamps).
   If it offers it, fetch the current subscription from its API instead of
   trusting event order
-- Review the rate limits and the invitations-per-day limit (`INVITES_PER_DAY`)
+- Review the rate limits and the invitation rules (`INVITATION_DAYS`,
+  `INVITES_PER_DAY`, `MAX_PENDING_INVITATIONS_PER_EMAIL`)
 - Deploy prod to its own AWS account

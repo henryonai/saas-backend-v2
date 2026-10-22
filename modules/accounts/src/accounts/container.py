@@ -12,7 +12,7 @@ import boto3
 
 from accounts.identity import CognitoIdentity
 from accounts.repository import AccountRepository
-from accounts.service import AccountService
+from accounts.service import AccountService, InvitationLimits
 from accounts.settings import AccountsSettings
 
 
@@ -27,5 +27,9 @@ def get_account_service() -> AccountService:
     return AccountService(
         accounts=AccountRepository(boto3.resource("dynamodb").Table(settings.accounts_table)),
         identity=CognitoIdentity(boto3.client("cognito-idp"), settings.user_pool_id),
-        invites_per_day=settings.invites_per_day,
+        invitation_limits=InvitationLimits(
+            days=settings.invitation_days,
+            per_day=settings.invites_per_day,
+            pending_per_email=settings.max_pending_invitations_per_email,
+        ),
     )

@@ -1,9 +1,9 @@
 from shared.auth import CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached
-from shared.events import Event
 from shared.plans import get_limit
 
+from orders import events
 from orders.models import Order, OrderCreate, OrderPage, OrderStatus
 from orders.repository import OrderRepository
 
@@ -22,14 +22,12 @@ class OrderService:
     def create_order(self, user: CurrentUser, data: OrderCreate) -> Order:
         tenant_id = user.require_tenant()
         order = Order(**data.model_dump(), tenant_id=tenant_id, created_by=user.user_id)
-        event = Event("OrderCreated", tenant_id, {"order_id": order.order_id,
-                                                   "user_id": user.user_id, "item": order.item})
 
         # Plan comes from the login token: no call to the accounts module.
         # The limit is checked inside the same transaction that saves the order.
         max_orders = get_limit(user.plan, "max_orders")
         try:
-            self.orders.create(order, event, max_orders)
+            self.orders.create(order, events.order_created(order), max_orders)
         except ConditionFailed as e:
             if "limit" not in e.failed:
                 raise

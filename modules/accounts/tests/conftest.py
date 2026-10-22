@@ -10,12 +10,12 @@ from accounts.container import get_account_service
 from accounts.handler import app, handler
 from accounts.pre_token import add_claims
 from accounts.repository import AccountRepository
-from accounts.service import AccountService
+from accounts.service import AccountService, InvitationLimits
 from testkit.aws import create_table
 from testkit.http import call, claims
 from testkit.outbox import outbox_events
 
-INVITES_PER_DAY = 5
+LIMITS = InvitationLimits(days=7, per_day=5, pending_per_email=5)
 
 
 class FakeIdentity:
@@ -32,8 +32,7 @@ class FakeIdentity:
 def ctx():
     table = create_table("accounts-test", with_gsi1=True)
     identity = FakeIdentity()
-    service = AccountService(accounts=AccountRepository(table), identity=identity,
-                             invites_per_day=INVITES_PER_DAY)
+    service = AccountService(accounts=AccountRepository(table), identity=identity, invitation_limits=LIMITS)
     app.dependency_overrides[get_account_service] = lambda: service
 
     def login(user_id: str) -> dict:

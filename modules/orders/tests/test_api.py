@@ -73,6 +73,12 @@ def test_access_tokens_are_rejected(ctx, alice):
     assert ctx.api("GET", "/orders", access_token)[0] == 401
 
 
+def test_workspace_claims_come_all_together(ctx, alice):
+    no_role = {k: v for k, v in alice.items() if k != "role"}
+    assert ctx.api("GET", "/orders", no_role)[0] == 401
+    assert ctx.api("GET", "/orders", {**alice, "role": "superuser"})[0] == 401
+
+
 def test_plan_limit_comes_from_token(ctx, alice):
     # Tenant t1 is at the Free limit (100 orders).
     ctx.table.put_item(Item={"pk": "TENANT#t1", "sk": "COUNTER", "order_count": 100})

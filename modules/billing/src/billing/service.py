@@ -18,9 +18,9 @@ from aws_lambda_powertools import Logger
 from shared.auth import ROLE_OWNER, CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import InvalidRequest, ServiceBusy
-from shared.events import Event
 from shared.plans import DEFAULT_PLAN, get_plan, is_plan
 
+from billing import events
 from billing.models import BillingSummary, Subscription
 from billing.provider import BillingEvent, PaymentProvider
 from billing.repository import SubscriptionRepository
@@ -65,13 +65,11 @@ class BillingService:
             updates[f"{field}_event_id"] = event.event_id
         new = current.model_copy(update=updates)
 
-        owner = {"owner_id": current.owner_id, "owner_email": current.owner_email}
-        events = [Event("SubscriptionChanged", event.tenant_id,
-                        {"plan": new.plan, "status": new.status, "revision": new.revision, **owner})]
+        to_publish = [events.subscription_changed(new)]
         if applied.get("status") == "past_due":
-            events.append(Event("PaymentFailed", event.tenant_id, owner))
+            to_publish.append(events.payment_failed(new))
         try:
-            self.subscriptions.save_change(new, current.revision, events)
+            self.subscriptions.save_change(new, current.revision, to_publish)
         except ConditionFailed:
             # Another webhook for this tenant was saved in the meantime. Fail
             # with a 5xx so the provider retries; the retry sees the newer state.

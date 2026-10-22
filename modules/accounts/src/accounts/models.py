@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from shared.auth import Role
+
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -30,11 +32,8 @@ class Member(BaseModel):
     tenant_id: str
     user_id: str
     email: str
-    role: Literal["owner", "admin", "member"]
+    role: Role
     created_at: str = Field(default_factory=now_iso)
-
-
-INVITATION_DAYS = 7
 
 
 class Invitation(BaseModel):
@@ -45,7 +44,7 @@ class Invitation(BaseModel):
     role: Literal["admin", "member"]
     invited_by: str
     created_at: str = Field(default_factory=now_iso)
-    expires_at: int = Field(default_factory=lambda: int(time.time()) + INVITATION_DAYS * 24 * 3600)
+    expires_at: int  # epoch seconds; set by the service from its InvitationLimits
 
     def expired(self) -> bool:
         return self.expires_at <= time.time()

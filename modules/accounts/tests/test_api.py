@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 
@@ -57,6 +58,11 @@ def test_invite_creates_pending_invitation_and_fat_event(ctx, owner):
 
     _, pending = ctx.api("GET", "/users/invitations", owner)
     assert [i["email"] for i in pending] == ["bob@example.com"]
+
+
+def test_invitation_expires_after_the_configured_days(ctx, owner):
+    _, invitation = ctx.api("POST", "/users/invite", owner, {"email": "bob@example.com"})
+    assert abs(invitation["expires_at"] - (time.time() + 7 * 24 * 3600)) < 60
 
 
 def test_invited_person_chooses_to_accept(ctx, owner):
@@ -148,7 +154,7 @@ def test_seat_limit_is_enforced_when_accepting(ctx, owner, join):
     # An invitation that slipped in anyway (e.g. sent before a downgrade) can't overfill.
     ctx.service.accounts.invite(Invitation(tenant_id=owner["tenant_id"], tenant_name="Acme",
                                            email="dave@example.com", role="member",
-                                           invited_by="alice@example.com"),
+                                           invited_by="alice@example.com", expires_at=int(time.time()) + 3600),
                                 event=Event("UserInvited", owner["tenant_id"]),
                                 invites_per_day=100)
     status, body = ctx.api("POST", f"/invitations/{owner['tenant_id']}/accept", claims("dave"))
