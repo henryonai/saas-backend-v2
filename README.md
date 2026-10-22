@@ -13,6 +13,7 @@ saas-backend/
 ├── .github/workflows/ci.yml    # tests, lint, lockfile and requirements checks
 ├── scripts/
 │   ├── export-requirements.sh  # uv.lock -> requirements.txt files for sam build
+│   ├── smoke-test.py           # end-to-end check of a deployed stack (after sam deploy)
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
 │   └── replay-outbox.py        # publish saved events again after an outage
 ├── layers/shared/              # package "saas-shared"
@@ -252,6 +253,18 @@ Outputs: `ApiUrl`, `UserPoolId`, `UserPoolClientId` (for the React app),
 The tables and the user pool are kept when the stack is deleted (and can't be
 deleted at all in prod), so data survives mistakes. Delete them by hand if you
 really want a dev stack gone.
+
+After deploying, check the stack end to end:
+
+```bash
+uv run scripts/smoke-test.py --stack saas-dev
+```
+
+It creates a test user, then signs in, creates a workspace and an order,
+upgrades to pro through a signed webhook, and waits for the events to reach
+the accounts and notifications workers. It needs AWS credentials for the stack
+(to create the user and read the webhook secret), so use it on dev, not prod.
+The test user's login is saved in `.aws-sam/smoke-user.json`.
 
 ## Operations
 
