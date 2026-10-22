@@ -17,7 +17,13 @@ Parameters:
   EmailSender:
     Type: String
     Default: ""
-    Description: Verified SES sender address. Empty = emails are only logged.
+    Description: Sender address for app and Cognito emails. Empty = app emails are only logged.
+  SesIdentity:
+    Type: String
+    Default: ""
+    Description: >-
+      Domain or address verified in SES that covers EmailSender. Set it to send Cognito emails
+      (sign-up codes) through SES; empty = Cognito's built-in sender, limited to ~50 emails a day.
   AppUrl:
     Type: String
     Default: http://localhost:5173
@@ -25,6 +31,19 @@ Parameters:
     Type: String
     Default: "*"
     Description: Your frontend URL in production
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Email that receives alarms (failed events, dead-letter queues). Empty = no subscription.
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [7, 14, 30, 60, 90, 180, 365]
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+  UseSes: !And [!Not [!Equals [!Ref EmailSender, ""]], !Not [!Equals [!Ref SesIdentity, ""]]]
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
 
 Globals:
   Function:
@@ -33,14 +52,17 @@ Globals:
     MemorySize: 256
     Timeout: 10
     Layers: [!Ref SharedLayer]
+    Tracing: Active                       # X-Ray traces of every invocation, no SDK needed
+    LoggingConfig:
+      LogGroup: !Ref AppLogGroup          # one log group with a retention period
     Environment:
       Variables:
-        EVENT_BUS_NAME: default
         POWERTOOLS_LOG_LEVEL: INFO
+        POWERTOOLS_METRICS_NAMESPACE: !Sub saas-${Stage}
 
 Resources:
   # =====================================================================
-  # Shared: layer, login (Cognito), HTTP API
+  # Shared: layer, events, login (Cognito), HTTP API, logs and alarms
   # =====================================================================
   SharedLayer:
     Type: AWS::Serverless::LayerVersion
@@ -48,18 +70,47 @@ Resources:
       ContentUri: layers/shared/layer/
       CompatibleRuntimes: [python3.13]
       CompatibleArchitectures: [arm64]
+      RetentionPolicy: Delete             # don't keep every old version after each deploy
     Metadata:
       BuildMethod: python3.13
       BuildArchitecture: arm64
 
+  # Each stack has its own bus, so dev and prod never receive each other's events.
+  EventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub ${AWS::StackName}-events
+
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !Ref LogRetentionDays
+
   UserPool:
     Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain                # deleting the stack must not delete every login
+    UpdateReplacePolicy: Retain
     Properties:
       UserPoolName: !Sub saas-${Stage}
+      DeletionProtection: !If [IsProd, ACTIVE, INACTIVE]
       UsernameAttributes: [email]
       AutoVerifiedAttributes: [email]
+      # A changed email stays unused until the user verifies it, so the email
+      # claim in tokens is always an address the user proved they own.
+      UserAttributeUpdateSettings:
+        AttributesRequireVerificationBeforeUpdate: [email]
+      AccountRecoverySetting:
+        RecoveryMechanisms: [{ Name: verified_email, Priority: 1 }]
       Policies:
-        PasswordPolicy: { MinimumLength: 8 }
+        PasswordPolicy: { MinimumLength: 12 }
+      MfaConfiguration: "OPTIONAL"        # users can turn on an authenticator app
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      EmailConfiguration: !If
+        - UseSes
+        - EmailSendingAccount: DEVELOPER
+          From: !Ref EmailSender
+          SourceArn: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesIdentity}
+        - EmailSendingAccount: COGNITO_DEFAULT
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -67,6 +118,13 @@ Resources:
       UserPoolId: !Ref UserPool
       GenerateSecret: false
       ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED # don't reveal which emails have an account
+      EnableTokenRevocation: true
+      # Short-lived tokens: role or membership changes reach other modules within 15 minutes.
+      IdTokenValidity: 15
+      AccessTokenValidity: 15
+      RefreshTokenValidity: 30
+      TokenValidityUnits: { IdToken: minutes, AccessToken: minutes, RefreshToken: days }
 
   HttpApi:
     Type: AWS::Serverless::HttpApi
@@ -75,6 +133,15 @@ Resources:
         AllowOrigins: [!Ref CorsOrigin]
         AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
         AllowHeaders: [content-type, authorization]
+      DefaultRouteSettings:               # protects the functions (and your bill) from floods
+        ThrottlingRateLimit: 50
+        ThrottlingBurstLimit: 100
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp",
+          "route":"$context.routeKey","status":"$context.status","latencyMs":"$context.responseLatency",
+          "user":"$context.authorizer.claims.sub","error":"$context.integrationErrorMessage"}
       Auth:
         DefaultAuthorizer: CognitoJwt   # every route requires login unless stated
         Authorizers:
@@ -84,13 +151,107 @@ Resources:
               issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
               audience: [!Ref UserPoolClient]
 
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Publishes the events modules save in their tables (shared/outbox.py).
+  # Its code is in the shared layer; the inline file only points to it.
+  OutboxRelayFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: "from shared.outbox import handler  # noqa: F401 (code is in the shared layer)"
+      Handler: index.handler
+      Timeout: 60                       # room to publish a batch while EventBridge is slow
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: outbox-relay
+          EVENT_BUS_NAME: !Ref EventBus  # the only function that publishes
+      Policies:
+        - EventBridgePutEventsPolicy: { EventBusName: !Ref EventBus }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt OutboxDLQ.QueueName }
+      Events:
+        Accounts:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt AccountsTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 50
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: -1      # keep retrying until it works (records last 24 hours)
+            DestinationConfig: { OnFailure: { Type: SQS, Destination: !GetAtt OutboxDLQ.Arn } }
+            FilterCriteria:
+              Filters: [{ Pattern: '{"eventName": ["INSERT"], "dynamodb": {"Keys": {"pk": {"S": [{"prefix": "OUTBOX#"}]}}}}' }]
+        Orders:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt OrdersTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 50
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: -1      # keep retrying until it works (records last 24 hours)
+            DestinationConfig: { OnFailure: { Type: SQS, Destination: !GetAtt OutboxDLQ.Arn } }
+            FilterCriteria:
+              Filters: [{ Pattern: '{"eventName": ["INSERT"], "dynamodb": {"Keys": {"pk": {"S": [{"prefix": "OUTBOX#"}]}}}}' }]
+        Billing:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt BillingTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 50
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: -1      # keep retrying until it works (records last 24 hours)
+            DestinationConfig: { OnFailure: { Type: SQS, Destination: !GetAtt OutboxDLQ.Arn } }
+            FilterCriteria:
+              Filters: [{ Pattern: '{"eventName": ["INSERT"], "dynamodb": {"Keys": {"pk": {"S": [{"prefix": "OUTBOX#"}]}}}}' }]
+
+  # Where the relay reports batches it could not publish before their stream
+  # records expired (which records, not the events themselves). The events are
+  # still in the tables for 7 days: republish them with scripts/replay-outbox.py.
+  OutboxDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  OutboxDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Events could not be published (see OutboxDLQ, then run scripts/replay-outbox.py)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt OutboxDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertsTopic]
+
   # =====================================================================
   # Module: accounts  (/tenants, /users, login trigger, plan listener)
   # =====================================================================
   AccountsTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
         - { AttributeName: sk, AttributeType: S }
@@ -105,6 +266,8 @@ Resources:
             - { AttributeName: gsi1pk, KeyType: HASH }
             - { AttributeName: gsi1sk, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
+      StreamSpecification: { StreamViewType: NEW_IMAGE }       # feeds the outbox relay
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
   AccountsApiFunction:
@@ -119,16 +282,17 @@ Resources:
           USER_POOL_ID: !Ref UserPool
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }
-        - EventBridgePutEventsPolicy: { EventBusName: default }
         - Statement:
             - Effect: Allow
-              Action: [cognito-idp:AdminCreateUser]
+              Action: [cognito-idp:AdminUserGlobalSignOut]   # on role change / removal
               Resource: !GetAtt UserPool.Arn
       Events:
         Tenants:     { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /tenants, Method: ANY } }
         TenantsAny:  { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: ANY } }
         Users:       { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /users, Method: ANY } }
         UsersAny:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: ANY } }
+        Invitations:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /invitations, Method: ANY } }
+        InvitationsAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/invitations/{proxy+}", Method: ANY } }
 
   AccountsPreTokenFunction:
     Type: AWS::Serverless::Function
@@ -141,45 +305,103 @@ Resources:
           POWERTOOLS_SERVICE_NAME: accounts
           ACCOUNTS_TABLE: !Ref AccountsTable
       Policies:
-        - DynamoDBReadPolicy: { TableName: !Ref AccountsTable }
+        - DynamoDBReadPolicy: { TableName: !Ref AccountsTable }   # only reads the claims
       Events:
         PreToken:
           Type: Cognito
           Properties: { UserPool: !Ref UserPool, Trigger: PreTokenGeneration }
+
+  AccountsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600   # keep failed messages 14 days
+
+  AccountsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 180            # 6x the listener timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AccountsDLQ.Arn
+        maxReceiveCount: 5
+
+  AccountsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source: [saas.app]
+        detail-type: [SubscriptionChanged]
+      Targets:
+        - { Id: AccountsQueue, Arn: !GetAtt AccountsQueue.Arn }
+
+  AccountsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref AccountsQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt AccountsQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt AccountsRule.Arn }
 
   AccountsSubscriptionsFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: modules/accounts/src/
       Handler: accounts.subscriptions.handler
+      Timeout: 30
       Environment:
         Variables:
           POWERTOOLS_SERVICE_NAME: accounts
           ACCOUNTS_TABLE: !Ref AccountsTable
       Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:UpdateItem]   # only updates the plan copy
+              Resource: !GetAtt AccountsTable.Arn
       Events:
-        SubscriptionChanged:
-          Type: EventBridgeRule
+        Queue:
+          Type: SQS
           Properties:
-            Pattern:
-              source: [saas.app]
-              detail-type: [SubscriptionChanged]
-            RetryPolicy: { MaximumRetryAttempts: 10 }
+            Queue: !GetAtt AccountsQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  AccountsDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Plan changes keep failing (messages in the accounts dead-letter queue)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt AccountsDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertsTopic]
 
   # =====================================================================
   # Module: orders  (/orders)
   # =====================================================================
   OrdersTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
         - { AttributeName: sk, AttributeType: S }
       KeySchema:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
+      StreamSpecification: { StreamViewType: NEW_IMAGE }       # feeds the outbox relay
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
   OrdersApiFunction:
@@ -193,7 +415,6 @@ Resources:
           ORDERS_TABLE: !Ref OrdersTable
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref OrdersTable }
-        - EventBridgePutEventsPolicy: { EventBusName: default }
       Events:
         Orders:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /orders, Method: ANY } }
         OrdersAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/orders/{proxy+}", Method: ANY } }
@@ -203,14 +424,18 @@ Resources:
   # =====================================================================
   NotificationsTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
         - { AttributeName: sk, AttributeType: S }
       KeySchema:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # processed-event records
 
   NotificationsApiFunction:
     Type: AWS::Serverless::Function
@@ -222,7 +447,10 @@ Resources:
           POWERTOOLS_SERVICE_NAME: notifications
           NOTIFICATIONS_TABLE: !Ref NotificationsTable
       Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref NotificationsTable }
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:Query, dynamodb:UpdateItem]   # list and mark as read
+              Resource: !GetAtt NotificationsTable.Arn
       Events:
         List:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /notifications, Method: ANY } }
         ListAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/notifications/{proxy+}", Method: ANY } }
@@ -243,7 +471,7 @@ Resources:
   NotificationsRule:
     Type: AWS::Events::Rule
     Properties:
-      EventBusName: default
+      EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
         detail-type: [OrderCreated, UserInvited, SubscriptionChanged, PaymentFailed]
@@ -274,10 +502,13 @@ Resources:
           POWERTOOLS_SERVICE_NAME: notifications
           NOTIFICATIONS_TABLE: !Ref NotificationsTable
           EMAIL_SENDER: !Ref EmailSender
+          APP_URL: !Ref AppUrl
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref NotificationsTable }
         - Statement:
-            - { Effect: Allow, Action: [ses:SendEmail], Resource: "*" }
+            - Effect: Allow
+              Action: [ses:SendEmail]
+              Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*   # this account's senders only
       Events:
         Queue:
           Type: SQS
@@ -298,20 +529,26 @@ Resources:
       EvaluationPeriods: 1
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertsTopic]
 
   # =====================================================================
   # Module: billing  (/billing, payment webhook)
   # =====================================================================
   BillingTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
         - { AttributeName: sk, AttributeType: S }
       KeySchema:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
+      StreamSpecification: { StreamViewType: NEW_IMAGE }       # feeds the outbox relay
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
   BillingApiFunction:
@@ -323,15 +560,12 @@ Resources:
         Variables:
           POWERTOOLS_SERVICE_NAME: billing
           BILLING_TABLE: !Ref BillingTable
-          PAYMENT_WEBHOOK_SECRET_PARAM: !Ref PaymentWebhookSecretParam
           APP_URL: !Ref AppUrl
       Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref BillingTable }
-        - EventBridgePutEventsPolicy: { EventBusName: default }
         - Statement:
             - Effect: Allow
-              Action: [ssm:GetParameter]
-              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${PaymentWebhookSecretParam}"
+              Action: [dynamodb:GetItem, dynamodb:UpdateItem]   # summary and checkout; no webhook secret
+              Resource: !GetAtt BillingTable.Arn
       Events:
         Billing:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /billing, Method: ANY } }
         BillingAny: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/billing/{proxy+}", Method: ANY } }
@@ -350,7 +584,6 @@ Resources:
           APP_URL: !Ref AppUrl
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref BillingTable }
-        - EventBridgePutEventsPolicy: { EventBusName: default }
         - Statement:
             - Effect: Allow
               Action: [ssm:GetParameter]
@@ -373,3 +606,7 @@ Outputs:
     Value: !Ref UserPoolClient
   WebhookUrl:
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/webhooks/payments"
+  EventBusName:
+    Value: !Ref EventBus
+  AlertsTopicArn:
+    Value: !Ref AlertsTopic

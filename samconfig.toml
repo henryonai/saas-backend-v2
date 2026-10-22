@@ -37,4 +37,7 @@ parameter_overrides = [
   "AppUrl=https://app.example.com",
   "CorsOrigin=https://app.example.com",
   "EmailSender=no-reply@example.com",
+  "SesIdentity=example.com",          # verified in SES; Cognito emails go through it too
+  "AlertEmail=ops@example.com",       # confirm the subscription email after the first deploy
+  "LogRetentionDays=90",
 ]
