@@ -5,9 +5,13 @@ Description: >-
   per environment, in the account that environment deploys to (see "CI/CD" in the README).
 
 Parameters:
-  GitHubRepo:
+  GitHubSubjectPrefix:
     Type: String
-    Description: The repository allowed to deploy (owner/name)
+    Description: >-
+      The repository's OIDC subject prefix, as GitHub reports it:
+      gh api repos/<owner>/<repo>/actions/oidc/customization/sub --jq .sub_claim_prefix
+      (e.g. repo:owner@123/name@456: with GitHub's immutable subjects, a renamed or
+      recreated repository can't take the role over)
   Environment:
     Type: String
     Description: The GitHub environment that uses this role (a config-env in samconfig.toml)
@@ -35,7 +39,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "${StackName}-github-deploy"
-      Description: !Sub "GitHub Actions deploys ${StackName} from ${GitHubRepo} (environment ${Environment})"
+      Description: !Sub "GitHub Actions deploys ${StackName} (environment ${Environment})"
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -51,7 +55,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:environment:${Environment}"
+                token.actions.githubusercontent.com:sub: !Sub "${GitHubSubjectPrefix}:environment:${Environment}"
       # Everything but IAM and Organizations: what sam deploy and web/scripts/deploy.sh touch.
       ManagedPolicyArns: [arn:aws:iam::aws:policy/PowerUserAccess]
       Policies:
