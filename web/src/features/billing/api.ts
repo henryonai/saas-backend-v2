@@ -1,15 +1,15 @@
-import { useMutation, useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { api } from '@/shared/api/client';
-import { qk } from '@/shared/api/keys';
-import type { BillingSummary, CheckoutResponse, PaidPlan, Tenant } from '@/shared/api/types';
+import type { BillingSummary, CheckoutResponse, PaidPlan } from '@/shared/api/types';
+import { getTenant } from '../workspace/api';
 
-/** The workspace's subscription; `refetchInterval` while waiting for the payment provider's webhook. */
-export function useBilling(refetchInterval?: UseQueryOptions<BillingSummary>['refetchInterval']) {
-  return useQuery({
-    queryKey: qk.billing(),
-    queryFn: ({ signal }) => api<BillingSummary>('/billing', { signal }),
-    refetchInterval,
-  });
+/** The workspace's subscription, with its plan's price and limits. */
+export function getBilling(signal?: AbortSignal) {
+  return api<BillingSummary>('/billing', { signal });
+}
+
+/** Owner only. Returns the provider's checkout page, where the browser goes next. */
+export function startCheckout(plan: PaidPlan) {
+  return api<CheckoutResponse>('/billing/checkout', { method: 'POST', body: { plan } });
 }
 
 /**
@@ -20,15 +20,8 @@ export function useBilling(refetchInterval?: UseQueryOptions<BillingSummary>['re
  */
 export async function waitForWorkspacePlan(plan: string, { attempts = 30, intervalMs = 2000 } = {}): Promise<boolean> {
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    if ((await api<Tenant>('/tenants/me')).plan === plan) return true;
+    if ((await getTenant()).plan === plan) return true;
     if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   return false;
-}
-
-/** Owner only. Returns the provider's checkout page, where the browser goes next. */
-export function useCheckout() {
-  return useMutation({
-    mutationFn: (plan: PaidPlan) => api<CheckoutResponse>('/billing/checkout', { method: 'POST', body: { plan } }),
-  });
 }

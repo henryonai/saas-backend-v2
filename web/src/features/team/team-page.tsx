@@ -6,11 +6,11 @@ import { Badge } from '@/shared/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { formatNumber } from '@/shared/lib/format';
 import { getPlan } from '@/shared/lib/plans';
-import { useTenant } from '../workspace/api';
-import { useSentInvitations } from './api';
-import { InvitationsTab } from './invitations-tab';
-import { InviteDialog } from './invite-dialog';
-import { MembersTab } from './members-tab';
+import { useTenant } from '../workspace/hooks';
+import { useSentInvitations } from './hooks';
+import { InvitationsTab } from './components/invitations-tab';
+import { InviteDialog } from './components/invite-dialog';
+import { MembersTab } from './components/members-tab';
 
 export function TeamPage() {
   const { t } = useTranslation();

@@ -14,8 +14,8 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/shared/c
 import { Spinner } from '@/shared/components/ui/spinner';
 import { toastError } from '@/shared/lib/errors';
 import { formatDateTime, formatMoney } from '@/shared/lib/format';
-import { useChangeOrderStatus, useOrder } from './api';
-import { OrderStatusBadge } from './order-status-badge';
+import { useChangeOrderStatus, useOrder } from './hooks';
+import { OrderStatusBadge } from './components/order-status-badge';
 import { nextStatuses } from './status';
 
 export function OrderDetailPage({ orderId }: { orderId: string }) {

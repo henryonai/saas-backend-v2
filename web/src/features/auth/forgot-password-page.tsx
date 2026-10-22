@@ -5,9 +5,9 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Field, FieldDescription, FieldLabel } from '@/shared/components/ui/field';
 import { Input } from '@/shared/components/ui/input';
-import { AuthForm } from './auth-form';
+import { AuthForm } from './components/auth-form';
 import { authErrorMessage } from './auth-errors';
-import { CodeInput } from './code-input';
+import { CodeInput } from './components/code-input';
 import { MIN_PASSWORD_LENGTH } from './sign-up-page';
 
 export function ForgotPasswordPage({ email: initialEmail }: { email?: string }) {

@@ -14,7 +14,7 @@ import { Input } from '@/shared/components/ui/input';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { errorMessage, toastError } from '@/shared/lib/errors';
 import { formatDate } from '@/shared/lib/format';
-import { useAcceptInvitation, useCreateTenant, useDeclineInvitation, useReceivedInvitations } from './api';
+import { useAcceptInvitation, useCreateTenant, useDeclineInvitation, useReceivedInvitations } from './hooks';
 
 /**
  * A new token, now that the user belongs to a workspace: the login trigger adds

@@ -12,11 +12,11 @@ import { Progress } from '@/shared/components/ui/progress';
 import { Skeleton } from '@/shared/components/ui/skeleton';
 import { formatNumber } from '@/shared/lib/format';
 import { getPlan } from '@/shared/lib/plans';
-import { useMarkRead, useNotifications } from '../notifications/api';
-import { NotificationItem } from '../notifications/notification-item';
-import { useRecentOrders } from '../orders/api';
-import { OrdersTable } from '../orders/orders-table';
-import { useTenant } from '../workspace/api';
+import { useMarkRead, useNotifications } from '../notifications/hooks';
+import { NotificationItem } from '../notifications/components/notification-item';
+import { useRecentOrders } from '../orders/hooks';
+import { OrdersTable } from '../orders/components/orders-table';
+import { useTenant } from '../workspace/hooks';
 
 export function OverviewPage() {
   const { t } = useTranslation();

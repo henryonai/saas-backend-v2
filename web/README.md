@@ -38,7 +38,7 @@ src/
     _onboarding/        welcome: create a workspace or accept an invitation (signed in, no workspace)
     _app/               the app (signed in, with a workspace): overview, orders, team, billing, ...
     dev-checkout.tsx    DevPaymentProvider's checkout page
-  features/<area>/      pages, components and the API hooks of one area
+  features/<area>/      one area of the app (see below)
   shared/
     api/                api() client, query keys, types; generated/ comes from the backend
     auth/               Amplify setup, the session (claims of the ID token), route guards
@@ -49,6 +49,23 @@ src/
 ```
 
 `shared/` never imports from `features/`.
+
+Every feature has the same shape, with only the parts it needs (no empty
+files or folders):
+
+```
+features/orders/
+  api.ts                  plain calls, one function per endpoint, no React (like a module's api.py)
+  hooks.ts                TanStack Query hooks: query keys, cache updates, polling
+  status.ts               pure logic, next to api.ts
+  orders-page.tsx         pages at the root: routes/ imports them
+  order-detail-page.tsx
+  components/             everything else that renders
+  *.test.ts(x)            next to what they test
+```
+
+Components and pages use the hooks, not `api.ts`; plain code that needs the
+API outside React (the billing page's wait for the new plan) calls `api.ts`.
 
 ## How it uses the backend
 

@@ -15,7 +15,7 @@ import { Input } from '@/shared/components/ui/input';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { authErrorMessage } from '../auth/auth-errors';
 import { MIN_PASSWORD_LENGTH } from '../auth/sign-up-page';
-import { useTenant } from '../workspace/api';
+import { useTenant } from '../workspace/hooks';
 
 export function AccountPage() {
   const { t } = useTranslation();

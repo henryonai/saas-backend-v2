@@ -6,9 +6,9 @@ import { Button } from '@/shared/components/ui/button';
 import { Card } from '@/shared/components/ui/card';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/shared/components/ui/empty';
 import { Spinner } from '@/shared/components/ui/spinner';
-import { useOrderList } from './api';
-import { NewOrderDialog } from './new-order-dialog';
-import { OrdersTable } from './orders-table';
+import { useOrderList } from './hooks';
+import { NewOrderDialog } from './components/new-order-dialog';
+import { OrdersTable } from './components/orders-table';
 
 export function OrdersPage() {
   const { t } = useTranslation();

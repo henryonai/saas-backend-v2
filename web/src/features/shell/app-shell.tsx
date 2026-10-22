@@ -22,10 +22,10 @@ import {
 } from '@/shared/components/ui/sidebar';
 import { Skeleton } from '@/shared/components/ui/skeleton';
 import { getPlan } from '@/shared/lib/plans';
-import { useNotifications } from '../notifications/api';
-import { NotificationBell } from '../notifications/notification-bell';
-import { useTenant } from '../workspace/api';
-import { UserMenu } from './user-menu';
+import { useNotifications } from '../notifications/hooks';
+import { NotificationBell } from '../notifications/components/notification-bell';
+import { useTenant } from '../workspace/hooks';
+import { UserMenu } from './components/user-menu';
 
 const NAV = [
   { to: '/', label: 'nav.overview', icon: LayoutDashboardIcon, exact: true },

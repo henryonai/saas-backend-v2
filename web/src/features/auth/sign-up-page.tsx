@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Field, FieldDescription, FieldLabel } from '@/shared/components/ui/field';
 import { Input } from '@/shared/components/ui/input';
-import { AuthForm } from './auth-form';
+import { AuthForm } from './components/auth-form';
 import { authErrorMessage } from './auth-errors';
 
 /** The user pool's PasswordPolicy in template.yaml. */

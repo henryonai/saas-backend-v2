@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/components/ui/table';
 import { toastError } from '@/shared/lib/errors';
 import { formatDate } from '@/shared/lib/format';
-import { useChangeRole, useMembers, useRemoveMember } from './api';
+import { useChangeRole, useMembers, useRemoveMember } from '../hooks';
 import { RoleBadge } from './role-badge';
 
 const ORDER: Record<Role, number> = { owner: 0, admin: 1, member: 2 };

@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { Notification } from '@/shared/api/types';
 import { Button } from '@/shared/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover';
-import { useMarkRead, useNotifications } from './api';
+import { useMarkRead, useNotifications } from '../hooks';
 import { NotificationItem } from './notification-item';
 
 const SHOWN = 6;

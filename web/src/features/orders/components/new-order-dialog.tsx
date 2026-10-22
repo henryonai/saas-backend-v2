@@ -19,8 +19,8 @@ import { Input } from '@/shared/components/ui/input';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { errorMessage, isPlanLimit } from '@/shared/lib/errors';
 import { dollarsToCents, formatMoney } from '@/shared/lib/format';
-import { useCreateOrder } from './api';
-import { MAX_ITEM_LENGTH, MAX_QUANTITY } from './status';
+import { useCreateOrder } from '../hooks';
+import { MAX_ITEM_LENGTH, MAX_QUANTITY } from '../status';
 
 type Errors = Partial<Record<'item' | 'quantity' | 'price', string>>;
 

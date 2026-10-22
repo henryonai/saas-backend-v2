@@ -12,7 +12,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/components/ui/table';
 import { toastError } from '@/shared/lib/errors';
 import { formatDate } from '@/shared/lib/format';
-import { useCancelInvitation, useSentInvitations } from './api';
+import { useCancelInvitation, useSentInvitations } from '../hooks';
 import { RoleBadge } from './role-badge';
 
 export function InvitationsTab() {

@@ -17,7 +17,8 @@ import { toastError } from '@/shared/lib/errors';
 import { formatNumber } from '@/shared/lib/format';
 import { getPlan, type Plan, PLANS } from '@/shared/lib/plans';
 import { cn } from '@/shared/lib/utils';
-import { useBilling, useCheckout, waitForWorkspacePlan } from './api';
+import { waitForWorkspacePlan } from './api';
+import { useBilling, useCheckout } from './hooks';
 import { clearPendingCheckout, type PendingCheckout, readPendingCheckout, savePendingCheckout } from './pending-checkout';
 
 const POLL_MS = 3000;

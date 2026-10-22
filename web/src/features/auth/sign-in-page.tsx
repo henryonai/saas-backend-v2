@@ -8,9 +8,9 @@ import { Field, FieldLabel } from '@/shared/components/ui/field';
 import { Input } from '@/shared/components/ui/input';
 import { loadSession, useSession } from '@/shared/auth/session';
 import { safeRedirect } from '@/shared/lib/safe-redirect';
-import { AuthForm } from './auth-form';
+import { AuthForm } from './components/auth-form';
 import { authErrorMessage } from './auth-errors';
-import { CodeInput } from './code-input';
+import { CodeInput } from './components/code-input';
 
 export function SignInPage({ redirect, email: initialEmail }: { redirect?: string; email?: string }) {
   const { t } = useTranslation();

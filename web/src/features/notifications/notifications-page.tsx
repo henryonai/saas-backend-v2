@@ -8,8 +8,8 @@ import { Card, CardContent } from '@/shared/components/ui/card';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/shared/components/ui/empty';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { toastError } from '@/shared/lib/errors';
-import { useMarkAllRead, useMarkRead, useNotifications } from './api';
-import { NotificationItem } from './notification-item';
+import { useMarkAllRead, useMarkRead, useNotifications } from './hooks';
+import { NotificationItem } from './components/notification-item';
 
 export function NotificationsPage() {
   const { t } = useTranslation();

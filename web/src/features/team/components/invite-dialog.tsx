@@ -22,7 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Spinner } from '@/shared/components/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip';
 import { errorMessage, isPlanLimit } from '@/shared/lib/errors';
-import { useInvite } from './api';
+import { useInvite } from '../hooks';
 
 // The pattern InviteRequest in modules/accounts/src/accounts/schemas.py accepts.
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
