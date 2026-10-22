@@ -23,9 +23,26 @@ pnpm install
 pnpm dev                               # http://localhost:5173
 ```
 
-Port 5173 is the dev stack's `AppUrl`: invitation emails and the dev checkout
-link here. The dev stack allows any origin (`CorsOrigin=*`), so the app calls
-the API directly; set `CorsOrigin` to the app's URL for prod.
+The dev stack allows any origin (`CorsOrigin=*`), so a local dev server can
+call the API directly.
+
+## Deploying
+
+Each stack hosts the app: a private S3 bucket behind CloudFront (the `Web*`
+resources in `template.yaml`), at the stack's `WebUrl` output.
+
+```bash
+./scripts/deploy.sh saas-dev   # build with the stack's settings, upload, clear the CDN cache
+```
+
+Deploy the backend first (`sam deploy`), since it creates the bucket. The build
+uses the stack's outputs, not `.env.local`. Files with a hash in their name
+are cached for a year; `index.html` is checked on every visit, so a new
+deploy shows at once.
+
+`AppUrl` (checkout and invitation links) and `CorsOrigin` default to `WebUrl`.
+To serve the app from your own domain, add the domain and its certificate to
+`WebDistribution`, then set both parameters to it.
 
 ## Layout
 
@@ -132,6 +149,5 @@ files have the same keys and `{{variables}}`.
 ## Not built yet
 
 - The assistant's chat (it streams from AgentCore, not the HTTP API)
-- Hosting (S3 and CloudFront in `template.yaml`)
 - Changing the email address, turning on MFA (sign-in already handles an
   authenticator code)

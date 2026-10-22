@@ -250,7 +250,9 @@ sam deploy --config-env prod
 ```
 
 Outputs: `ApiUrl`, `UserPoolId`, `UserPoolClientId` (for the React app),
-`WebhookUrl` (for the payment provider), `EventBusName` and `AlertsTopicArn`.
+`WebhookUrl` (for the payment provider), `EventBusName`, `AlertsTopicArn`, and
+`WebUrl`, `WebBucketName`, `WebDistributionId` (where `web/scripts/deploy.sh`
+publishes the app).
 
 The tables and the user pool are kept when the stack is deleted (and can't be
 deleted at all in prod), so data survives mistakes. Delete them by hand if you
@@ -278,7 +280,8 @@ token, so it needs a deployed stack:
 cd web
 pnpm install
 ./scripts/env-from-stack.sh saas-dev   # ApiUrl, UserPoolId, UserPoolClientId -> .env.local
-pnpm dev                               # http://localhost:5173 (the dev AppUrl)
+pnpm dev                               # http://localhost:5173
+./scripts/deploy.sh saas-dev           # publish it at the stack's WebUrl (S3 + CloudFront)
 ```
 
 Its API types and plan catalog are generated from this code (`pnpm gen:api`);
@@ -344,7 +347,9 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
 ## Before production
 
 - Set `CorsOrigin`, `AppUrl`, `EmailSender`, `SesIdentity` and `AlertEmail`
-  for prod in `samconfig.toml`
+  for prod in `samconfig.toml`. `AppUrl` and `CorsOrigin` can stay empty to
+  use the app's CloudFront address (`WebUrl`); for your own domain, add it to
+  `WebDistribution` and set both to it
 - Verify your SES domain and request SES production access
 - Replace `DevPaymentProvider` in `billing/container.py` with a real provider
   (map its event id and creation time; reject webhooks with old timestamps).
