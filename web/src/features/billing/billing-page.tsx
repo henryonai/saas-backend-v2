@@ -17,7 +17,7 @@ import { toastError } from '@/shared/lib/errors';
 import { formatNumber } from '@/shared/lib/format';
 import { getPlan, type Plan, PLANS } from '@/shared/lib/plans';
 import { cn } from '@/shared/lib/utils';
-import { useBilling, useCheckout } from './api';
+import { useBilling, useCheckout, waitForWorkspacePlan } from './api';
 import { clearPendingCheckout, type PendingCheckout, readPendingCheckout, savePendingCheckout } from './pending-checkout';
 
 const POLL_MS = 3000;
@@ -51,15 +51,19 @@ export function BillingPage() {
     return () => clearTimeout(timer);
   }, [polling, pollUntil]);
 
-  // The plan changed. New tokens carry it to every module (orders reads the plan from the token).
+  // The plan changed. New tokens carry it to every module (orders reads the plan from the
+  // token), once the accounts module's copy has it too: the token is made from that copy.
   const announced = useRef(false);
   useEffect(() => {
-    if (!confirmed || announced.current) return;
+    if (!confirmed || !pending || announced.current) return;
     announced.current = true;
     clearPendingCheckout();
     toast.success(t('billing.upgraded', { plan: billing.data?.plan_name }));
-    void refreshSession().then(() => queryClient.invalidateQueries({ queryKey: qk.tenant() }));
-  }, [confirmed, billing.data, queryClient, t]);
+    void waitForWorkspacePlan(pending.plan)
+      .catch(() => false) // refresh anyway; the next automatic refresh catches up
+      .then(() => refreshSession())
+      .then(() => queryClient.invalidateQueries({ queryKey: qk.tenant() }));
+  }, [confirmed, pending, billing.data, queryClient, t]);
 
   function checkAgain() {
     setPollUntil(Date.now() + POLL_FOR_MS);
