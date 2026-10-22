@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:            # deploy.yml runs these checks before deploying
 
 jobs:
   check:
@@ -19,8 +20,8 @@ jobs:
         run: ./scripts/export-requirements.sh --check
       - name: Lint Python
         run: uvx ruff check .
-      - name: Lint template
-        run: uvx cfn-lint template.yaml
+      - name: Lint templates
+        run: uvx cfn-lint template.yaml .github/deploy-role.yaml
 
   web:
     runs-on: ubuntu-latest
