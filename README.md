@@ -36,7 +36,8 @@ saas-backend/
 │       ├── src/requirements.txt  # generated, do not edit
 │       ├── src/<module>/
 │       │   ├── settings.py     # this module's config (env vars)
-│       │   ├── models.py       # Pydantic models
+│       │   ├── models.py       # what the module stores and works with
+│       │   ├── schemas.py      # what the HTTP API accepts and returns
 │       │   ├── repository.py   # the only code touching this module's table
 │       │   ├── service.py      # business rules; all dependencies passed in
 │       │   ├── events.py       # events this module publishes (its contract)
@@ -62,6 +63,7 @@ saas-backend/
    the service. Workers, webhooks and triggers call the container directly.
 5. **Only `container.py` reads settings.** Everything else gets plain values.
 6. **`tenant_id` comes from the login token, never from the request.**
+   Request schemas never contain it.
 7. **Each module defines the events it publishes in its `events.py`**, and
    saves them with the change, never sends them directly. The repository
    writes the event into its table in the same transaction (the outbox), and
@@ -71,6 +73,23 @@ saas-backend/
    "read, check, then write" code.
 9. **Listeners expect repeats and late arrivals.** They skip events they have
    seen (`event_id`) and ignore older versions (`revision`).
+
+## Models, schemas and events
+
+Each module keeps three kinds of Pydantic classes apart, so one can change
+without breaking the others:
+
+| File | What | Used by |
+|---|---|---|
+| `models.py` | what the module **stores** and works with (`Tenant`, `Order`) | repository, service, events |
+| `schemas.py` | what crosses **HTTP**: request bodies and responses (`OrderCreate`, `TenantOut`) | api.py; service inputs |
+| `events.py` | what crosses **to other modules** | service |
+
+The repository never imports `schemas.py`. The service takes request schemas
+and returns models; `api.py` turns models into response schemas. When a
+response is identical to a model, the route returns the model; add an `...Out`
+schema as soon as they differ (e.g. `TenantOut` hides internal bookkeeping
+fields such as `subscription_revision`).
 
 ## How modules talk to each other
 
@@ -259,7 +278,7 @@ really want a dev stack gone.
 
 1. Copy `modules/orders` as a starting point and rename the package (folder,
    `src/<name>/`, and `name` / `module-name` in its `pyproject.toml`).
-2. Give it its own settings, table, container and tests.
+2. Give it its own settings, models, schemas, table, container and tests.
 3. Run `uv sync --all-packages` and `./scripts/export-requirements.sh`
    (the workspace picks up `modules/*` automatically).
 4. Add a section to `template.yaml` (table + functions + routes).

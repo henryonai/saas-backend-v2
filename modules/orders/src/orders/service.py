@@ -4,8 +4,9 @@ from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached
 from shared.plans import get_limit
 
 from orders import events
-from orders.models import Order, OrderCreate, OrderPage, OrderStatus
+from orders.models import Order, OrderStatus
 from orders.repository import OrderRepository
+from orders.schemas import OrderCreate
 
 ALLOWED_TRANSITIONS = {
     OrderStatus.PENDING: {OrderStatus.PAID, OrderStatus.CANCELLED},
@@ -21,7 +22,9 @@ class OrderService:
 
     def create_order(self, user: CurrentUser, data: OrderCreate) -> Order:
         tenant_id = user.require_tenant()
-        order = Order(**data.model_dump(), tenant_id=tenant_id, created_by=user.user_id)
+        # Copy fields explicitly: a new request field must not end up stored by accident.
+        order = Order(tenant_id=tenant_id, created_by=user.user_id,
+                      item=data.item, quantity=data.quantity, price_cents=data.price_cents)
 
         # Plan comes from the login token: no call to the accounts module.
         # The limit is checked inside the same transaction that saves the order.
@@ -40,9 +43,9 @@ class OrderService:
             raise NotFound(f"Order {order_id} not found")
         return order
 
-    def list_orders(self, user: CurrentUser, limit: int, cursor: str | None = None) -> OrderPage:
-        orders, next_cursor = self.orders.list(user.require_tenant(), limit, cursor)
-        return OrderPage(items=orders, next_cursor=next_cursor)
+    def list_orders(self, user: CurrentUser, limit: int, cursor: str | None = None) -> tuple[list[Order], str | None]:
+        """Newest first. Returns the orders and a cursor for the next page (None at the end)."""
+        return self.orders.list(user.require_tenant(), limit, cursor)
 
     def change_status(self, user: CurrentUser, order_id: str, new_status: OrderStatus) -> Order:
         order = self.get_order(user, order_id)

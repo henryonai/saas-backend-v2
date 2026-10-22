@@ -6,7 +6,7 @@ from aws_lambda_powertools.event_handler.api_gateway import Router
 from shared.auth import CurrentUser, get_current_user
 
 from billing.container import get_billing_service
-from billing.models import BillingSummary, CheckoutRequest, CheckoutResponse
+from billing.schemas import BillingSummary, CheckoutRequest, CheckoutResponse
 from billing.service import BillingService
 
 router = Router()
@@ -17,7 +17,7 @@ Service = Annotated[BillingService, Depends(get_billing_service)]
 
 @router.get("/billing")
 def get_billing(user: User, service: Service) -> BillingSummary:
-    return service.summary(user)
+    return BillingSummary.of(service.get_subscription(user))
 
 
 # Returns a URL; the frontend redirects the browser to it.

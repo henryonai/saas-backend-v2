@@ -1,6 +1,9 @@
+"""
+What the accounts module stores and works with. The repository saves these;
+the service returns them. What the API accepts and returns is in schemas.py.
+"""
 import time
 from datetime import UTC, datetime
-from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -10,10 +13,6 @@ from shared.auth import Role
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
-
-
-class TenantCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
 
 
 class Tenant(BaseModel):
@@ -41,19 +40,10 @@ class Invitation(BaseModel):
     tenant_id: str
     tenant_name: str
     email: str
-    role: Literal["admin", "member"]
+    role: Role
     invited_by: str
     created_at: str = Field(default_factory=now_iso)
     expires_at: int  # epoch seconds; set by the service from its InvitationLimits
 
     def expired(self) -> bool:
         return self.expires_at <= time.time()
-
-
-class InviteRequest(BaseModel):
-    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=254)
-    role: Literal["admin", "member"] = "member"  # exactly one owner per tenant
-
-
-class RoleUpdate(BaseModel):
-    role: Literal["admin", "member"]

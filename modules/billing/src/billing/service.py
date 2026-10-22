@@ -18,10 +18,10 @@ from aws_lambda_powertools import Logger
 from shared.auth import ROLE_OWNER, CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import InvalidRequest, ServiceBusy
-from shared.plans import DEFAULT_PLAN, get_plan, is_plan
+from shared.plans import DEFAULT_PLAN, is_plan
 
 from billing import events
-from billing.models import BillingSummary, Subscription
+from billing.models import Subscription
 from billing.provider import BillingEvent, PaymentProvider
 from billing.repository import SubscriptionRepository
 
@@ -33,13 +33,10 @@ class BillingService:
         self.subscriptions = subscriptions
         self.provider = provider
 
-    def summary(self, user: CurrentUser) -> BillingSummary:
+    def get_subscription(self, user: CurrentUser) -> Subscription:
+        """The tenant's subscription (Free until the first webhook arrives)."""
         tenant_id = user.require_tenant()
-        sub = self.subscriptions.get(tenant_id) or Subscription(tenant_id=tenant_id)
-        plan = get_plan(sub.plan)
-        return BillingSummary(plan=sub.plan, plan_name=plan["name"],
-                              price_usd_month=plan["price_usd_month"], status=sub.status,
-                              limits={k: v for k, v in plan.items() if k.startswith("max_")})
+        return self.subscriptions.get(tenant_id) or Subscription(tenant_id=tenant_id)
 
     def start_checkout(self, user: CurrentUser, plan: str) -> str:
         tenant_id = user.require_role(ROLE_OWNER)  # only the owner pays

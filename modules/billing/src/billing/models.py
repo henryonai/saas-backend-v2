@@ -1,5 +1,7 @@
-from typing import Literal
-
+"""
+What the billing module stores and works with. The repository saves these;
+the service returns them. What the API accepts and returns is in schemas.py.
+"""
 from pydantic import BaseModel
 
 
@@ -19,19 +21,3 @@ class Subscription(BaseModel):
     plan_event_id: str = ""
     status_changed_at: int = 0
     status_event_id: str = ""
-
-
-class CheckoutRequest(BaseModel):
-    plan: Literal["pro", "business"]
-
-
-class CheckoutResponse(BaseModel):
-    checkout_url: str
-
-
-class BillingSummary(BaseModel):
-    plan: str
-    plan_name: str
-    price_usd_month: int
-    status: str
-    limits: dict

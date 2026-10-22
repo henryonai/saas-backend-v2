@@ -1,3 +1,8 @@
+"""
+What the notifications module stores and works with. The repository saves
+these; the service returns them. What the API accepts and returns is in
+schemas.py.
+"""
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field

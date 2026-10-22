@@ -11,7 +11,8 @@ from aws_lambda_powertools.event_handler.api_gateway import Router
 from shared.auth import CurrentUser, get_current_user
 
 from accounts.container import get_account_service
-from accounts.models import Invitation, InviteRequest, Member, RoleUpdate, Tenant, TenantCreate
+from accounts.models import Invitation, Member
+from accounts.schemas import InviteRequest, RoleUpdate, TenantCreate, TenantOut
 from accounts.service import AccountService
 
 router = Router()
@@ -29,13 +30,13 @@ def created(model) -> Response:
 
 # After this, the frontend must refresh the token so it contains tenant_id.
 @router.post("/tenants")
-def create_tenant(body: TenantCreate, user: User, service: Service) -> Response[Tenant]:
-    return created(service.create_tenant(user, body))
+def create_tenant(body: TenantCreate, user: User, service: Service) -> Response[TenantOut]:
+    return created(TenantOut.of(service.create_tenant(user, body)))
 
 
 @router.get("/tenants/me")
-def get_my_tenant(user: User, service: Service) -> Tenant:
-    return service.get_tenant(user)
+def get_my_tenant(user: User, service: Service) -> TenantOut:
+    return TenantOut.of(service.get_tenant(user))
 
 
 # ---------- users ----------
@@ -84,8 +85,8 @@ def my_invitations(user: User, service: Service) -> list[Invitation]:
 
 # After this, the frontend must refresh the token so it contains tenant_id.
 @router.post("/invitations/<tenant_id>/accept")
-def accept_invitation(tenant_id: str, user: User, service: Service) -> Tenant:
-    return service.accept_invitation(user, tenant_id)
+def accept_invitation(tenant_id: str, user: User, service: Service) -> TenantOut:
+    return TenantOut.of(service.accept_invitation(user, tenant_id))
 
 
 @router.post("/invitations/<tenant_id>/decline")

@@ -19,8 +19,9 @@ from shared.plans import get_limit
 
 from accounts import events
 from accounts.identity import IdentityProvider
-from accounts.models import Invitation, InviteRequest, Member, Tenant, TenantCreate
+from accounts.models import Invitation, Member, Tenant
 from accounts.repository import AccountRepository
+from accounts.schemas import InviteRequest, TenantCreate
 
 @dataclass(frozen=True)
 class InvitationLimits:

@@ -7,7 +7,8 @@ from aws_lambda_powertools.event_handler.openapi.params import Query
 from shared.auth import CurrentUser, get_current_user
 
 from orders.container import get_order_service
-from orders.models import Order, OrderCreate, OrderPage, OrderUpdateStatus
+from orders.models import Order
+from orders.schemas import OrderCreate, OrderPage, OrderUpdateStatus
 from orders.service import OrderService
 
 router = Router()
@@ -28,7 +29,8 @@ def list_orders(user: User, service: Service,
                 limit: Annotated[int, Query(gt=0, le=100)] = 20,
                 cursor: Annotated[str | None, Query(max_length=100)] = None) -> OrderPage:
     """Newest first. Pass next_cursor from the previous page as ?cursor= to continue."""
-    return service.list_orders(user, limit, cursor)
+    orders, next_cursor = service.list_orders(user, limit, cursor)
+    return OrderPage(items=orders, next_cursor=next_cursor)
 
 
 @router.get("/orders/<order_id>")

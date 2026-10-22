@@ -27,6 +27,14 @@ def test_signup_creates_workspace_with_owner(ctx, owner):
     assert [(u["email"], u["role"]) for u in users] == [("alice@example.com", "owner")]
 
 
+def test_api_does_not_expose_internal_tenant_fields(ctx, owner):
+    ctx.service.apply_subscription_change(owner["tenant_id"], "pro", "active", 3)
+    _, tenant = ctx.api("GET", "/tenants/me", owner)
+    assert tenant["plan"] == "pro" and "subscription_revision" not in tenant
+    stored = ctx.service.accounts.get_tenant(owner["tenant_id"])
+    assert stored.subscription_revision == 3   # still stored, just not part of the API
+
+
 def test_cannot_create_second_workspace(ctx, owner):
     status, _ = ctx.api("POST", "/tenants", claims("alice"), {"name": "Another"})
     assert status == 409
