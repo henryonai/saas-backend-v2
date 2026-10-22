@@ -315,10 +315,15 @@ per environment, in the account it deploys to:
    account does):
 
    ```bash
+   prefix=$(gh api repos/<owner>/<repo>/actions/oidc/customization/sub --jq .sub_claim_prefix)
    aws cloudformation deploy --template-file .github/deploy-role.yaml \
      --stack-name saas-dev-github-deploy --capabilities CAPABILITY_NAMED_IAM \
-     --parameter-overrides GitHubRepo=<owner>/<repo> Environment=dev StackName=saas-dev
+     --parameter-overrides GitHubSubjectPrefix="$prefix" Environment=dev StackName=saas-dev
    ```
+
+   The prefix is what GitHub puts in its tokens. Newer repositories use
+   immutable ids (`repo:owner@123/name@456`), so a renamed or recreated
+   repository can't take the role over.
 
 2. Create the GitHub environment (Settings > Environments, or the API) and
    give it a variable `AWS_ROLE_ARN` with the stack's `RoleArn` output:
