@@ -3,19 +3,22 @@
 # dependencies = ["boto3", "pycognito", "requests"]
 # ///
 """
-Smoke test for a deployed stack, run after sam deploy. Creates a test user,
-then goes through the main flow end to end and prints PASS/FAIL per check:
+Smoke test for a deployed stack, run after sam deploy. Creates three test
+users and calls every endpoint, printing PASS/FAIL per check:
 
-  auth -> workspace -> orders -> checkout + signed webhook (upgrade to pro)
-  -> outbox -> EventBridge -> accounts worker (plan in the tenant + token)
-  -> notifications worker (in-app notifications) -> invitations
+  auth, workspaces, orders (status rules, paging), billing (checkout, signed
+  webhooks, out-of-order and repeated webhooks, payment failed, cancel),
+  events between modules (outbox -> EventBridge -> accounts and notifications
+  workers), invitations (send, cancel, accept, decline), roles and who may do
+  what, leaving and removing members, tenant isolation and plan limits.
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
-Uses your AWS credentials (AWS_PROFILE / AWS_REGION) to create the user and
-read the webhook secret, so run it against dev, not prod. Each run adds one
-user and workspace. Their email and password go to .aws-sam/smoke-user.json
-(gitignored) so you can sign in with them; they are never printed.
+Uses your AWS credentials (AWS_PROFILE / AWS_REGION) to create the users and
+read the webhook secret, so run it against dev, not prod. Each run adds three
+users and two workspaces. Their emails and passwords go to
+.aws-sam/smoke-users.json (gitignored) so you can sign in with them; they are
+never printed.
 """
 import argparse
 import base64
@@ -27,9 +30,11 @@ import secrets
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import boto3
 import requests
+from botocore.exceptions import ClientError
 from pycognito import Cognito
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -42,6 +47,7 @@ out = {o["OutputKey"]: o["OutputValue"] for o in stack["Outputs"]}
 params = {p["ParameterKey"]: p["ParameterValue"] for p in stack["Parameters"]}
 API, POOL, CLIENT = out["ApiUrl"], out["UserPoolId"], out["UserPoolClientId"]
 idp = session.client("cognito-idp")
+RUN = int(time.time())
 
 failures: list[str] = []
 
@@ -53,16 +59,15 @@ def check(name: str, ok: bool, detail: object = "") -> bool:
     return ok
 
 
+def show(r: requests.Response) -> str:
+    return f"{r.status_code} {r.text[:200]}"
+
+
 def call(method: str, path: str, token: str | None = None, **kw) -> requests.Response:
     headers = kw.pop("headers", {})
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return requests.request(method, API + path, headers=headers, timeout=30, **kw)
-
-
-def claims(jwt: str) -> dict:
-    payload = jwt.split(".")[1]
-    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 
 
 def wait_for(fn, timeout: int = 90, every: float = 3):
@@ -75,107 +80,281 @@ def wait_for(fn, timeout: int = 90, every: float = 3):
         time.sleep(every)
 
 
-# ---------- test user ----------
-ts = int(time.time())
-email = f"smoke+{ts}@example.com"
-password = "Sm0ke!" + secrets.token_urlsafe(18)
-idp.admin_create_user(UserPoolId=POOL, Username=email, MessageAction="SUPPRESS",
-                      UserAttributes=[{"Name": "email", "Value": email},
-                                      {"Name": "email_verified", "Value": "true"}])
-idp.admin_set_user_password(UserPoolId=POOL, Username=email, Password=password, Permanent=True)
-creds = Path(__file__).resolve().parent.parent / ".aws-sam" / "smoke-user.json"
+class Person:
+    """A test user in the user pool, signed in with SRP (the only flow the app client allows)."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.email = f"smoke-{name}+{RUN}@example.com"
+        self.password = "Sm0ke!" + secrets.token_urlsafe(18)
+        idp.admin_create_user(UserPoolId=POOL, Username=self.email, MessageAction="SUPPRESS",
+                              UserAttributes=[{"Name": "email", "Value": self.email},
+                                              {"Name": "email_verified", "Value": "true"}])
+        idp.admin_set_user_password(UserPoolId=POOL, Username=self.email, Password=self.password, Permanent=True)
+        self.sign_in()
+        self.id = self.claims["sub"]
+
+    def sign_in(self) -> "Person":
+        """New tokens; the pre-token trigger puts the current workspace, role and plan in them."""
+        self.cognito = Cognito(POOL, CLIENT, user_pool_region=region, username=self.email)
+        self.cognito.authenticate(password=self.password)
+        return self
+
+    @property
+    def token(self) -> str:
+        return self.cognito.id_token
+
+    @property
+    def claims(self) -> dict:
+        payload = self.token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+    def refresh_works(self) -> bool:
+        try:
+            self.cognito.renew_access_token()
+            return True
+        except ClientError:
+            return False
+
+    def __call__(self, method: str, path: str, **kw) -> requests.Response:
+        return call(method, path, self.token, **kw)
+
+
+WEBHOOK_SECRET = session.client("ssm").get_parameter(Name=params["PaymentWebhookSecretParam"],
+                                                     WithDecryption=True)["Parameter"]["Value"]
+
+
+def webhook_body(event_type: str, tenant_id: str, plan: str | None = None, created: int | None = None) -> str:
+    return json.dumps({"id": f"evt_smoke_{secrets.token_hex(6)}", "type": event_type, "tenant_id": tenant_id,
+                       "plan": plan, "created": created or int(time.time())})
+
+
+def send_webhook(body: str, signature: str | None = None) -> requests.Response:
+    signature = signature or hmac.new(WEBHOOK_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
+    return call("POST", "/webhooks/payments", data=body,
+                headers={"X-Signature": signature, "Content-Type": "application/json"})
+
+
+def titles(person: Person) -> list[str]:
+    r = person("GET", "/notifications", params={"limit": 50})
+    return sorted(n["title"] for n in r.json()) if r.ok else []
+
+
+# ---------- users ----------
+owner, bob, carol = Person("owner"), Person("bob"), Person("carol")
+creds = Path(__file__).resolve().parent.parent / ".aws-sam" / "smoke-users.json"
 creds.parent.mkdir(exist_ok=True)
-creds.write_text(json.dumps({"stack": STACK, "email": email, "password": password}, indent=2))
+creds.write_text(json.dumps({"stack": STACK, "users": [{"email": p.email, "password": p.password}
+                                                        for p in (owner, bob, carol)]}, indent=2))
 os.chmod(creds, 0o600)
-
-
-def sign_in() -> Cognito:
-    user = Cognito(POOL, CLIENT, user_pool_region=region, username=email)
-    user.authenticate(password=password)  # SRP, the only flow the app client allows
-    return user
-
-
-print(f"Stack {STACK} in {region}\n  API {API}\n  test user {email}\n")
+print(f"Stack {STACK} in {region}\n  API {API}\n  users {owner.email}, {bob.email}, {carol.email}\n")
 
 print("Auth")
-u = sign_in()
 check("no token -> 401", call("GET", "/orders").status_code == 401)
-check("access token rejected -> 401", call("GET", "/orders", u.access_token).status_code == 401)
-r = call("GET", "/orders", u.id_token)
-check("ID token without a workspace -> 403", r.status_code == 403, r.status_code)
+check("access token -> 401", call("GET", "/orders", owner.cognito.access_token).status_code == 401)
+check("ID token without a workspace -> 403", owner("GET", "/orders").status_code == 403)
+check("GET /tenants/me without a workspace -> 403", owner("GET", "/tenants/me").status_code == 403)
 
 print("Workspace")
-r = call("POST", "/tenants", u.id_token, json={"name": "Smoke Co"})
-check("create workspace", r.status_code in (200, 201), f"{r.status_code} {r.text[:200]}")
-tenant_id = r.json().get("tenant_id") if r.ok else None
-u = sign_in()  # the pre-token trigger adds the workspace claims to new tokens
-c = claims(u.id_token)
-check("token has workspace claims",
-      c.get("tenant_id") == tenant_id and c.get("role") == "owner" and c.get("plan") == "free",
+r = owner("POST", "/tenants", json={"name": "Smoke Co"})
+check("POST /tenants", r.status_code == 201, show(r))
+tenant_id = r.json().get("tenant_id")
+owner.sign_in()
+c = owner.claims
+check("new token has workspace claims",
+      (c.get("tenant_id"), c.get("role"), c.get("plan")) == (tenant_id, "owner", "free"),
       {k: c.get(k) for k in ("tenant_id", "role", "plan")})
-r = call("GET", "/tenants/me", u.id_token)
-check("GET /tenants/me", r.ok and r.json().get("plan") == "free", f"{r.status_code} {r.text[:200]}")
-check("second workspace refused", call("POST", "/tenants", u.id_token, json={"name": "Again"}).status_code >= 400)
+r = owner("GET", "/tenants/me")
+check("GET /tenants/me", r.ok and r.json()["plan"] == "free" and r.json()["seats_used"] == 1, show(r))
+check("second workspace -> 409", owner("POST", "/tenants", json={"name": "Again"}).status_code == 409)
+check("invalid name -> 422", carol("POST", "/tenants", json={"name": ""}).status_code == 422)
 
 print("Orders")
-r = call("POST", "/orders", u.id_token, json={"item": "Widget", "quantity": 2, "price_cents": 1999})
-check("create order", r.status_code in (200, 201), f"{r.status_code} {r.text[:200]}")
-order_id = r.json().get("order_id") if r.ok else None
-r = call("GET", f"/orders/{order_id}", u.id_token)
-check("get order", r.ok and r.json().get("status") == "pending", r.status_code)
-r = call("PATCH", f"/orders/{order_id}/status", u.id_token, json={"status": "paid"})
-check("update status to paid", r.ok and r.json().get("status") == "paid", f"{r.status_code} {r.text[:200]}")
-r = call("GET", "/orders", u.id_token)
-check("list orders", r.ok and [o["order_id"] for o in r.json()["items"]] == [order_id], r.status_code)
-check("invalid order -> 422", call("POST", "/orders", u.id_token, json={"item": "", "quantity": 0}).status_code == 422)
+r = owner("POST", "/orders", json={"item": "Widget", "quantity": 2, "price_cents": 1999})
+check("POST /orders", r.status_code == 201 and r.json()["status"] == "pending", show(r))
+order1 = r.json()["order_id"]
+order2 = owner("POST", "/orders", json={"item": "Gadget", "quantity": 1, "price_cents": 500}).json()["order_id"]
+r = owner("GET", f"/orders/{order1}")
+check("GET /orders/{id}", r.ok and r.json()["item"] == "Widget", show(r))
+check("unknown order -> 404", owner("GET", "/orders/does-not-exist").status_code == 404)
+check("invalid order -> 422",
+      owner("POST", "/orders", json={"item": "", "quantity": 0, "price_cents": 1}).status_code == 422)
+r = owner("PATCH", f"/orders/{order1}/status", json={"status": "paid"})
+check("PATCH status pending -> paid", r.ok and r.json()["status"] == "paid", show(r))
+r = owner("PATCH", f"/orders/{order1}/status", json={"status": "pending"})
+check("PATCH status paid -> pending refused (400)", r.status_code == 400, show(r))
+r = owner("PATCH", f"/orders/{order1}/status", json={"status": "shipped"})
+check("PATCH status paid -> shipped", r.ok and r.json()["status"] == "shipped", show(r))
+r = owner("GET", "/orders", params={"limit": 1})
+page1 = r.json() if r.ok else {}
+check("GET /orders?limit=1 (newest first, has a cursor)",
+      [o["order_id"] for o in page1.get("items", [])] == [order2] and bool(page1.get("next_cursor")), show(r))
+r = owner("GET", "/orders", params={"limit": 1, "cursor": page1.get("next_cursor")})
+check("GET /orders?cursor= (next page)", r.ok and [o["order_id"] for o in r.json()["items"]] == [order1], show(r))
 
 print("Billing")
-r = call("GET", "/billing", u.id_token)
-check("GET /billing is free", r.ok and r.json().get("plan") == "free", f"{r.status_code} {r.text[:200]}")
-r = call("POST", "/billing/checkout", u.id_token, json={"plan": "pro"})
-check("checkout url", r.ok and "checkout_url" in r.json(), f"{r.status_code} {r.text[:200]}")
-
-secret = session.client("ssm").get_parameter(Name=params["PaymentWebhookSecretParam"],
-                                             WithDecryption=True)["Parameter"]["Value"]
-body = json.dumps({"id": f"evt_smoke_{ts}", "type": "subscription.activated", "tenant_id": tenant_id,
-                   "plan": "pro", "created": int(time.time())})
-signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
-r = call("POST", "/webhooks/payments", data=body, headers={"X-Signature": "bad", "Content-Type": "application/json"})
-check("webhook with a bad signature -> 400", r.status_code == 400, r.status_code)
-r = call("POST", "/webhooks/payments", data=body,
-         headers={"X-Signature": signature, "Content-Type": "application/json"})
-check("signed webhook accepted", r.ok, f"{r.status_code} {r.text[:200]}")
-r = call("POST", "/webhooks/payments", data=body,
-         headers={"X-Signature": signature, "Content-Type": "application/json"})
-check("same webhook again is accepted (ignored)", r.ok, r.status_code)
-r = call("GET", "/billing", u.id_token)
-check("billing is pro", r.ok and r.json().get("plan") == "pro", f"{r.status_code} {r.text[:200]}")
+r = owner("GET", "/billing")
+check("GET /billing (free)", r.ok and r.json()["plan"] == "free" and r.json()["limits"]["max_users"] == 3, show(r))
+r = owner("POST", "/billing/checkout", json={"plan": "pro"})
+check("POST /billing/checkout", r.ok and "checkout_url" in r.json(), show(r))
+check("checkout with an unknown plan -> 422",
+      owner("POST", "/billing/checkout", json={"plan": "gold"}).status_code == 422)
+activated_at = int(time.time())
+body = webhook_body("subscription.activated", tenant_id, "pro", activated_at)
+check("webhook with a bad signature -> 400", send_webhook(body, signature="bad").status_code == 400)
+r = send_webhook(body)
+check("webhook subscription.activated (pro)", r.ok, show(r))
+check("same webhook again is accepted (ignored)", send_webhook(body).ok)
+r = send_webhook(webhook_body("subscription.activated", tenant_id, "business", activated_at - 60))
+check("older webhook arriving late is accepted (ignored)", r.ok, show(r))
+check("webhook with an unknown plan -> 400",
+      send_webhook(webhook_body("subscription.activated", tenant_id, "gold")).status_code == 400)
+r = owner("GET", "/billing")
+check("GET /billing is pro (late business event ignored)", r.ok and r.json()["plan"] == "pro", show(r))
 
 print("Events (outbox -> EventBridge -> workers)")
 started = time.time()
-tenant = wait_for(lambda: (t := call("GET", "/tenants/me", u.id_token).json()).get("plan") == "pro" and t)
+tenant = wait_for(lambda: (t := owner("GET", "/tenants/me").json()).get("plan") == "pro" and t)
 check("accounts worker set the workspace plan to pro", bool(tenant),
       f"{time.time() - started:.0f}s" if tenant else "timed out")
-u = sign_in()
-check("new token says plan=pro", claims(u.id_token).get("plan") == "pro", claims(u.id_token).get("plan"))
-started = time.time()
-notes = wait_for(lambda: len(n := call("GET", "/notifications", u.id_token).json()) >= 2 and n)
-titles = sorted(n["title"] for n in notes) if notes else []
-check("notifications worker created 2 notifications", titles == ["Order created", "Plan changed to pro"],
-      f"{titles} after {time.time() - started:.0f}s")
-if notes:
-    r = call("POST", f"/notifications/{notes[0]['notification_id']}/read", u.id_token)
-    check("mark notification read", r.status_code == 204, r.status_code)
+check("new token says plan=pro", owner.sign_in().claims.get("plan") == "pro", owner.claims.get("plan"))
+expected = ["Order created", "Order created", "Plan changed to pro"]
+got = wait_for(lambda: (t := titles(owner)) == expected and t)
+check("notifications worker: 2 orders + plan change", got == expected, titles(owner))
+note = owner("GET", "/notifications").json()[0]
+r = owner("POST", f"/notifications/{note['notification_id']}/read")
+check("POST /notifications/{id}/read", r.status_code == 204, show(r))
+r = owner("GET", "/notifications")
+check("notification is marked read",
+      r.ok and any(n["notification_id"] == note["notification_id"] and n["read"] for n in r.json()), show(r))
+check("unknown notification -> 404", owner("POST", "/notifications/nope/read").status_code == 404)
 
-print("Invitations")
-invitee = f"invitee+{ts}@example.com"
-r = call("POST", "/users/invite", u.id_token, json={"email": invitee, "role": "member"})
-check("invite a member", r.status_code in (200, 201), f"{r.status_code} {r.text[:200]}")
-r = call("GET", "/users/invitations", u.id_token)
-check("pending invitation listed", r.ok and any(i.get("email") == invitee for i in r.json()), r.status_code)
-r = call("GET", "/users", u.id_token)
-check("members list has the owner only", r.ok and len(r.json()) == 1, f"{r.status_code} {r.text[:200]}")
+print("Invitations sent")
+r = owner("POST", "/users/invite", json={"email": bob.email, "role": "member"})
+check("POST /users/invite (bob)", r.status_code == 201, show(r))
+check("inviting bob again -> 409", owner("POST", "/users/invite", json={"email": bob.email}).status_code == 409)
+check("inviting yourself -> 409", owner("POST", "/users/invite", json={"email": owner.email}).status_code == 409)
+check("invalid email -> 422", owner("POST", "/users/invite", json={"email": "not-an-email"}).status_code == 422)
+check("POST /users/invite (carol)", owner("POST", "/users/invite", json={"email": carol.email}).status_code == 201)
+ghost = f"smoke-ghost+{RUN}@example.com"
+check("POST /users/invite (ghost)", owner("POST", "/users/invite", json={"email": ghost}).status_code == 201)
+r = owner("DELETE", f"/users/invitations/{quote(ghost, safe='')}")
+check("DELETE /users/invitations/{email}", r.status_code == 204, show(r))
+check("cancelling it again -> 404",
+      owner("DELETE", f"/users/invitations/{quote(ghost, safe='')}").status_code == 404)
+r = owner("GET", "/users/invitations")
+check("GET /users/invitations (bob, carol)",
+      r.ok and sorted(i["email"] for i in r.json()) == sorted([bob.email, carol.email]), show(r))
+
+print("Another workspace: isolation, decline")
+r = carol("POST", "/tenants", json={"name": "Other Co"})
+check("carol creates her own workspace", r.status_code == 201, show(r))
+carol.sign_in()
+check("carol can't read Smoke Co's order -> 404", carol("GET", f"/orders/{order1}").status_code == 404)
+check("carol can't change Smoke Co's order -> 404",
+      carol("PATCH", f"/orders/{order2}/status", json={"status": "cancelled"}).status_code == 404)
+r = carol("GET", "/orders")
+check("carol's order list is empty", r.ok and r.json()["items"] == [], show(r))
+r = carol("GET", "/users")
+check("carol's member list is only carol", r.ok and [m["user_id"] for m in r.json()] == [carol.id], show(r))
+r = carol("GET", "/invitations")
+check("GET /invitations (carol sees Smoke Co's invitation)",
+      r.ok and [i["tenant_id"] for i in r.json()] == [tenant_id], show(r))
+r = carol("POST", f"/invitations/{tenant_id}/accept")
+check("accepting while in another workspace -> 409", r.status_code == 409, show(r))
+r = carol("POST", f"/invitations/{tenant_id}/decline")
+check("POST /invitations/{tenant_id}/decline", r.status_code == 204, show(r))
+check("declining again -> 404", carol("POST", f"/invitations/{tenant_id}/decline").status_code == 404)
+r = owner("GET", "/users/invitations")
+check("owner sees only bob's invitation now", r.ok and [i["email"] for i in r.json()] == [bob.email], show(r))
+
+print("Joining and roles")
+r = bob("GET", "/invitations")
+check("bob sees his invitation", r.ok and [i["tenant_name"] for i in r.json()] == ["Smoke Co"], show(r))
+r = bob("POST", f"/invitations/{tenant_id}/accept")
+check("POST /invitations/{tenant_id}/accept", r.ok and r.json()["tenant_id"] == tenant_id, show(r))
+c = bob.sign_in().claims
+check("bob's new token: member of Smoke Co on pro",
+      (c.get("tenant_id"), c.get("role"), c.get("plan")) == (tenant_id, "member", "pro"))
+r = bob("GET", "/orders", params={"limit": 50})
+check("bob sees the workspace's orders", r.ok and len(r.json()["items"]) == 2, show(r))
+check("bob (member) can create an order",
+      bob("POST", "/orders", json={"item": "Bolt", "quantity": 5, "price_cents": 10}).status_code == 201)
+check("bob (member) can't invite -> 403", bob("POST", "/users/invite", json={"email": ghost}).status_code == 403)
+check("bob (member) can't change roles -> 403",
+      bob("PATCH", f"/users/{owner.id}/role", json={"role": "member"}).status_code == 403)
+check("bob (member) can't remove others -> 403", bob("DELETE", f"/users/{owner.id}").status_code == 403)
+check("bob (member) can't start checkout -> 403",
+      bob("POST", "/billing/checkout", json={"plan": "business"}).status_code == 403)
+r = owner("GET", "/users")
+check("GET /users (owner + bob)",
+      r.ok and sorted(m["user_id"] for m in r.json()) == sorted([owner.id, bob.id]), show(r))
+r = owner("GET", "/tenants/me")
+check("seats_used is 2", r.ok and r.json()["seats_used"] == 2, show(r))
+r = owner("PATCH", f"/users/{bob.id}/role", json={"role": "admin"})
+check("PATCH /users/{id}/role (bob -> admin)", r.ok and r.json()["role"] == "admin", show(r))
+check("bob was signed out (refresh token revoked)", not bob.refresh_works())
+check("owner's role can't be changed -> 403",
+      owner("PATCH", f"/users/{owner.id}/role", json={"role": "admin"}).status_code == 403)
+check("role 'owner' can't be given -> 422",
+      owner("PATCH", f"/users/{bob.id}/role", json={"role": "owner"}).status_code == 422)
+check("bob's new token says admin", bob.sign_in().claims.get("role") == "admin")
+r = bob("POST", "/users/invite", json={"email": ghost})
+check("bob (admin) can invite", r.status_code == 201, show(r))
+r = bob("DELETE", f"/users/invitations/{quote(ghost, safe='')}")
+check("bob (admin) can cancel an invitation", r.status_code == 204, show(r))
+check("bob (admin) can't start checkout -> 403",
+      bob("POST", "/billing/checkout", json={"plan": "business"}).status_code == 403)
+r = owner("PATCH", f"/users/{bob.id}/role", json={"role": "member"})
+check("PATCH /users/{id}/role (bob -> member)", r.ok and r.json()["role"] == "member", show(r))
+old_token = bob.token  # issued while bob was admin
+check("bob's older admin token can't invite (role is checked in the DB) -> 403",
+      call("POST", "/users/invite", old_token, json={"email": ghost}).status_code == 403)
+
+print("Leaving and removing")
+check("owner can't leave -> 403", owner("DELETE", f"/users/{owner.id}").status_code == 403)
+bob.sign_in()
+r = bob("DELETE", f"/users/{bob.id}")
+check("DELETE /users/{own id} (bob leaves)", r.status_code == 204, show(r))
+check("bob's old token is refused by accounts -> 403", bob("GET", "/users").status_code == 403)
+check("bob's new token has no workspace", "tenant_id" not in bob.sign_in().claims)
+r = owner("GET", "/users")
+check("owner sees only themself", r.ok and [m["user_id"] for m in r.json()] == [owner.id], show(r))
+check("re-invite bob", owner("POST", "/users/invite", json={"email": bob.email}).status_code == 201)
+check("bob accepts again", bob("POST", f"/invitations/{tenant_id}/accept").ok)
+r = owner("DELETE", f"/users/{bob.id}")
+check("DELETE /users/{id} (owner removes bob)", r.status_code == 204, show(r))
+check("removing bob again -> 404", owner("DELETE", f"/users/{bob.id}").status_code == 404)
+check("bob was signed out", not bob.refresh_works())
+r = owner("GET", "/tenants/me")
+check("seats_used is back to 1", r.ok and r.json()["seats_used"] == 1, show(r))
+
+print("Billing lifecycle")
+r = send_webhook(webhook_body("payment.failed", tenant_id))
+check("webhook payment.failed", r.ok, show(r))
+r = owner("GET", "/billing")
+check("GET /billing: past_due, still pro", r.ok and (r.json()["plan"], r.json()["status"]) == ("pro", "past_due"),
+      show(r))
+time.sleep(1)  # the cancel must be newer than the payment failure
+r = send_webhook(webhook_body("subscription.cancelled", tenant_id))
+check("webhook subscription.cancelled", r.ok, show(r))
+r = owner("GET", "/billing")
+check("GET /billing: free, cancelled", r.ok and (r.json()["plan"], r.json()["status"]) == ("free", "cancelled"),
+      show(r))
+started = time.time()
+tenant = wait_for(lambda: (t := owner("GET", "/tenants/me").json()).get("subscription_status") == "cancelled" and t)
+check("accounts worker: workspace back to free, cancelled",
+      bool(tenant) and tenant["plan"] == "free", f"{time.time() - started:.0f}s" if tenant else "timed out")
+got = wait_for(lambda: {"Payment failed", "Plan changed to free"} <= set(t := titles(owner)) and t)
+check("notifications: payment failed + plan changed to free", bool(got), titles(owner))
+
+print("Plan limits (free: 3 users)")
+for name in ("seat1", "seat2"):
+    email = f"smoke-{name}+{RUN}@example.com"
+    check(f"invite {name}", owner("POST", "/users/invite", json={"email": email}).status_code == 201)
+r = owner("POST", "/users/invite", json={"email": f"smoke-seat3+{RUN}@example.com"})
+check("a 4th seat on free -> 402", r.status_code == 402, show(r))
 
 print(f"\n{'ALL PASSED' if not failures else f'{len(failures)} FAILED: ' + ', '.join(failures)}")
-print(f"Test user saved to {creds}")
+print(f"Test users saved to {creds}")
 sys.exit(1 if failures else 0)

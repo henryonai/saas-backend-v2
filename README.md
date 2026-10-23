@@ -267,11 +267,13 @@ After deploying, check the stack end to end:
 uv run scripts/smoke-test.py --stack saas-dev
 ```
 
-It creates a test user, then signs in, creates a workspace and an order,
-upgrades to pro through a signed webhook, and waits for the events to reach
-the accounts and notifications workers. It needs AWS credentials for the stack
-(to create the user and read the webhook secret), so use it on dev, not prod.
-The test user's login is saved in `.aws-sam/smoke-user.json`.
+It creates three test users and calls every endpoint: workspaces, orders,
+billing webhooks (upgrade, payment failed, cancel), invitations, roles,
+leaving and removing members, tenant isolation and plan limits, and it waits
+for the events to reach the accounts and notifications workers. It needs AWS
+credentials for the stack (to create the users and read the webhook secret),
+so use it on dev, not prod. The test users' logins are saved in
+`.aws-sam/smoke-users.json`.
 
 ## Frontend
 
