@@ -18,6 +18,7 @@ confirm_changeset = false
 parameter_overrides = [
   "Stage=dev",
   "PaymentWebhookSecretParam=/saas/dev/payment-webhook-secret",
+  "OpenRouterApiKeyParam=/saas/dev/openrouter-api-key",
   'AppUrl=""',        # empty (quoted: SAM refuses a bare "AppUrl="): links open WebUrl
   "CorsOrigin=*",     # any origin, so a local dev server can call the API too
 ]
@@ -34,6 +35,7 @@ confirm_changeset = true   # always review changes before they hit production
 parameter_overrides = [
   "Stage=prod",
   "PaymentWebhookSecretParam=/saas/prod/payment-webhook-secret",
+  "OpenRouterApiKeyParam=/saas/prod/openrouter-api-key",
   "AppUrl=https://app.example.com",
   "CorsOrigin=https://app.example.com",
   "EmailSender=no-reply@example.com",

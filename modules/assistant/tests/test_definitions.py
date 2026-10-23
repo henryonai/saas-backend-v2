@@ -56,10 +56,11 @@ def test_tools_as_a_list_and_disallowed_tools():
     assert agent.tools == ("list_orders",)
 
 
-def test_a_full_bedrock_model_id_is_accepted():
-    agent = parse_agent(agent_md("name: big\ndescription: Big.\nmodel: global.anthropic.claude-opus-5-5"),
-                        "big.md", TOOLS)
-    assert agent.model == "global.anthropic.claude-opus-5-5"
+@pytest.mark.parametrize("model_id", ["anthropic/claude-opus-5.5", "openai/gpt-5.2",
+                                      "global.anthropic.claude-opus-5-5"])
+def test_an_openrouter_or_bedrock_model_id_is_accepted(model_id):
+    agent = parse_agent(agent_md(f"name: big\ndescription: Big.\nmodel: {model_id}"), "big.md", TOOLS)
+    assert agent.model == model_id
 
 
 @pytest.mark.parametrize("text, message", [

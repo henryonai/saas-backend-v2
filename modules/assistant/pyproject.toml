@@ -10,7 +10,8 @@ dependencies = [
     "bedrock-agentcore>=1.24,<2",          # BedrockAgentCoreApp: the /invocations and /ping server
     "httpx>=0.28,<1",                      # tools call the other modules' HTTP API
     "langchain>=1.4,<2",                   # create_agent and middleware
-    "langchain-aws>=1.9,<2",               # ChatBedrockConverse
+    "langchain-aws>=1.9,<2",               # ChatBedrockConverse (Bedrock model ids)
+    "langchain-openai>=1.7,<2",            # ChatOpenAI against OpenRouter's OpenAI-compatible API
     "langgraph-checkpoint-aws>=1.2,<2",    # AgentCoreMemorySaver (conversation checkpoints)
     "pyyaml>=6,<7",                        # agents/*.md frontmatter
 ]

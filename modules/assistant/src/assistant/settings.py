@@ -1,3 +1,5 @@
+from pydantic import SecretStr
+
 from shared.settings import BaseAppSettings
 
 
@@ -9,5 +11,13 @@ class AssistantSettings(BaseAppSettings):
     # when the environment doesn't name a region.
     region: str
     sandbox_id: str     # AgentCore Code Interpreter for the bash tool
-    model_id: str = "global.anthropic.claude-sonnet-5-5"
+    # vendor/model = OpenRouter; any other id = Bedrock (see definitions.is_openrouter_model).
+    model_id: str = "deepseek/deepseek-v4.1-flash-1017"
     sandbox_session_seconds: int = 900   # a sandbox, and its files, last this long; then a new one starts
+
+    # The OpenRouter API key, needed only for OpenRouter models. In AWS, set
+    # OPENROUTER_API_KEY_PARAM to the name of an SSM SecureString parameter
+    # (the key itself is never in env vars). Locally, you can set
+    # OPENROUTER_API_KEY directly in .env instead.
+    openrouter_api_key_param: str | None = None
+    openrouter_api_key: SecretStr | None = None  # SecretStr: hidden in logs

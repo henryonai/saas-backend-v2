@@ -54,8 +54,17 @@ Parameters:
     Description: Key of that zip. It changes with the code, which is what makes CloudFormation update the agent.
   AssistantModelId:
     Type: String
-    Default: global.anthropic.claude-sonnet-5-5
-    Description: Bedrock model or inference profile the assistant uses
+    Default: deepseek/deepseek-v4.1-flash-1017
+    Description: >-
+      The assistant's model: an OpenRouter model (vendor/model, as here, or e.g.
+      anthropic/claude-sonnet-5.5) or a Bedrock model or inference profile id
+      (e.g. global.anthropic.claude-sonnet-5-5)
+  OpenRouterApiKeyParam:
+    Type: String
+    Default: /saas/dev/openrouter-api-key
+    Description: >-
+      Name of an SSM SecureString parameter holding the OpenRouter API key (create it first;
+      read only for OpenRouter models)
   AssistantSandboxNetwork:
     Type: String
     Default: SANDBOX
@@ -714,6 +723,7 @@ Resources:
   # Module: assistant  (AI agent on Amazon Bedrock AgentCore Runtime)
   # Not a Lambda function: AgentCore runs the code zip that
   # scripts/package-assistant.py uploads, one microVM per conversation.
+  # The model is called through OpenRouter (or Bedrock, by AssistantModelId).
   # Created only when AssistantCodeBucket and AssistantCodeKey are set.
   # =====================================================================
   AssistantTable:
@@ -783,7 +793,11 @@ Resources:
                 Effect: Allow
                 Action: [s3:GetObject]
                 Resource: !Sub arn:aws:s3:::${AssistantCodeBucket}/${AssistantCodeKey}
-              - Sid: Model
+              - Sid: ModelKey             # the OpenRouter API key
+                Effect: Allow
+                Action: [ssm:GetParameter]
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${OpenRouterApiKeyParam}"
+              - Sid: Model                # Bedrock models, when AssistantModelId (or an agent) names one
                 Effect: Allow
                 Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
                 Resource:
@@ -869,6 +883,7 @@ Resources:
         MEMORY_ID: !GetAtt AssistantMemory.MemoryId
         API_URL: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
         MODEL_ID: !Ref AssistantModelId
+        OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParam
         REGION: !Ref AWS::Region
         SANDBOX_ID: !GetAtt AssistantSandbox.CodeInterpreterId
 

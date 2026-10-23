@@ -49,7 +49,7 @@ src/assistant/
 ├── memory.py            AgentCore Memory adapter: recall() / remember()
 ├── sandbox.py           AgentCore Code Interpreter adapter: one sandbox per conversation
 ├── service.py, repository.py, models.py   monthly usage per workspace (DynamoDB counters)
-└── container.py         composition root (real Bedrock models, Memory, DynamoDB, httpx)
+└── container.py         composition root (OpenRouter or Bedrock models, Memory, DynamoDB, httpx)
 ../main.py               what AgentCore starts (root of the zip)
 ```
 
@@ -79,7 +79,7 @@ You are a data analyst working for another agent...
 | `description` (required) | When to use it: the calling agent reads this to decide when to delegate. |
 | `tools` | Names from `tools/__init__.py`. Omitted = every tool, as in Claude Code: list them. |
 | `disallowedTools` | Removed from `tools`. |
-| `model` | `inherit` (the stack's `MODEL_ID`), `sonnet`, `opus`, `haiku`, or a Bedrock model id. |
+| `model` | `inherit` (the stack's `MODEL_ID`), `sonnet`, `opus`, `haiku` (Claude through OpenRouter), an OpenRouter model (`vendor/model`) or a Bedrock model id. |
 | `maxTurns` | Model calls per run, 1 to 50 (default 15). |
 | `subagents` | **This app's addition:** the agents this one may delegate to, through the `task` tool. |
 
@@ -137,7 +137,7 @@ details the main conversation doesn't need: analysis, reports, research.
   for the next turn (every tool call already has its result).
 - `ConversationMiddleware` keeps the conversation usable. A message cut off
   while tools ran (client gone, microVM stopped, a crash) leaves tool calls
-  without results in the checkpoint, and Bedrock rejects such a history on
+  without results in the checkpoint, and the model API rejects such a history on
   every later message; `before_agent` gives them an "interrupted" result. Each
   model call is sent only the recent history (`MAX_HISTORY_TOKENS`, cut at a
   user message), so a long conversation costs the same per call; the
@@ -252,9 +252,20 @@ zip's location. Same code, same key: CloudFormation leaves the agent alone.
 
 Once per account and region:
 
-- **Model access**: the default model is `global.anthropic.claude-sonnet-5-5`
-  (global cross-Region inference). Change it with the `AssistantModelId`
-  parameter.
+- **Model key**: the default model is `deepseek/deepseek-v4.1-flash-1017`
+  through [OpenRouter](https://openrouter.ai) (pay as you go from prepaid
+  credits); any OpenRouter model that supports tools works, such as
+  `anthropic/claude-sonnet-5.5`.
+  Store your OpenRouter API key as an SSM SecureString, under the name
+  `OpenRouterApiKeyParam` gives in `samconfig.toml` (`read -s` keeps it out of
+  your shell history):
+  `read -rs key && aws ssm put-parameter --name /saas/dev/openrouter-api-key --type SecureString --value "$key"`.
+  The agent reads it when it calls the model (cached 5 minutes, so a new key
+  is picked up without a deploy). Requests go only to providers that don't
+  collect prompts (OpenRouter's `data_collection: deny`).
+- **Or Bedrock**: set `AssistantModelId` (or an agent's `model`) to a Bedrock
+  id, such as `global.anthropic.claude-sonnet-5-5`, and enable the model in the
+  Bedrock console. The model id picks the provider: `vendor/model` is OpenRouter.
 - **Traces**: enable CloudWatch Transaction Search (AgentCore observability
   guide), then traces of every model and tool call appear in the CloudWatch
   GenAI observability console (`opentelemetry-instrument` in the entry point).
@@ -272,7 +283,7 @@ uv run pytest modules/assistant                    # everything offline: fake mo
 ```
 
 Against the dev stack's table and Memory (your AWS credentials; the values in
-`.env`, see `.env.example`), from the repository root:
+`.env`, see `.env.example`, with `OPENROUTER_API_KEY`), from the repository root:
 
 ```bash
 uv run python modules/assistant/main.py   # serves http://localhost:8080/invocations

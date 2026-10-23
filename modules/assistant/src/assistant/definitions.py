@@ -6,7 +6,7 @@ frontmatter, then the system prompt. One file per agent in agents/:
     name: analyst
     description: Analyzes the workspace's orders with code. Use for numbers, trends and exports.
     tools: list_orders, bash          # optional; omitted = every tool (as in Claude Code)
-    model: haiku                      # optional; sonnet | opus | haiku | inherit | a Bedrock model id
+    model: haiku                      # optional; sonnet | opus | haiku | inherit | an OpenRouter or Bedrock model id
     maxTurns: 10                      # optional; model calls per run (default 15)
     subagents: [other-agent]          # optional, ours: agents it may delegate to (the task tool)
     ---
@@ -34,11 +34,17 @@ logger = Logger()
 AGENTS_DIR = Path(__file__).parent / "agents"
 MAIN_AGENT = "assistant"   # the one the frontend talks to when it names none
 DEFAULT_MAX_TURNS = 15
-MODEL_ALIASES = {          # Claude on Bedrock, global cross-Region inference
-    "sonnet": "global.anthropic.claude-sonnet-5-5",
-    "opus": "global.anthropic.claude-opus-5-5",
-    "haiku": "global.anthropic.claude-haiku-5-5",
+MODEL_ALIASES = {          # Claude through OpenRouter
+    "sonnet": "anthropic/claude-sonnet-5.5",
+    "opus": "anthropic/claude-opus-5.5",
+    "haiku": "anthropic/claude-haiku-5.5",
 }
+OPENROUTER_MODEL = re.compile(r"[a-z0-9-]+/[\w.:-]+")   # vendor/model, e.g. anthropic/claude-sonnet-5.5
+
+
+def is_openrouter_model(model_id: str) -> bool:
+    """OpenRouter ids are vendor/model; anything else is a Bedrock model or inference profile id."""
+    return bool(OPENROUTER_MODEL.fullmatch(model_id))
 NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")   # stricter than Claude Code: it appears in tool schemas and URLs
 KNOWN_FIELDS = {"name", "description", "tools", "disallowedTools", "model", "maxTurns", "subagents"}
 
@@ -128,9 +134,10 @@ def _model(value, source: str) -> str | None:
         return None
     if isinstance(value, str) and value in MODEL_ALIASES:
         return MODEL_ALIASES[value]
-    if isinstance(value, str) and "anthropic." in value:   # a full Bedrock model or inference profile id
-        return value
-    raise AgentDefinitionError(f"{source}: `model` must be inherit, {', '.join(MODEL_ALIASES)} or a Bedrock model id")
+    if isinstance(value, str) and (is_openrouter_model(value) or "anthropic." in value):
+        return value   # an OpenRouter model, or a Bedrock model or inference profile id
+    raise AgentDefinitionError(f"{source}: `model` must be inherit, {', '.join(MODEL_ALIASES)}, "
+                               "an OpenRouter model (vendor/model) or a Bedrock model id")
 
 
 def _check_subagents(agents: dict[str, AgentDefinition]) -> None:
