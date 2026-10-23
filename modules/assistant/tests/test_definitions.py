@@ -3,11 +3,11 @@ import pytest
 
 from assistant.definitions import (
     DEFAULT_MAX_TURNS,
-    MODEL_ALIASES,
     AgentDefinitionError,
     load_agents,
     parse_agent,
 )
+from assistant.llm import MODEL_ALIASES
 
 TOOLS = {"list_orders", "get_order", "assistant_usage", "bash"}
 

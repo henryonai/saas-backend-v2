@@ -13,6 +13,7 @@ as that tool's result.
 """
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 from ag_ui.core import (
@@ -28,14 +29,14 @@ from ag_ui.core import (
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 
 
+@dataclass
 class AgUiStream:
-    def __init__(self):
-        self.model_call: str | None = None   # message id of the model call streaming now
-        self.text: str | None = None         # the open text message
-        self.texts = 0                       # text messages started by this model call
-        self.calls: dict[object, str] = {}   # this model call's tool calls: chunk index -> tool call id
-        self.open: set[str] = set()          # tool calls whose arguments are still streaming
-        self.awaiting_result: set[str] = set()
+    model_call: str | None = None   # message id of the model call streaming now
+    text: str | None = None         # the open text message
+    texts: int = 0                  # text messages started by this model call
+    calls: dict[object, str] = field(default_factory=dict)   # this call's tool calls: chunk index -> id
+    open: set[str] = field(default_factory=set)              # tool calls whose arguments still stream
+    awaiting_result: set[str] = field(default_factory=set)   # ended tool calls, until their result
 
     def message(self, message: BaseMessage) -> Iterator[BaseEvent]:
         if isinstance(message, AIMessage):

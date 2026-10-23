@@ -29,22 +29,13 @@ from pathlib import Path
 import yaml
 from aws_lambda_powertools import Logger
 
+from assistant.llm import MODEL_ALIASES, is_openrouter_model
+
 logger = Logger()
 
 AGENTS_DIR = Path(__file__).parent / "agents"
 MAIN_AGENT = "assistant"   # the one the frontend talks to when it names none
 DEFAULT_MAX_TURNS = 15
-MODEL_ALIASES = {          # Claude through OpenRouter
-    "sonnet": "anthropic/claude-sonnet-5.5",
-    "opus": "anthropic/claude-opus-5.5",
-    "haiku": "anthropic/claude-haiku-5.5",
-}
-OPENROUTER_MODEL = re.compile(r"[a-z0-9-]+/[\w.:-]+")   # vendor/model, e.g. anthropic/claude-sonnet-5.5
-
-
-def is_openrouter_model(model_id: str) -> bool:
-    """OpenRouter ids are vendor/model; anything else is a Bedrock model or inference profile id."""
-    return bool(OPENROUTER_MODEL.fullmatch(model_id))
 NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")   # stricter than Claude Code: it appears in tool schemas and URLs
 KNOWN_FIELDS = {"name", "description", "tools", "disallowedTools", "model", "maxTurns", "subagents"}
 

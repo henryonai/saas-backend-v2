@@ -36,6 +36,7 @@ src/assistant/
 │   ├── assistant.md     the main agent (the frontend's default)
 │   └── analyst.md       a subagent the assistant delegates analysis to
 ├── definitions.py       reads and checks agents/*.md (at startup)
+├── llm.py               the models: OpenRouter (vendor/model ids) or Bedrock, and the API key
 ├── factory.py           definitions → running agents: model, tools, middleware, subagents
 ├── delegation.py        the task tool: an agent runs one of its subagents
 ├── tools/               the tools agents can name in `tools:` (a registry in __init__.py)
@@ -50,7 +51,7 @@ src/assistant/
 ├── memory.py            AgentCore Memory adapter: recall() / remember()
 ├── sandbox.py           AgentCore Code Interpreter adapter: one sandbox per conversation
 ├── service.py, repository.py, models.py   monthly usage per workspace (DynamoDB counters)
-└── container.py         composition root (OpenRouter or Bedrock models, Memory, DynamoDB, httpx)
+└── container.py         composition root (models from llm.py, Memory, DynamoDB, httpx)
 ../main.py               what AgentCore starts (root of the zip)
 ```
 
