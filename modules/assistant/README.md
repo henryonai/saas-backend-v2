@@ -9,7 +9,7 @@ the rest of the backend.
 
 ```
 browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user pool, aud, token_use=id)
-                        │  POST /invocations {"prompt", "agent"?}, SSE back
+                        │  POST /invocations: AG-UI RunAgentInput in, AG-UI events (SSE) back
                         ▼
                  app.py  handle()
                    1. which agent (agents/*.md; "assistant" by default)
@@ -43,9 +43,10 @@ src/assistant/
 │   ├── usage.py         assistant_usage
 │   └── bash.py          bash (the sandbox)
 ├── middleware/          one file per middleware (usage, conversation, plan_tools, memory, errors)
-├── app.py               AgentCore entry point (BedrockAgentCoreApp): agent, auth, quota, stream
+├── app.py               AgentCore entry point (the SDK's AGUIApp): agent, auth, quota, stream
+├── agui.py              the agent's stream → AG-UI events
 ├── context.py           AgentContext: who the agents work for (runtime context, never in a prompt)
-├── schemas.py           the request and the streamed events: the frontend contract
+├── schemas.py           the AG-UI request and error codes: the frontend contract
 ├── memory.py            AgentCore Memory adapter: recall() / remember()
 ├── sandbox.py           AgentCore Code Interpreter adapter: one sandbox per conversation
 ├── service.py, repository.py, models.py   monthly usage per workspace (DynamoDB counters)
@@ -193,38 +194,46 @@ The `bash` tool gives the model a Linux shell (bash, Python, Node.js) in an
 
 ## Calling it from the frontend
 
-`POST <AssistantUrl output>` with:
-
-```
-Authorization: Bearer <Cognito ID token>          (the same token the HTTP API takes)
-X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: <one UUID per conversation; 33+ characters>
-Content-Type: application/json
-
-{"prompt": "What did we order last week?"}          (add "agent": "<name>" for another agent)
-```
-
-The answer streams as server-sent events, one JSON object per `data:` line:
-`{"type":"text","text":...}` (append them), `{"type":"tool","name":...}`
-(show "looking that up..."), then `{"type":"done",...}` or
-`{"type":"error","status":402,"message":...}`.
-
-**Errors are events, not statuses.** AgentCore turns any 4xx/5xx the agent
-returns into a generic `424 RuntimeClientError`, so the useful status (402:
-show "Upgrade"; 401/403: sign in again) is in the event. AgentCore's own errors
-(401 bad token, 429 throttling) do arrive as HTTP statuses.
-
-`EventSource` can't send headers or POST: read the stream with `fetch`:
+The endpoint speaks [AG-UI](https://docs.ag-ui.com) (the runtime's protocol is
+`AGUI`), so any AG-UI client works, such as `@ag-ui/client` or CopilotKit:
 
 ```ts
-const res = await fetch(assistantUrl, {
-  method: "POST",
-  headers: { Authorization: `Bearer ${idToken}`, "Content-Type": "application/json",
-             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": conversationId },
-  body: JSON.stringify({ prompt }),
+import { HttpAgent } from "@ag-ui/client";
+
+const threadId = crypto.randomUUID();                    // one per conversation
+const agent = new HttpAgent({
+  url: assistantUrl,                                     // the AssistantUrl output
+  threadId,
+  headers: { Authorization: `Bearer ${idToken}`,         // the same token the HTTP API takes
+             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": threadId },
 });
-const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
-// split on "\n\n", strip "data: ", JSON.parse each event
+agent.addMessage({ id: crypto.randomUUID(), role: "user", content: "What did we order last week?" });
+await agent.runAgent({ forwardedProps: { agent: "assistant" } }, {   // forwardedProps.agent is optional
+  onTextMessageContentEvent: ({ event }) => append(event.delta),
+  onToolCallStartEvent: ({ event }) => showWorking(event.toolCallName),   // "task": a subagent
+  onRunErrorEvent: ({ event }) => showError(event.code, event.message),
+});
 ```
+
+- **The threadId is the conversation**, and the AgentCore session: send it as
+  the session header too (33+ characters; a UUID works), or the run fails with
+  `VALIDATION_ERROR`. A new threadId starts a new conversation.
+- **The server keeps the conversation** (per user, in AgentCore Memory) and
+  reads only the newest message, which must be the user's, in text. The
+  client's earlier messages, `state`, `tools` and `context` are ignored, so a
+  client can't make up what the assistant said. Frontend tools aren't supported.
+- **Events**: `RUN_STARTED`; the answer as `TEXT_MESSAGE_START`, `_CONTENT`,
+  `_END` (one message per model call); each tool call as `TOOL_CALL_START`,
+  `_ARGS`, `_END`, then `TOOL_CALL_RESULT` with the tool's output; then
+  `RUN_FINISHED` with `result: {"agent": ...}` and `usage` (this agent's tokens;
+  a subagent's count against the allowance but aren't in it).
+- **Errors are `RUN_ERROR` events** with a `code`: `PLAN_LIMIT_REACHED` (show
+  "Upgrade"), `UNAUTHORIZED` or `ACCESS_DENIED` (sign in again),
+  `VALIDATION_ERROR`, `NOT_FOUND` (no such agent), `INTERNAL_ERROR`. In AGUI
+  mode AgentCore's own errors (bad token, throttling, a busy session) are
+  `RUN_ERROR` events too, with their HTTP status.
+- **WebSocket**: `/ws` streams the same events (the SDK's `AGUIApp`); not
+  tried on AgentCore yet.
 
 Not verified yet: whether the AgentCore endpoint answers a browser's CORS
 preflight. Test it from your app's origin first. If it doesn't, AWS's pattern
@@ -287,6 +296,9 @@ Against the dev stack's table and Memory (your AWS credentials; the values in
 
 ```bash
 uv run python modules/assistant/main.py   # serves http://localhost:8080/invocations
+curl -N localhost:8080/invocations -H "Authorization: Bearer <a JWT with your claims>" \
+  -H "Content-Type: application/json" \
+  -d '{"threadId": "<a UUID>", "runId": "r1", "messages": [{"id": "m1", "role": "user", "content": "Hi"}]}'
 ```
 
 There is no authorizer locally, so the server trusts any token: never expose it.
@@ -372,6 +384,7 @@ There is no authorizer locally, so the server trusts any token: never expose it.
 ### Sources
 
 - [AgentCore overview](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html), [HTTP protocol contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-http-protocol-contract.html), [troubleshooting](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-troubleshooting.html), [InvokeAgentRuntime](https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html)
+- [AG-UI on AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-agui.html), [its protocol contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-agui-protocol-contract.html) (errors as `RUN_ERROR`), [AG-UI events](https://docs.ag-ui.com/concepts/events)
 - [Direct code deployment](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-code-deploy.html), [for Python](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-code-deploy-python.html), [supported runtimes](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-code-deploy-supported-runtimes.html)
 - [Inbound JWT authorizer](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/inbound-jwt-authorizer.html), [header allowlist](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-header-allowlist.html), [execution role](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html)
 - [Memory with LangChain/LangGraph](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-integrate-lang.html), [memory organization](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-organization.html), [langchain-aws repository](https://github.com/langchain-ai/langchain-aws)

@@ -7,8 +7,11 @@ HTTP API and the sandbox.
 import base64
 import json
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
+from ag_ui.core import RunAgentInput
+from ag_ui.encoder import EventEncoder
 from bedrock_agentcore import RequestContext
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
@@ -146,14 +149,20 @@ def ctx():
             checkpointer=state.checkpointer, usage=usage, memory=memory, tools=tools))
 
     def chat(prompt, user: dict | None = None, session_id: str | None = SESSION, authorization=None,
-             agent: str | None = None) -> list[dict]:
-        """Sends one message as `user` (claims) and returns every streamed event."""
+             agent: str | None = None, thread_id: str | None = None, messages: list | None = None) -> list[dict]:
+        """
+        Sends one message as `user` (claims), as an AG-UI client does, and
+        returns every event as it goes on the wire, after checking their order.
+        """
         headers = {"Authorization": authorization if authorization is not None else id_token(user)}
         context = RequestContext(session_id=session_id, request_headers=headers)
-        payload = {"prompt": prompt} if isinstance(prompt, str) else prompt
-        if agent:
-            payload["agent"] = agent
-        return list(handle(payload, context, usage, state.agents))
+        run_input = RunAgentInput(
+            thread_id=thread_id or session_id or SESSION, run_id=str(uuid4()),
+            messages=messages if messages is not None else [{"id": str(uuid4()), "role": "user", "content": prompt}],
+            forwarded_props={"agent": agent} if agent else {})
+        events = [wire(event) for event in handle(run_input, context, usage, state.agents)]
+        check_agui_order(events)
+        return events
 
     def set_usage(tenant_id: str, **counters):
         table.put_item(Item={"pk": f"TENANT#{tenant_id}", "sk": f"USAGE#{current_month()}",
@@ -162,7 +171,8 @@ def ctx():
     script()
     yield SimpleNamespace(table=table, usage=usage, memory=memory, api=api, sandbox=sandbox, state=state,
                           definitions=definitions, script=script, chat=chat, set_usage=set_usage, session=SESSION,
-                          answer=answer, tool_call=tool_call, text=text_of, id_token=id_token,
+                          answer=answer, tool_call=tool_call, text=text_of, tools=tools_called, error=error_of,
+                          check_order=check_agui_order, id_token=id_token,
                           model_calls=lambda agent=MAIN_AGENT: models[agent].calls,
                           tools_shown=lambda agent=MAIN_AGENT: models[agent].tools_shown)
 
@@ -173,5 +183,52 @@ def alice():
     return claims("alice", "t1", "member", plan="free")
 
 
+def wire(event) -> dict:
+    """An AG-UI event as the client receives it: the JSON of one SSE `data:` line."""
+    return json.loads(EventEncoder().encode(event).removeprefix("data: "))
+
+
 def text_of(events: list[dict]) -> str:
-    return "".join(e["text"] for e in events if e["type"] == "text")
+    return "".join(e["delta"] for e in events if e["type"] == "TEXT_MESSAGE_CONTENT")
+
+
+def tools_called(events: list[dict]) -> list[str]:
+    return [e["toolCallName"] for e in events if e["type"] == "TOOL_CALL_START"]
+
+
+def error_of(events: list[dict]) -> dict | None:
+    """The run's RUN_ERROR (its code and message), if it failed."""
+    return next(({"code": e.get("code"), "message": e["message"]} for e in events if e["type"] == "RUN_ERROR"), None)
+
+
+def check_agui_order(events: list[dict]) -> None:
+    """The order AG-UI clients enforce (@ag-ui/client verifies every stream)."""
+    types = [e["type"] for e in events]
+    assert types[0] == "RUN_STARTED" and types.count("RUN_STARTED") == 1, types
+    assert types[-1] in ("RUN_FINISHED", "RUN_ERROR"), types
+    assert types.count("RUN_FINISHED") + types.count("RUN_ERROR") == 1, types
+    text, open_calls, ended, seen = None, set(), set(), set()
+    for e in events:
+        match e["type"]:
+            case "TEXT_MESSAGE_START":
+                assert text is None and not open_calls and e["messageId"] not in seen, e
+                text = e["messageId"]
+                seen.add(text)
+            case "TEXT_MESSAGE_CONTENT":
+                assert e["messageId"] == text and e["delta"], e
+            case "TEXT_MESSAGE_END":
+                assert e["messageId"] == text, e
+                text = None
+            case "TOOL_CALL_START":
+                assert text is None and e["toolCallId"] not in open_calls | ended, e
+                open_calls.add(e["toolCallId"])
+            case "TOOL_CALL_ARGS":
+                assert e["toolCallId"] in open_calls, e
+            case "TOOL_CALL_END":
+                open_calls.remove(e["toolCallId"])
+                ended.add(e["toolCallId"])
+            case "TOOL_CALL_RESULT":
+                assert e["toolCallId"] in ended and e["role"] == "tool", e
+                ended.discard(e["toolCallId"])
+            case "RUN_FINISHED":
+                assert text is None and not open_calls, e

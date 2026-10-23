@@ -17,7 +17,7 @@ def test_commands_run_in_the_conversations_sandbox(ctx):
 
     events = ctx.chat("What is 6 times 7? Compute it.", PRO)
 
-    assert {"type": "tool", "name": "bash"} in events and events[-1]["type"] == "done"
+    assert ctx.tools(events) == ["bash"] and events[-1]["type"] == "RUN_FINISHED"
     [run] = ctx.sandbox.commands
     assert run["command"] == "python -c 'print(6*7)'"
     tool_result = ctx.model_calls()[1][-1]

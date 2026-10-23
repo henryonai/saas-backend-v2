@@ -857,7 +857,7 @@ Resources:
           Runtime: PYTHON_3_13
           EntryPoint: [opentelemetry-instrument, main.py]   # traces to CloudWatch (enable Transaction Search once)
       NetworkConfiguration: { NetworkMode: PUBLIC }
-      ProtocolConfiguration: HTTP
+      ProtocolConfiguration: AGUI           # AG-UI events (assistant/schemas.py); AgentCore's own errors are RUN_ERROR events too
       # Only this user pool's ID tokens get in, like the HTTP API: access
       # tokens carry no aud, and the token_use rule rejects anything else.
       AuthorizerConfiguration:
@@ -909,5 +909,5 @@ Outputs:
     Value: !Ref WebDistribution
   AssistantUrl:
     Condition: HasAssistant
-    Description: POST here with the ID token (Bearer) and a session id header; the answer streams back as SSE
+    Description: AG-UI endpoint. POST a RunAgentInput with the ID token (Bearer) and the threadId as the session id header; AG-UI events stream back as SSE
     Value: !Sub "https://bedrock-agentcore.${AWS::Region}.amazonaws.com/runtimes/${AssistantRuntime.AgentRuntimeId}/invocations?qualifier=DEFAULT&accountId=${AWS::AccountId}"

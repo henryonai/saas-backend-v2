@@ -22,7 +22,7 @@ def test_the_assistant_delegates_and_explains_the_result(ctx):
 
     events = ctx.chat("How much did we spend this month?", PRO)
 
-    assert {"type": "tool", "name": "task"} in events
+    assert "task" in ctx.tools(events)
     assert ctx.text(events) == "Your paid orders this month total $310."   # only the assistant speaks to the user
     # The analyst started fresh: its own prompt and the instructions, not the conversation.
     system, task = ctx.model_calls("analyst")[0]
@@ -93,7 +93,7 @@ def test_a_subagent_keeps_no_checkpoints(ctx):
 def test_the_frontend_can_talk_to_any_agent_directly(ctx):
     ctx.script(ctx.answer("Hi, I'm the analyst."), agent="analyst")
     events = ctx.chat("Hello", PRO, agent="analyst")
-    assert ctx.text(events) == "Hi, I'm the analyst." and events[-1]["agent"] == "analyst"
+    assert ctx.text(events) == "Hi, I'm the analyst." and events[-1]["result"] == {"agent": "analyst"}
 
     # Each agent has its own side of the conversation: the assistant didn't see the analyst's.
     ctx.script(ctx.answer("Hello!"))
@@ -103,5 +103,5 @@ def test_the_frontend_can_talk_to_any_agent_directly(ctx):
 
 def test_an_unknown_agent_is_refused_before_anything_counts(ctx):
     events = ctx.chat("Hello", PRO, agent="nobody")
-    assert events[0]["status"] == 404 and "assistant" in events[0]["message"]
+    assert ctx.error(events)["code"] == "NOT_FOUND" and "assistant" in ctx.error(events)["message"]
     assert ctx.usage.usage.get("t1", current_month()).messages == 0
