@@ -7,6 +7,7 @@ from assistant.factory import MAX_TOOL_CALLS_PER_RUN, thread_config
 from assistant.context import AgentContext
 from assistant.middleware import ALLOWANCE_USED, INTERRUPTED, recent_history
 from assistant.models import current_month
+from assistant.tools.orders import make_order_tools
 from shared.auth import user_from_claims
 from testkit.http import claims
 
@@ -49,6 +50,13 @@ def test_tool_input_cannot_change_the_path(ctx, alice):
     ctx.script(ctx.tool_call("get_order", {"order_id": "../users"}), ctx.answer("Not found."))
     ctx.chat("Show order ../users", alice)
     assert ctx.api.calls[0]["path"] == "/orders/..%2Fusers"
+
+
+def test_order_tools_say_price_cents_is_the_unit_price():
+    # Without it the model read price_cents as an order's total (seen on dev).
+    for order_tool in make_order_tools(api=None):
+        assert "price_cents is the price of one unit" in order_tool.description
+        assert "runtime" not in order_tool.tool_call_schema.model_json_schema()["properties"]
 
 
 def test_tool_errors_reach_the_model_not_the_user_as_a_failure(ctx, alice):

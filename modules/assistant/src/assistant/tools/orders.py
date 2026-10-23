@@ -32,15 +32,18 @@ class HttpAppApi:
         return body
 
 
+# What the orders API's fields mean, as the web app shows them (Unit price, Total).
+# Without it, models read price_cents as the order's total.
+MONEY = "Money is in cents: price_cents is the price of one unit, so an order's total is price_cents × quantity."
+
+
 def make_order_tools(api: AppApi) -> list[BaseTool]:
-    @tool
+    @tool(description=f"List the workspace's most recent orders, newest first. `limit` is at most 50. {MONEY}")
     def list_orders(runtime: ToolRuntime[AgentContext], limit: int = 10) -> dict:
-        """List the workspace's most recent orders, newest first. `limit` is at most 50."""
         return api.get(runtime.context.authorization, "/orders", {"limit": max(1, min(limit, 50))})
 
-    @tool
+    @tool(description=f"Get one order of the workspace by its order_id. {MONEY}")
     def get_order(order_id: str, runtime: ToolRuntime[AgentContext]) -> dict:
-        """Get one order of the workspace by its order_id."""
         return api.get(runtime.context.authorization, f"/orders/{quote(order_id, safe='')}")
 
     return [list_orders, get_order]
