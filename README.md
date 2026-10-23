@@ -395,6 +395,34 @@ the SSM webhook secret and replace the example values in `samconfig.toml`.
    queue with a dead-letter queue and an alarm, like accounts does.
 6. Talk to other modules only through events or the token.
 
+## The sample module
+
+`modules/orders` is a small domain module kept as a worked example: its own
+table and routes, a plan limit read from the token (`max_orders`), a counter
+kept by a DynamoDB condition, allowed status changes, cursor paging, the
+`OrderCreated` event through the outbox, the notification it causes, and the
+web pages that use it. Copy it to start your first module ("Adding a
+module"), then remove it. Outside its own folders, this is what uses it:
+
+| Where | What to change |
+|---|---|
+| `modules/orders/` | Delete it, then run `uv lock` and `./scripts/export-requirements.sh` |
+| `template.yaml` | The "Module: orders" section, the `Orders` stream of `OutboxRelayFunction`, `OrderCreated` in `NotificationsRule`, and the stack's `Description` |
+| `modules/notifications/` | `_on_order_created` and its `HANDLERS` entry in `service.py`; the two tests in `test_notifications.py` that use `OrderCreated`; the docstring in `__init__.py` |
+| `layers/shared/layer/shared/plans.py` | `max_orders`: rename it to your module's limit, or remove it here, in `web/src/shared/lib/plans.ts` and on the billing page |
+| `scripts/smoke-test.py` | The auth checks, the Orders section, and the order checks in the isolation and roles sections: point them at your module's routes |
+| `.env.example` | `ORDERS_TABLE` |
+| `web/src/features/orders/`, `web/src/routes/_app/orders/` | Delete them; `pnpm gen:api` then removes the generated types |
+| `web/src/features/shell/app-shell.tsx` | The Orders menu item and the `PackageIcon` import |
+| `web/src/features/overview/overview-page.tsx` | The order-limit card and the recent-orders card |
+| `web/src/shared/api/types.ts`, `keys.ts` | The `Order*` types and the order query keys |
+| `web/src/routes.test.tsx` | The orders page cases, and the two guard tests that use `/orders` as their example path |
+| `web/src/shared/i18n/locales/*.json` | `orders`, `nav.orders`, and the order keys under `overview` and `billing.features` |
+
+The type check and the tests point at most of what is left; check the smoke
+test, the locale files and the query keys by hand. This README's examples
+(dependency injection, events, flows) use orders too.
+
 ## Moving a module to its own repository
 
 Copy `modules/<name>/`, move its section of `template.yaml`, and give it its
