@@ -15,6 +15,10 @@ Response: AG-UI events as server-sent events (agui.py), from RUN_STARTED to
 RUN_FINISHED, or RUN_ERROR with one of the codes below. AgentCore's own errors
 (a missing or invalid token, throttling) are RUN_ERROR events too, with an
 HTTP status.
+
+AG-UI is the only contract. Anything new the frontend needs goes out as an
+AG-UI event (CUSTOM for what AG-UI has no event for), never in a format of
+our own: the tests check every stream against the order AG-UI clients enforce.
 """
 from ag_ui.core import RunAgentInput, RunErrorEvent
 from pydantic import BaseModel, Field, ValidationError

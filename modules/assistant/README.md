@@ -94,7 +94,7 @@ conversation.
 subagent starts with only its own system prompt and that task, works for the
 same user (same token, same plan, same sandbox and files), and its final
 answer comes back as the `task` tool's result. The user sees only the calling
-agent's words (`{"type":"tool","name":"task"}` marks the hand-off). Two
+agent's words (a `TOOL_CALL_START` named `task` marks the hand-off). Two
 differences, both to bound a message's cost: an agent may only call the
 subagents it lists, and a subagent can't delegate further (one level). A
 subagent keeps no checkpoints and no long-term memory, so delegating adds
@@ -195,7 +195,9 @@ The `bash` tool gives the model a Linux shell (bash, Python, Node.js) in an
 ## Calling it from the frontend
 
 The endpoint speaks [AG-UI](https://docs.ag-ui.com) (the runtime's protocol is
-`AGUI`), so any AG-UI client works, such as `@ag-ui/client` or CopilotKit:
+`AGUI`), so any AG-UI client works, such as `@ag-ui/client` or CopilotKit. It
+is the only format: anything new the frontend needs is an AG-UI event
+(`CUSTOM` where AG-UI has none), not a format of our own.
 
 ```ts
 import { HttpAgent } from "@ag-ui/client";
