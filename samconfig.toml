@@ -30,14 +30,15 @@ watch = true
 stack_name = "saas-prod"
 capabilities = "CAPABILITY_IAM"
 resolve_s3 = true
-confirm_changeset = true   # always review changes before they hit production
+confirm_changeset = true   # at a terminal: review the changes first (CD prepares, then applies)
 parameter_overrides = [
   "Stage=prod",
   "PaymentWebhookSecretParam=/saas/prod/payment-webhook-secret",
-  "AppUrl=https://app.example.com",
-  "CorsOrigin=https://app.example.com",
-  "EmailSender=no-reply@example.com",
-  "SesIdentity=example.com",          # verified in SES; Cognito emails go through it too
-  "AlertEmail=ops@example.com",       # confirm the subscription email after the first deploy
+  'AppUrl=""',                        # empty: links open the app this stack hosts (WebUrl)
+  'CorsOrigin=""',                    # empty: only that app may call the API
+  # With your own domain verified in SES, add EmailSender=no-reply@<domain> and
+  # SesIdentity=<domain>. Until then app emails (invitations too) are only logged,
+  # and Cognito sends sign-up codes itself (about 50 a day).
+  "AlertEmail=henryhoang.tech@gmail.com",  # confirm the subscription email after the first deploy
   "LogRetentionDays=90",
 ]

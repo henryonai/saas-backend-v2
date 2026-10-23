@@ -16,6 +16,7 @@ saas-backend/
 │   └── deploy-role.yaml        # the AWS role deploy.yml uses (once per environment)
 ├── scripts/
 │   ├── export-requirements.sh  # uv.lock -> requirements.txt files for sam build
+│   ├── changeset-summary.py    # a change set in Markdown, for reviewing prod deploys
 │   ├── smoke-test.py           # end-to-end check of a deployed stack (after sam deploy)
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
 │   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
@@ -308,6 +309,24 @@ environment (its `[<env>.deploy]` settings in `samconfig.toml`). Prod deploys
 only from `main`, one deploy per environment runs at a time, and the run's
 summary links the app.
 
+Prod deploys in two runs, so someone reads the changes before they happen:
+
+1. **Prepare:** run it for prod. It creates a CloudFormation change set, lists
+   every change in the run's summary (`scripts/changeset-summary.py`), with
+   the resources it would replace in bold, and stops. Nothing changes yet.
+2. **Apply:** run it for prod again with *apply* set to the first run's
+   number. It applies exactly that change set, then publishes the web app.
+   It refuses if `main` has moved since (prepare again) or if a newer run
+   prepared another deploy.
+
+Dev deploys in one run; tick *prepare* to use the two runs there too. The
+prepared deploy is kept in the SSM parameter `/github-deploy/<stack>/prepared`
+until it is applied. If a first deploy fails, CloudFormation leaves the stack
+in `ROLLBACK_COMPLETE`: delete the stack, then prepare again.
+
+`main` only changes through pull requests whose CI checks pass (a branch
+protection rule), so a prod deploy always starts from checked code.
+
 GitHub signs in to AWS with OIDC, so no AWS keys are stored in GitHub. Once
 per environment, in the account it deploys to:
 
@@ -336,7 +355,7 @@ per environment, in the account it deploys to:
    ```
 
 Before the first prod run, do what "Before production" lists: at least create
-the SSM webhook secret and replace the example values in `samconfig.toml`.
+the SSM webhook secret and check prod's values in `samconfig.toml`.
 
 ## Operations
 
@@ -394,11 +413,14 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
 
 ## Before production
 
-- Set `CorsOrigin`, `AppUrl`, `EmailSender`, `SesIdentity` and `AlertEmail`
-  for prod in `samconfig.toml`. `AppUrl` and `CorsOrigin` can stay empty to
-  use the app's CloudFront address (`WebUrl`); for your own domain, add it to
-  `WebDistribution` and set both to it
-- Verify your SES domain and request SES production access
+- Check prod's values in `samconfig.toml`. `AppUrl` and `CorsOrigin` are
+  empty, so the app runs at its CloudFront address (`WebUrl`); for your own
+  domain, add it and its certificate to `WebDistribution` and set both to it.
+  `AlertEmail` gets the alarms: confirm its subscription email after the first
+  deploy
+- To send email, verify your domain in SES, request SES production access,
+  and set `EmailSender` and `SesIdentity`. Until then app emails, invitations
+  included, are only logged
 - Replace `DevPaymentProvider` in `billing/container.py` with a real provider
   (map its event id and creation time; reject webhooks with old timestamps).
   If it offers it, fetch the current subscription from its API instead of
