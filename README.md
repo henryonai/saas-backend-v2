@@ -2,11 +2,31 @@
 
 Python on AWS Lambda, with Lambda Powertools, DynamoDB, Cognito and EventBridge.
 Four self-contained modules: **accounts, orders, notifications, billing**.
+Orders is the sample module: a small domain module to copy for your own.
+
+## Starting a new project from this template
+
+1. Copy the repository (GitHub's "Use this template", or clone it into a new
+   repository).
+2. Give it its own name. This renames the packages, stacks, SSM parameter
+   names, the event source and the browser storage keys, so two projects never
+   collide in one AWS account:
+
+   ```bash
+   uv run python scripts/rename-project.py acme --title "Acme"   # add --dry-run to preview
+   uv sync --all-packages && (cd web && pnpm install)
+   git diff                                                      # review, then commit
+   ```
+
+3. Create the stack's webhook secret ("Configuration and secrets"), deploy
+   ("Deploy"), and set up the deploy workflow ("CI/CD").
+4. Build your first module from the sample, then remove the sample
+   ("The sample module").
 
 ## Layout
 
 ```
-saas-backend/
+saas-backend-v2/
 ├── pyproject.toml              # uv workspace root: dev tools, pytest and ruff config
 ├── uv.lock                     # exact versions of every package (commit it)
 ├── .python-version             # 3.13, same as the Lambda runtime
@@ -19,7 +39,8 @@ saas-backend/
 │   ├── smoke-test.py           # end-to-end check of a deployed stack (after sam deploy)
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
 │   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
-│   └── replay-outbox.py        # publish saved events again after an outage
+│   ├── replay-outbox.py        # publish saved events again after an outage
+│   └── rename-project.py       # give a new copy of the template its own name
 ├── layers/shared/              # package "saas-shared"
 │   ├── pyproject.toml          # powertools, pydantic, pydantic-settings
 │   ├── layer/                  # deployed as a Lambda layer
@@ -210,7 +231,9 @@ app.dependency_overrides[get_order_service] = lambda: OrderService(OrderReposito
 - For local runs, copy `.env.example` to `.env` (never commit `.env`). Tests
   ignore it.
 - Dev and prod run the same code with different values (`samconfig.toml`).
-  Each stack has its own event bus; still, prefer one AWS account per stage.
+  Each stack has its own resources, names, event bus and secret, so both can
+  live in one AWS account, as they do by default ("Before production" says
+  when a second account is worth it).
 
 ## Dependencies (uv)
 
@@ -406,4 +429,8 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
   which waits for the webhook
 - Review the rate limits and the invitation rules (`INVITATION_DAYS`,
   `INVITES_PER_DAY`, `MAX_PENDING_INVITATIONS_PER_EMAIL`)
-- Deploy prod to its own AWS account
+- Dev and prod share one AWS account by default. A separate prod account is
+  a stronger boundary: in a shared account the dev deploy role, which any
+  branch can use, could also change prod's resources directly. If you move
+  prod, create its deploy role (with `CreateOidcProvider=true`) and its SSM
+  secret in that account
