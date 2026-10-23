@@ -1,5 +1,5 @@
 import { api } from '@/shared/api/client';
-import type { BillingSummary, CheckoutResponse, PaidPlan } from '@/shared/api/types';
+import type { BillingSummary, CheckoutResponse, PaidPlan, PortalResponse } from '@/shared/api/types';
 import { getTenant } from '../workspace/api';
 
 /** The workspace's subscription, with its plan's price and limits. */
@@ -7,9 +7,17 @@ export function getBilling(signal?: AbortSignal) {
   return api<BillingSummary>('/billing', { signal });
 }
 
-/** Owner only. Returns the provider's checkout page, where the browser goes next. */
+/**
+ * Owner only. Returns the provider's page, where the browser goes next: a
+ * checkout, or for a subscriber, the page that confirms a plan change.
+ */
 export function startCheckout(plan: PaidPlan) {
   return api<CheckoutResponse>('/billing/checkout', { method: 'POST', body: { plan } });
+}
+
+/** Owner only, when `manageable`. The provider's page for the card, invoices and cancelling. */
+export function openPortal() {
+  return api<PortalResponse>('/billing/portal', { method: 'POST' });
 }
 
 /**

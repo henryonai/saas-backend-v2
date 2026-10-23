@@ -1,11 +1,12 @@
 """
-Payment provider interface. The rest of billing only knows these two methods.
+Payment provider interface. The rest of billing only knows these methods.
 
-To go live, write one class with the same methods for your provider (Paddle,
-Lemon Squeezy, Airwallex, VNPay, ...) and return it from container.py. Map the
-provider's event id and creation time to BillingEvent: billing uses them to
-skip repeated webhooks and webhooks that arrive out of order. Real providers
-also sign a timestamp; reject old ones to limit replays.
+StripePaymentProvider (stripe_provider.py) is the real one. For another
+provider (Paddle, Lemon Squeezy, Airwallex, VNPay, ...), write one class with
+the same methods and return it from container.py. Map the provider's event id
+and creation time to BillingEvent: billing uses them to skip repeated webhooks
+and webhooks that arrive out of order. Real providers also sign a timestamp;
+reject old ones to limit replays.
 
 DevPaymentProvider fakes the checkout page but verifies webhook signatures
 for real (HMAC-SHA256), like production providers do.
@@ -19,18 +20,23 @@ from typing import Protocol
 
 from shared.errors import InvalidRequest
 
+from billing.models import Subscription
+
 
 @dataclass
 class BillingEvent:
     event_id: str
-    event_type: str  # subscription.activated / subscription.cancelled / payment.failed
+    event_type: str  # subscription.activated / subscription.cancelled / payment.failed (others are ignored)
     tenant_id: str
     plan: str | None
     occurred_at: int  # when the provider created the event (epoch seconds)
+    customer_id: str = ""      # the provider's ids, when it has them
+    subscription_id: str = ""
 
 
 class PaymentProvider(Protocol):
-    def create_checkout(self, tenant_id: str, plan: str, customer_email: str) -> str: ...
+    def create_checkout(self, sub: Subscription, plan: str, customer_email: str) -> str: ...
+    def create_portal(self, sub: Subscription) -> str: ...
     def parse_webhook(self, headers: dict, raw_body: str) -> BillingEvent: ...
 
 
@@ -40,10 +46,13 @@ class DevPaymentProvider:
         self.webhook_secret = webhook_secret
         self.app_url = app_url
 
-    def create_checkout(self, tenant_id: str, plan: str, customer_email: str) -> str:
+    def create_checkout(self, sub: Subscription, plan: str, customer_email: str) -> str:
         # Real providers return their own page URL and carry tenant_id as
         # "metadata", which comes back in the webhook.
-        return f"{self.app_url}/dev-checkout?tenant_id={tenant_id}&plan={plan}"
+        return f"{self.app_url}/dev-checkout?tenant_id={sub.tenant_id}&plan={plan}"
+
+    def create_portal(self, sub: Subscription) -> str:
+        raise InvalidRequest("The development payment provider has no billing portal")
 
     def sign(self, raw_body: str) -> str:
         return hmac.new(self.webhook_secret().encode(), raw_body.encode(), hashlib.sha256).hexdigest()

@@ -17,7 +17,10 @@ resolve_s3 = true
 confirm_changeset = false
 parameter_overrides = [
   "Stage=dev",
+  "PaymentProvider=stripe",           # test mode; scripts/stripe-setup.py sets Stripe up
   "PaymentWebhookSecretParam=/saas/dev/payment-webhook-secret",
+  "StripeSecretKeyParam=/saas/dev/stripe-secret-key",
+  "StripeConfigParam=/saas/dev/stripe-config",
   'AppUrl=""',        # empty (quoted: SAM refuses a bare "AppUrl="): links open WebUrl
   "CorsOrigin=*",     # any origin, so a local dev server can call the API too
 ]
@@ -33,7 +36,10 @@ resolve_s3 = true
 confirm_changeset = true   # at a terminal: review the changes first (CD prepares, then applies)
 parameter_overrides = [
   "Stage=prod",
+  "PaymentProvider=stripe",           # test mode until the live key replaces the test key in SSM
   "PaymentWebhookSecretParam=/saas/prod/payment-webhook-secret",
+  "StripeSecretKeyParam=/saas/prod/stripe-secret-key",
+  "StripeConfigParam=/saas/prod/stripe-config",
   'AppUrl=""',                        # empty: links open the app this stack hosts (WebUrl)
   'CorsOrigin=""',                    # empty: only that app may call the API
   # With your own domain verified in SES, add EmailSender=no-reply@<domain> and

@@ -28,3 +28,4 @@ export type Notification = Sent<Notifications['schemas']['Notification']>;
 export type BillingSummary = Billing['schemas']['BillingSummary'];
 export type PaidPlan = Billing['schemas']['CheckoutRequest']['plan'];
 export type CheckoutResponse = Billing['schemas']['CheckoutResponse'];
+export type PortalResponse = Billing['schemas']['PortalResponse'];

@@ -11,13 +11,15 @@ Providers retry and don't keep order, so plan and status each remember the
 provider event that last set them. An event only changes a field if it is
 newer than that event (same second: arrival order, unless it is the same
 event again). A late "activated" can still set the plan after a newer
-"payment failed", but can't undo a newer "cancelled".
+"payment failed", but can't undo a newer "cancelled". A newer event that
+leaves plan and status as they are only moves those markers: it publishes
+nothing, so the many updates Stripe sends don't notify anyone again.
 """
 from aws_lambda_powertools import Logger
 
 from shared.auth import ROLE_OWNER, CurrentUser
 from shared.dynamo import ConditionFailed
-from shared.errors import InvalidRequest, ServiceBusy
+from shared.errors import Conflict, InvalidRequest, ServiceBusy
 from shared.plans import DEFAULT_PLAN, is_plan
 
 from billing import events
@@ -39,9 +41,18 @@ class BillingService:
         return self.subscriptions.get(tenant_id) or Subscription(tenant_id=tenant_id)
 
     def start_checkout(self, user: CurrentUser, plan: str) -> str:
+        """The page where the owner pays for a plan (or confirms a plan change)."""
         tenant_id = user.require_role(ROLE_OWNER)  # only the owner pays
         self.subscriptions.save_owner(tenant_id, user.user_id, user.email)
-        return self.provider.create_checkout(tenant_id, plan, user.email)
+        sub = self.subscriptions.get(tenant_id) or Subscription(tenant_id=tenant_id)
+        if sub.plan == plan and sub.status == "active":
+            raise Conflict(f"The workspace is already on the {plan} plan")
+        return self.provider.create_checkout(sub, plan, user.email)
+
+    def open_portal(self, user: CurrentUser) -> str:
+        """The provider's page for the card, invoices, plan changes and cancelling."""
+        tenant_id = user.require_role(ROLE_OWNER)
+        return self.provider.create_portal(self.subscriptions.get(tenant_id) or Subscription(tenant_id=tenant_id))
 
     def handle_webhook(self, headers: dict, raw_body: str) -> None:
         event = self.provider.parse_webhook(headers, raw_body)  # raises on bad signature
@@ -51,19 +62,25 @@ class BillingService:
             return
 
         current = self.subscriptions.get(event.tenant_id) or Subscription(tenant_id=event.tenant_id)
-        applied = {field: value for field, value in change.items() if self._is_newer(event, current, field)}
-        if not applied:
+        newer = {field: value for field, value in change.items() if self._is_newer(event, current, field)}
+        if not newer:
             logger.info("Old or repeated webhook skipped", extra={"event_id": event.event_id})
             return
 
-        updates = {**applied, "revision": current.revision + 1}
-        for field in applied:
+        updates = {}
+        for field in newer:
             updates[f"{field}_changed_at"] = event.occurred_at
             updates[f"{field}_event_id"] = event.event_id
+        for name in ("customer_id", "subscription_id"):
+            if getattr(event, name):
+                updates[name] = getattr(event, name)
+        changed = {field: value for field, value in newer.items() if getattr(current, field) != value}
+        if changed:
+            updates.update(changed, revision=current.revision + 1)
         new = current.model_copy(update=updates)
 
-        to_publish = [events.subscription_changed(new)]
-        if applied.get("status") == "past_due":
+        to_publish = [events.subscription_changed(new)] if changed else []
+        if changed.get("status") == "past_due":
             to_publish.append(events.payment_failed(new))
         try:
             self.subscriptions.save_change(new, current.revision, to_publish)

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { qk } from '@/shared/api/keys';
 import type { BillingSummary } from '@/shared/api/types';
-import { getBilling, startCheckout } from './api';
+import { getBilling, openPortal, startCheckout } from './api';
 
 /** `refetchInterval` while waiting for the payment provider's webhook. */
 export function useBilling(refetchInterval?: UseQueryOptions<BillingSummary>['refetchInterval']) {
@@ -14,4 +14,8 @@ export function useBilling(refetchInterval?: UseQueryOptions<BillingSummary>['re
 
 export function useCheckout() {
   return useMutation({ mutationFn: startCheckout });
+}
+
+export function usePortal() {
+  return useMutation({ mutationFn: openPortal });
 }

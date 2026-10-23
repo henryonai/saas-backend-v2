@@ -18,6 +18,7 @@ saas-backend/
 │   ├── export-requirements.sh  # uv.lock -> requirements.txt files for sam build
 │   ├── changeset-summary.py    # a change set in Markdown, for reviewing prod deploys
 │   ├── smoke-test.py           # end-to-end check of a deployed stack (after sam deploy)
+│   ├── stripe-setup.py         # Stripe prices, portal and webhook for a stack
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
 │   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
 │   └── replay-outbox.py        # publish saved events again after an outage
@@ -141,7 +142,8 @@ pending invitations at `GET /users/invitations` and cancel one with
 `DELETE /users/invitations/<email>`. A member leaves with
 `DELETE /users/<their own id>` (needed before joining another workspace).
 
-**Upgrade:** owner calls `POST /billing/checkout` → pays on the provider's page →
+**Upgrade:** owner calls `POST /billing/checkout` → pays on the provider's page
+(Stripe Checkout; a subscriber who changes plan gets Stripe's confirm page) →
 provider calls `/webhooks/payments` → signature checked → billing applies
 each field (plan, status) only if this event is newer than the one that last
 set it (providers retry and don't keep order), saving the change and
@@ -170,7 +172,8 @@ carries the new plan. The frontend should refresh the token after checkout.
   condition; add it if your customers need that assurance.
 - **Least privilege:** each function can only touch its own table (some only
   read or update), only the relay can publish events, and only the webhook
-  function can read the payment secret.
+  function can read the webhook signing secret (the billing API can read the
+  Stripe key, to start checkouts).
 
 ## Dependency injection, in one example
 
@@ -204,6 +207,7 @@ app.dependency_overrides[get_order_service] = lambda: OrderService(OrderReposito
   aws ssm put-parameter --name /saas/dev/payment-webhook-secret \
       --type SecureString --value "$(openssl rand -hex 32)"
   ```
+- **Stripe** keeps its secret key in SSM the same way ("Payments").
 - **Email:** set `EmailSender` and `SesIdentity` (the domain or address
   verified in SES) to send app emails *and* Cognito's sign-up codes through
   SES. Without them, app emails are only logged and Cognito uses its built-in
@@ -212,6 +216,56 @@ app.dependency_overrides[get_order_service] = lambda: OrderService(OrderReposito
   ignore it.
 - Dev and prod run the same code with different values (`samconfig.toml`).
   Each stack has its own event bus; still, prefer one AWS account per stage.
+
+## Payments
+
+Billing talks to its payment provider through one interface
+(`billing/provider.py`), picked per environment by `PaymentProvider`:
+
+| | `dev` | `stripe` |
+|---|---|---|
+| Checkout | The app's `/dev-checkout` page | Stripe Checkout |
+| Webhooks | Signed by `scripts/dev-pay.py` | Sent by Stripe |
+| Card, invoices, plan changes, cancelling | Only through webhooks | Stripe's customer portal ("Manage billing") |
+| Used by | Local runs and unit tests | Dev and prod (test mode until you launch) |
+
+Setting up Stripe for a stack:
+
+1. Put the Stripe secret key in SSM yourself, so it is never shown or stored
+   anywhere else (a test key `sk_test_...`, or a restricted key):
+
+   ```bash
+   read -rs STRIPE_KEY && aws ssm put-parameter --name /saas/dev/stripe-secret-key \
+       --type SecureString --value "$STRIPE_KEY"; unset STRIPE_KEY
+   ```
+
+2. Deploy the stack with `PaymentProvider=stripe` (`samconfig.toml`).
+3. Run `uv run python scripts/stripe-setup.py --stack saas-dev`. It creates
+   the prices (from `plans.py`), the customer portal and the webhook
+   endpoint, and saves the webhook's signing secret and the prices in SSM.
+   Run it again after changing the plans: it updates in place. The functions
+   read the new values within 5 minutes.
+4. Check it end to end with `uv run scripts/smoke-test.py --stack saas-dev`,
+   which pays with Stripe's test cards.
+
+How billing uses Stripe (`billing/stripe_provider.py`):
+
+- A workspace's first subscription goes through Checkout, with its
+  `tenant_id` in the subscription's metadata. Plan changes after that go
+  through the portal's confirm page (prorated, with card authentication), so
+  a workspace never has two subscriptions.
+- The webhook checks Stripe's signature and its timestamp (5 minutes), then
+  fetches the subscription, so billing saves Stripe's current state in
+  whatever order events arrive. Updates that change nothing (Stripe sends
+  many) publish nothing.
+- `active` and `trialing` set the plan; `past_due` and `unpaid` are a failed
+  payment (the plan stays); `canceled` means Free. Cancelling in the portal
+  takes effect at the end of the paid period.
+
+Going live: replace the key in `/saas/prod/stripe-secret-key` with the live
+key and run `stripe-setup.py --stack saas-prod` again; live mode gets its own
+prices, portal and webhook. Not covered yet: taxes, yearly prices, trials and
+coupons.
 
 ## Dependencies (uv)
 
@@ -269,10 +323,12 @@ uv run scripts/smoke-test.py --stack saas-dev
 ```
 
 It creates three test users and calls every endpoint: workspaces, orders,
-billing webhooks (upgrade, payment failed, cancel), invitations, roles,
+billing (upgrade, payment failed, cancel; through Stripe's test mode on a
+Stripe stack), invitations, roles,
 leaving and removing members, tenant isolation and plan limits, and it waits
 for the events to reach the accounts and notifications workers. It needs AWS
-credentials for the stack (to create the users and read the webhook secret),
+credentials for the stack (to create the users and read the webhook secret
+or the Stripe key),
 so use it on dev, not prod. The test users' logins are saved in
 `.aws-sam/smoke-users.json`.
 
@@ -291,7 +347,7 @@ pnpm dev                               # http://localhost:5173
 ```
 
 Its API types and plan catalog are generated from this code (`pnpm gen:api`);
-CI fails if they are out of date. With `DevPaymentProvider`, checkout lands on
+CI fails if they are out of date. With `PaymentProvider=dev`, checkout lands on
 the app's `/dev-checkout` page, which shows the `scripts/dev-pay.py` command
 that sends the signed webhook a real provider would send. See
 [web/README.md](web/README.md).
@@ -421,11 +477,8 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
 - To send email, verify your domain in SES, request SES production access,
   and set `EmailSender` and `SesIdentity`. Until then app emails, invitations
   included, are only logged
-- Replace `DevPaymentProvider` in `billing/container.py` with a real provider
-  (map its event id and creation time; reject webhooks with old timestamps).
-  If it offers it, fetch the current subscription from its API instead of
-  trusting event order. Point its return URL at the app's `/billing` page,
-  which waits for the webhook
+- Switch prod's Stripe to live mode ("Payments"), and turn on Stripe Tax if
+  you need to charge tax
 - Review the rate limits and the invitation rules (`INVITATION_DAYS`,
   `INVITES_PER_DAY`, `MAX_PENDING_INVITATIONS_PER_EMAIL`)
 - Deploy prod to its own AWS account

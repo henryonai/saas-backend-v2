@@ -13,6 +13,10 @@ class Subscription(BaseModel):
     # can include owner details without asking the accounts module.
     owner_id: str = ""
     owner_email: str = ""
+    # The provider's ids for this workspace (Stripe: cus_... and sub_...), saved
+    # from its webhooks. Plan changes and the billing portal need them.
+    customer_id: str = ""
+    subscription_id: str = ""
     # Increases with every change; listeners use it to ignore late events.
     revision: int = 0
     # The provider event that last set each field, so older or repeated
