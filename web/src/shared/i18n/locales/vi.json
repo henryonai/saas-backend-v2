@@ -48,6 +48,7 @@
   },
   "nav": {
     "account": "Tài khoản",
+    "assistant": "Trợ lý",
     "billing": "Thanh toán",
     "notifications": "Thông báo",
     "orders": "Đơn hàng",
@@ -296,6 +297,45 @@
     "emptyTitle": "Không có thông báo",
     "markAll": "Đánh dấu tất cả đã đọc",
     "viewAll": "Xem tất cả"
+  },
+  "assistant": {
+    "title": "Trợ lý",
+    "description": "Hỏi về đơn hàng và mức sử dụng của workspace. Trợ lý dùng quyền của bạn, nên chỉ thấy những gì bạn thấy.",
+    "newConversation": "Cuộc trò chuyện mới",
+    "emptyTitle": "Hỏi trợ lý",
+    "empty": "Trợ lý có thể tra cứu đơn hàng, xem hạn mức trợ lý tháng này và, với các gói trả phí, chạy code để phân tích chúng.",
+    "suggestions": {
+      "orders": "5 đơn hàng gần nhất của tôi là gì?",
+      "usage": "Tháng này chúng ta đã dùng bao nhiêu hạn mức trợ lý?",
+      "analyze": "Phân tích đơn hàng: tổng theo trạng thái, và đơn lớn nhất."
+    },
+    "placeholder": "Nhắn cho trợ lý",
+    "hint": "Enter để gửi, Shift+Enter để xuống dòng",
+    "send": "Gửi",
+    "stop": "Dừng",
+    "thinking": "Đang suy nghĩ…",
+    "tokens": "Câu trả lời vừa rồi: {{tokens}} token",
+    "errorTitle": "Trợ lý không trả lời được",
+    "errors": {
+      "internal": "Trợ lý gặp sự cố. Vui lòng thử lại.",
+      "busy": "Trợ lý đang bận. Vui lòng thử lại sau giây lát."
+    },
+    "notSetUp": {
+      "title": "Trợ lý chưa được thiết lập",
+      "description": "Ứng dụng chưa có VITE_ASSISTANT_URL. Hãy triển khai trợ lý (modules/assistant/README.md), rồi ghi lại web/.env.local:"
+    },
+    "tool": {
+      "listOrders": "Liệt kê đơn hàng",
+      "getOrder": "Xem một đơn hàng",
+      "usage": "Xem hạn mức trợ lý",
+      "bash": "Chạy code",
+      "task": "Nhờ agent {{agent}}",
+      "taskPending": "Nhờ một agent khác",
+      "input": "Đầu vào",
+      "result": "Kết quả",
+      "running": "Đang chạy",
+      "done": "Xong"
+    }
   },
   "upgrade": {
     "title": "Đã đạt giới hạn của gói",

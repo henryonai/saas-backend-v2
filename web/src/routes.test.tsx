@@ -68,6 +68,8 @@ describe('pages', () => {
     ['/', 'Acme Coffee', 'Recent orders'],
     ['/orders', 'Orders', 'Green tea'],
     ['/orders/o-1', 'Green tea', 'Mark as paid'],
+    // set up or not (VITE_ASSISTANT_URL in .env.local), the page says what it is for
+    ['/assistant', 'Assistant', "Ask about your workspace's orders and usage. It works with your access, so it sees only what you can."],
     ['/team', 'Team', 'linh@example.com'],
     ['/billing', 'Billing', 'Upgrade to Pro'],
     ['/notifications', 'Notifications', 'Your order for Green tea was created.'],

@@ -238,10 +238,13 @@ await agent.runAgent({ forwardedProps: { agent: "assistant" } }, {   // forwarde
 - **WebSocket**: `/ws` streams the same events (the SDK's `AGUIApp`); not
   tried on AgentCore yet.
 
-Not verified yet: whether the AgentCore endpoint answers a browser's CORS
-preflight. Test it from your app's origin first. If it doesn't, AWS's pattern
-is CloudFront in front of the runtime with a CORS response headers policy
-(see Sources), which also gives you a custom domain.
+**From a browser**: the AgentCore endpoint answers CORS itself, for any
+origin (checked on the dev stack, October 2026: the preflight allows
+`authorization`, `content-type` and the session header, and responses carry
+`Access-Control-Allow-Origin: *`), so the app calls it directly. The web app's
+Assistant page (`web/src/features/assistant/`) is a working client. For a
+custom domain, AWS's pattern is CloudFront in front of the runtime (see
+Sources).
 
 ## Deploy
 
