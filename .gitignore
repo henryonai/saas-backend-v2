@@ -18,3 +18,4 @@ docs/openapi/
 .swarm/
 ruvector.db
 .claude-flow/metrics/
+.claude-flow/policy/
