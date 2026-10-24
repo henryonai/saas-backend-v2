@@ -15,6 +15,7 @@ import { Route as PublicRouteImport } from './routes/_public'
 import { Route as DevCheckoutRouteImport } from './routes/dev-checkout'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAccountRouteImport } from './routes/_app/account'
+import { Route as AppAssistantRouteImport } from './routes/_app/assistant'
 import { Route as AppBillingRouteImport } from './routes/_app/billing'
 import { Route as AppNotificationsRouteImport } from './routes/_app/notifications'
 import { Route as AppTeamRouteImport } from './routes/_app/team'
@@ -51,6 +52,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
 const AppAccountRoute = AppAccountRouteImport.update({
   id: '/account',
   path: '/account',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAssistantRoute = AppAssistantRouteImport.update({
+  id: '/assistant',
+  path: '/assistant',
   getParentRoute: () => AppRoute,
 } as any)
 const AppBillingRoute = AppBillingRouteImport.update({
@@ -108,6 +114,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/dev-checkout': typeof DevCheckoutRoute
   '/account': typeof AppAccountRoute
+  '/assistant': typeof AppAssistantRoute
   '/billing': typeof AppBillingRoute
   '/notifications': typeof AppNotificationsRoute
   '/team': typeof AppTeamRoute
@@ -123,6 +130,7 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/dev-checkout': typeof DevCheckoutRoute
   '/account': typeof AppAccountRoute
+  '/assistant': typeof AppAssistantRoute
   '/billing': typeof AppBillingRoute
   '/notifications': typeof AppNotificationsRoute
   '/team': typeof AppTeamRoute
@@ -141,6 +149,7 @@ export interface FileRoutesById {
   '/_public': typeof PublicRouteWithChildren
   '/dev-checkout': typeof DevCheckoutRoute
   '/_app/account': typeof AppAccountRoute
+  '/_app/assistant': typeof AppAssistantRoute
   '/_app/billing': typeof AppBillingRoute
   '/_app/notifications': typeof AppNotificationsRoute
   '/_app/team': typeof AppTeamRoute
@@ -159,6 +168,7 @@ export interface FileRouteTypes {
     | '/'
     | '/dev-checkout'
     | '/account'
+    | '/assistant'
     | '/billing'
     | '/notifications'
     | '/team'
@@ -174,6 +184,7 @@ export interface FileRouteTypes {
     | '/'
     | '/dev-checkout'
     | '/account'
+    | '/assistant'
     | '/billing'
     | '/notifications'
     | '/team'
@@ -191,6 +202,7 @@ export interface FileRouteTypes {
     | '/_public'
     | '/dev-checkout'
     | '/_app/account'
+    | '/_app/assistant'
     | '/_app/billing'
     | '/_app/notifications'
     | '/_app/team'
@@ -253,6 +265,13 @@ declare module '@tanstack/react-router' {
       path: '/account'
       fullPath: '/account'
       preLoaderRoute: typeof AppAccountRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/assistant': {
+      id: '/_app/assistant'
+      path: '/assistant'
+      fullPath: '/assistant'
+      preLoaderRoute: typeof AppAssistantRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/billing': {
@@ -330,6 +349,7 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppAccountRoute: typeof AppAccountRoute
+  AppAssistantRoute: typeof AppAssistantRoute
   AppBillingRoute: typeof AppBillingRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
   AppTeamRoute: typeof AppTeamRoute
@@ -340,6 +360,7 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppAccountRoute: AppAccountRoute,
+  AppAssistantRoute: AppAssistantRoute,
   AppBillingRoute: AppBillingRoute,
   AppNotificationsRoute: AppNotificationsRoute,
   AppTeamRoute: AppTeamRoute,

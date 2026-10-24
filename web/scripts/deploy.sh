@@ -19,6 +19,7 @@ echo "Building for $stack"
 VITE_API_URL=$(stack_output "$stack" ApiUrl) \
 VITE_USER_POOL_ID=$(stack_output "$stack" UserPoolId) \
 VITE_USER_POOL_CLIENT_ID=$(stack_output "$stack" UserPoolClientId) \
+VITE_ASSISTANT_URL=$(stack_output_or_empty "$stack" AssistantUrl) \
   pnpm build
 
 # Hashed files never change, so browsers keep them for a year. They go up first and

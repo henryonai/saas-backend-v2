@@ -31,6 +31,8 @@ export_requirements saas-shared layers/shared/layer/requirements.txt
 
 for module_dir in modules/*/; do
   module=$(basename "$module_dir")
+  # Runs on AgentCore Runtime, not Lambda: scripts/package-assistant.py bundles it from uv.lock.
+  [[ "$module" == assistant ]] && continue
   # The shared layer already provides saas-shared and everything it depends on.
   export_requirements "saas-$module" "${module_dir}src/requirements.txt" --prune saas-shared
 done

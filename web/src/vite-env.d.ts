@@ -4,6 +4,7 @@ interface ImportMetaEnv {
   readonly VITE_API_URL?: string;
   readonly VITE_USER_POOL_ID?: string;
   readonly VITE_USER_POOL_CLIENT_ID?: string;
+  readonly VITE_ASSISTANT_URL?: string;
 }
 
 interface ImportMeta {

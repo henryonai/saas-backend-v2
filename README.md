@@ -1,7 +1,9 @@
 # SaaS backend (multi-tenant, serverless)
 
 Python on AWS Lambda, with Lambda Powertools, DynamoDB, Cognito and EventBridge.
-Four self-contained modules: **accounts, orders, notifications, billing**.
+Four self-contained modules: **accounts, orders, notifications, billing**, plus
+an **assistant** (a LangChain agent on Amazon Bedrock AgentCore, see
+[modules/assistant/README.md](modules/assistant/README.md)).
 Orders is the sample module: a small domain module to copy for your own.
 
 ## Starting a new project from this template
@@ -40,6 +42,7 @@ saas-backend-v2/
 │   ├── smoke-test.py           # end-to-end check of a deployed stack (after sam deploy)
 │   ├── stripe-setup.py         # Stripe prices, portal and webhook for a stack
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
+│   ├── package-assistant.py    # the assistant's arm64 code zip -> S3, for sam deploy
 │   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
 │   ├── replay-outbox.py        # publish saved events again after an outage
 │   └── rename-project.py       # give a new copy of the template its own name
@@ -74,6 +77,8 @@ saas-backend-v2/
 │       │   ├── handler.py      # Lambda entry point for the HTTP API
 │       │   └── ...             # other entry points (worker, webhook, triggers)
 │       └── tests/
+│   (modules/assistant runs on AgentCore Runtime instead: app.py instead of
+│    handler.py; its agents are Markdown files in src/assistant/agents/)
 ├── testkit/                    # package "saas-testkit": test helpers and fakes (not deployed)
 ├── web/                        # the React app (see web/README.md)
 ├── template.yaml               # one section per module
@@ -128,6 +133,7 @@ fields such as `subscription_revision`).
 | Something happened | Event | Orders saves `OrderCreated`; notifications reacts |
 | Listener needs details | Fat event | Billing's events include `owner_email`, so notifications can email without asking accounts |
 | Need another module's data often | Local copy via events | Accounts keeps a copy of the plan, updated by `SubscriptionChanged` |
+| Act for the user | Public HTTP API, with the user's own token | The assistant's tools list orders through `/orders` |
 
 **Events** (each one also carries `tenant_id`, `event_id` and `occurred_at`)
 
@@ -195,6 +201,13 @@ carries the new plan. The frontend should refresh the token after checkout.
   read or update), only the relay can publish events, and only the webhook
   function can read the webhook signing secret (the billing API can read the
   Stripe key, to start checkouts).
+- **The assistant** takes the same ID tokens (AgentCore Runtime's JWT
+  authorizer checks the user pool, audience and `token_use`), counts every
+  message and model token against the plan, keeps each user's conversations
+  and memories under `<tenant_id>:<user_id>`, and reaches workspace data only
+  through the HTTP API with the caller's token. Its terminal (bash tool) runs
+  in a separate AgentCore Code Interpreter sandbox per conversation, with no
+  AWS role and, by default, no internet.
 
 ## Dependency injection, in one example
 
@@ -330,10 +343,18 @@ sam sync --config-env dev   # fast code sync while developing
 sam deploy --config-env prod
 ```
 
+With the assistant, package its code first and pass its location (without it,
+a new stack has no assistant, and an existing one keeps the code it has):
+
+```bash
+sam deploy --config-env dev \
+  --parameter-overrides "$(uv run python scripts/package-assistant.py --config-env dev)"
+```
+
 Outputs: `ApiUrl`, `UserPoolId`, `UserPoolClientId` (for the React app),
-`WebhookUrl` (for the payment provider), `EventBusName`, `AlertsTopicArn`, and
+`WebhookUrl` (for the payment provider), `EventBusName`, `AlertsTopicArn`,
 `WebUrl`, `WebBucketName`, `WebDistributionId` (where `web/scripts/deploy.sh`
-publishes the app).
+publishes the app), and `AssistantUrl` when the assistant is deployed.
 
 The tables and the user pool are kept when the stack is deleted (and can't be
 deleted at all in prod), so data survives mistakes. Delete them by hand if you

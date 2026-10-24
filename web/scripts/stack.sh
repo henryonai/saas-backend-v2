@@ -14,3 +14,12 @@ stack_output() {
   fi
   echo "$value"
 }
+
+# stack_output_or_empty <stack> <output key>: the output's value, or nothing if the stack has none
+# (for optional parts of the stack, such as the assistant).
+stack_output_or_empty() {
+  local value
+  value=$(aws cloudformation describe-stacks --stack-name "$1" --region "$region" \
+    --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue | [0]" --output text)
+  [[ "$value" == "None" ]] || echo "$value"
+}

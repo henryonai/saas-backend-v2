@@ -2,7 +2,8 @@
 
 The frontend of the backend in this repository: sign-up and sign-in (Cognito),
 creating or joining a workspace, orders, the team and its invitations,
-billing, and notifications. English and Vietnamese, light and dark.
+billing, notifications, and a chat with the AI assistant. English and
+Vietnamese, light and dark.
 
 ## Stack
 
@@ -24,7 +25,10 @@ pnpm dev                               # http://localhost:5173
 ```
 
 The dev stack allows any origin (`CorsOrigin=*`), so a local dev server can
-call the API directly.
+call the API directly. The assistant's endpoint (AgentCore) answers any
+origin's CORS preflight itself. `VITE_ASSISTANT_URL` is optional: a stack
+deployed without the assistant has no `AssistantUrl` output, and then only
+the Assistant page says it isn't set up.
 
 ## Deploying
 
@@ -53,7 +57,7 @@ src/
   routes/               file routes, thin: each renders a page from features/
     _public/            sign-in, sign-up, confirm, forgot-password (signed out only)
     _onboarding/        welcome: create a workspace or accept an invitation (signed in, no workspace)
-    _app/               the app (signed in, with a workspace): overview, orders, team, billing, ...
+    _app/               the app (signed in, with a workspace): overview, orders, assistant, team, ...
     dev-checkout.tsx    DevPaymentProvider's checkout page
   features/<area>/      one area of the app (see below)
   shared/
@@ -95,6 +99,7 @@ API outside React (the billing page's wait for the new plan) calls `api.ts`.
 | Team | `GET /users`, `PATCH /users/{id}/role`, `DELETE /users/{id}`, `GET /users/invitations`, `POST /users/invite`, `DELETE /users/invitations/{email}` |
 | Billing | `GET /billing`, `POST /billing/checkout`, `POST /billing/portal` ("Manage billing") |
 | Notifications (and the bell, every 45 s) | `GET /notifications`, `POST /notifications/{id}/read` |
+| Assistant | AgentCore's `/invocations` (`AssistantUrl`), AG-UI over SSE, not the HTTP API |
 
 - **The session is the ID token.** Its claims say who the user is and their
   workspace, role and plan (all three or none). The routes use them to send
@@ -112,6 +117,31 @@ API outside React (the billing page's wait for the new plan) calls `api.ts`.
   to 2 minutes) until the new plan shows, then refreshes the token.
 - **Role checks in the UI** only hide what the user can't do; the backend
   decides.
+
+## The assistant's chat
+
+`features/assistant/` talks [AG-UI](https://docs.ag-ui.com), the assistant's
+only contract (modules/assistant/README.md, "Calling it from the frontend"),
+through the official client, `@ag-ui/client`:
+
+- `api.ts`: `AssistantAgent`, an `HttpAgent` that sends the ID token and the
+  threadId as the AgentCore session header, and only the newest user message
+  (the server keeps the conversation and reads nothing else). `runError()`
+  reads AgentCore's own errors, which come with an HTTP error status (the
+  client throws them) rather than in the stream.
+- `conversation.ts`: the conversation (a zustand store, like the session).
+  It keeps the messages the client assembles from the events, and survives
+  leaving the page; a reload, "New conversation", signing out or changing
+  workspace starts a new threadId. A token turned down (`UNAUTHORIZED`,
+  `ACCESS_DENIED`) gets one retry with new tokens, like the API client: the
+  server checks it before counting the message.
+- `transcript.ts`: messages to what the page shows: one turn per answer, its
+  text (Markdown) and tool calls in order, each with its input and result.
+- Errors are `RUN_ERROR` codes: `PLAN_LIMIT_REACHED` shows the upgrade notice;
+  the rest say what happened, with "Try again" when asking again may help.
+  "Stop" only stops showing the answer: the server finishes it.
+
+The AG-UI client (with rxjs) loads with the Assistant page only.
 
 ## Testing a checkout
 
@@ -153,6 +183,7 @@ files have the same keys and `{{variables}}`.
 
 ## Not built yet
 
-- The assistant's chat (it streams from AgentCore, not the HTTP API)
+- Reopening an earlier conversation with the assistant (the server keeps them
+  but can't list them yet)
 - Changing the email address, turning on MFA (sign-in already handles an
   authenticator code)

@@ -54,7 +54,14 @@ class CurrentUser:
 
 def get_current_user(request: Request) -> CurrentUser:
     """Dependency: builds CurrentUser from the verified JWT claims."""
-    claims = request.resolved_event.request_context.authorizer.jwt_claim or {}
+    return user_from_claims(request.resolved_event.request_context.authorizer.jwt_claim or {})
+
+
+def user_from_claims(claims: dict) -> CurrentUser:
+    """
+    Builds CurrentUser from claims that something already verified (API
+    Gateway's JWT authorizer, or AgentCore Runtime's for the assistant).
+    """
     # The authorizer also accepts access tokens, which carry no email or
     # tenant claims. Only ID tokens are customized by the login trigger.
     if claims.get("token_use") != "id":

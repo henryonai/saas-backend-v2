@@ -9,7 +9,8 @@ import importlib
 import json
 from pathlib import Path
 
-MODULES = sorted(p.name for p in Path("modules").iterdir() if (p / "src").is_dir())
+# Modules with an HTTP API (the assistant streams from AgentCore instead: see its schemas.py).
+MODULES = sorted(p.name for p in Path("modules").iterdir() if (p / "src" / p.name / "handler.py").is_file())
 OUTPUT = Path("docs/openapi")
 
 OUTPUT.mkdir(parents=True, exist_ok=True)

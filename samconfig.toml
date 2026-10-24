@@ -19,6 +19,7 @@ parameter_overrides = [
   "Stage=dev",
   "PaymentProvider=stripe",           # test mode; scripts/stripe-setup.py sets Stripe up
   "PaymentWebhookSecretParam=/saas/dev/payment-webhook-secret",
+  "OpenRouterApiKeyParam=/saas/dev/openrouter-api-key",
   "StripeSecretKeyParam=/saas/dev/stripe-secret-key",
   "StripeConfigParam=/saas/dev/stripe-config",
   'AppUrl=""',        # empty (quoted: SAM refuses a bare "AppUrl="): links open WebUrl
@@ -38,6 +39,7 @@ parameter_overrides = [
   "Stage=prod",
   "PaymentProvider=stripe",           # test mode until the live key replaces the test key in SSM
   "PaymentWebhookSecretParam=/saas/prod/payment-webhook-secret",
+  "OpenRouterApiKeyParam=/saas/prod/openrouter-api-key",
   "StripeSecretKeyParam=/saas/prod/stripe-secret-key",
   "StripeConfigParam=/saas/prod/stripe-config",
   'AppUrl=""',                        # empty: links open the app this stack hosts (WebUrl)

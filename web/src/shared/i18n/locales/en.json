@@ -48,6 +48,7 @@
   },
   "nav": {
     "account": "Account",
+    "assistant": "Assistant",
     "billing": "Billing",
     "notifications": "Notifications",
     "orders": "Orders",
@@ -298,6 +299,45 @@
     "emptyTitle": "No notifications",
     "markAll": "Mark all as read",
     "viewAll": "View all"
+  },
+  "assistant": {
+    "title": "Assistant",
+    "description": "Ask about your workspace's orders and usage. It works with your access, so it sees only what you can.",
+    "newConversation": "New conversation",
+    "emptyTitle": "Ask the assistant",
+    "empty": "It can look up your orders, check this month's assistant allowance and, on paid plans, run code to analyze them.",
+    "suggestions": {
+      "orders": "What were my last 5 orders?",
+      "usage": "How much of this month's assistant allowance have we used?",
+      "analyze": "Analyze our orders: totals by status, and the biggest one."
+    },
+    "placeholder": "Message the assistant",
+    "hint": "Enter to send, Shift+Enter for a new line",
+    "send": "Send",
+    "stop": "Stop",
+    "thinking": "Thinking…",
+    "tokens": "Last answer: {{tokens}} tokens",
+    "errorTitle": "The assistant couldn't answer",
+    "errors": {
+      "internal": "Something went wrong on the assistant's side. Please try again.",
+      "busy": "The assistant is busy right now. Try again in a moment."
+    },
+    "notSetUp": {
+      "title": "The assistant isn't set up",
+      "description": "This app has no VITE_ASSISTANT_URL. Deploy the assistant (modules/assistant/README.md), then write web/.env.local again:"
+    },
+    "tool": {
+      "listOrders": "List orders",
+      "getOrder": "Get an order",
+      "usage": "Check the assistant allowance",
+      "bash": "Run code",
+      "task": "Ask the {{agent}} agent",
+      "taskPending": "Ask another agent",
+      "input": "Input",
+      "result": "Result",
+      "running": "Running",
+      "done": "Done"
+    }
   },
   "upgrade": {
     "title": "Your plan's limit is reached",

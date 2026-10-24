@@ -1,0 +1,32 @@
+[project]
+name = "saas-assistant"
+version = "0.1.0"
+requires-python = ">=3.13"
+# This module runs on AgentCore Runtime, not Lambda: there is no layer, so
+# scripts/package-assistant.py bundles everything below, saas-shared included.
+dependencies = [
+    "saas-shared",
+    "ag-ui-protocol>=1.0,<2",              # AG-UI events and RunAgentInput (the frontend contract)
+    "aws-opentelemetry-distro>=0.21,<1",   # traces in CloudWatch (entry point: opentelemetry-instrument)
+    "bedrock-agentcore>=1.24,<2",          # AGUIApp: the AG-UI /invocations, /ws and /ping server
+    "httpx>=0.28,<1",                      # tools call the other modules' HTTP API
+    "langchain>=1.4,<2",                   # create_agent and middleware
+    "langchain-aws>=1.9,<2",               # ChatBedrockConverse (Bedrock model ids)
+    "langchain-openai>=1.7,<2",            # ChatOpenAI against OpenRouter's OpenAI-compatible API
+    "langgraph-checkpoint-aws>=1.2,<2",    # AgentCoreMemorySaver (conversation checkpoints)
+    "pyyaml>=6,<7",                        # agents/*.md frontmatter
+]
+
+[dependency-groups]
+dev = ["saas-testkit"]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "assistant"
+
+[tool.uv.sources]
+saas-shared = { workspace = true }
+saas-testkit = { workspace = true }
