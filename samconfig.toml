@@ -17,8 +17,11 @@ resolve_s3 = true
 confirm_changeset = false
 parameter_overrides = [
   "Stage=dev",
+  "PaymentProvider=stripe",           # test mode; scripts/stripe-setup.py sets Stripe up
   "PaymentWebhookSecretParam=/saas/dev/payment-webhook-secret",
   "OpenRouterApiKeyParam=/saas/dev/openrouter-api-key",
+  "StripeSecretKeyParam=/saas/dev/stripe-secret-key",
+  "StripeConfigParam=/saas/dev/stripe-config",
   'AppUrl=""',        # empty (quoted: SAM refuses a bare "AppUrl="): links open WebUrl
   "CorsOrigin=*",     # any origin, so a local dev server can call the API too
 ]
@@ -31,15 +34,19 @@ watch = true
 stack_name = "saas-prod"
 capabilities = "CAPABILITY_IAM"
 resolve_s3 = true
-confirm_changeset = true   # always review changes before they hit production
+confirm_changeset = true   # at a terminal: review the changes first (CD prepares, then applies)
 parameter_overrides = [
   "Stage=prod",
+  "PaymentProvider=stripe",           # test mode until the live key replaces the test key in SSM
   "PaymentWebhookSecretParam=/saas/prod/payment-webhook-secret",
   "OpenRouterApiKeyParam=/saas/prod/openrouter-api-key",
-  "AppUrl=https://app.example.com",
-  "CorsOrigin=https://app.example.com",
-  "EmailSender=no-reply@example.com",
-  "SesIdentity=example.com",          # verified in SES; Cognito emails go through it too
-  "AlertEmail=ops@example.com",       # confirm the subscription email after the first deploy
+  "StripeSecretKeyParam=/saas/prod/stripe-secret-key",
+  "StripeConfigParam=/saas/prod/stripe-config",
+  'AppUrl=""',                        # empty: links open the app this stack hosts (WebUrl)
+  'CorsOrigin=""',                    # empty: only that app may call the API
+  # With your own domain verified in SES, add EmailSender=no-reply@<domain> and
+  # SesIdentity=<domain>. Until then app emails (invitations too) are only logged,
+  # and Cognito sends sign-up codes itself (about 50 a day).
+  "AlertEmail=henryhoang.tech@gmail.com",  # confirm the subscription email after the first deploy
   "LogRetentionDays=90",
 ]

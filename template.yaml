@@ -10,10 +10,27 @@ Parameters:
     Type: String
     AllowedValues: [dev, prod]
     Default: dev
+  PaymentProvider:
+    Type: String
+    AllowedValues: [dev, stripe]
+    Default: dev
+    Description: >-
+      dev = the stand-in (checkout on the app's /dev-checkout page, webhooks from scripts/dev-pay.py);
+      stripe = Stripe (run scripts/stripe-setup.py after the first deploy)
   PaymentWebhookSecretParam:
     Type: String
     Default: /saas/dev/payment-webhook-secret
-    Description: Name of an SSM SecureString parameter holding the webhook secret (create it first)
+    Description: >-
+      Name of an SSM SecureString parameter holding the webhook secret: create it first (dev), or
+      let scripts/stripe-setup.py write Stripe's signing secret (stripe)
+  StripeSecretKeyParam:
+    Type: String
+    Default: /saas/dev/stripe-secret-key
+    Description: Name of an SSM SecureString parameter holding the Stripe secret key (stripe only)
+  StripeConfigParam:
+    Type: String
+    Default: /saas/dev/stripe-config
+    Description: Name of the SSM parameter where scripts/stripe-setup.py saves prices and portal (stripe only)
   EmailSender:
     Type: String
     Default: ""
@@ -429,6 +446,8 @@ Resources:
 
   # =====================================================================
   # Module: orders  (/orders)
+  # The sample module: copy it to start your own, remove it once you don't need
+  # the example ("The sample module" in the README lists what uses it).
   # =====================================================================
   OrdersTable:
     Type: AWS::DynamoDB::Table
@@ -481,6 +500,7 @@ Resources:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
       TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # processed-event records
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
   NotificationsApiFunction:
     Type: AWS::Serverless::Function
@@ -606,11 +626,19 @@ Resources:
           POWERTOOLS_SERVICE_NAME: billing
           BILLING_TABLE: !Ref BillingTable
           APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
+          PAYMENT_PROVIDER: !Ref PaymentProvider
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParam
+          STRIPE_CONFIG_PARAM: !Ref StripeConfigParam
       Policies:
         - Statement:
             - Effect: Allow
               Action: [dynamodb:GetItem, dynamodb:UpdateItem]   # summary and checkout; no webhook secret
               Resource: !GetAtt BillingTable.Arn
+            - Effect: Allow
+              Action: [ssm:GetParameter]                        # Stripe's key and config, to start checkouts
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParam}"
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeConfigParam}"
       Events:
         BillingGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /billing, Method: GET } }
         BillingAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/billing/{proxy+}", Method: POST } }
@@ -627,12 +655,18 @@ Resources:
           BILLING_TABLE: !Ref BillingTable
           PAYMENT_WEBHOOK_SECRET_PARAM: !Ref PaymentWebhookSecretParam
           APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
+          PAYMENT_PROVIDER: !Ref PaymentProvider
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParam
+          STRIPE_CONFIG_PARAM: !Ref StripeConfigParam
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref BillingTable }
         - Statement:
             - Effect: Allow
               Action: [ssm:GetParameter]
-              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${PaymentWebhookSecretParam}"
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${PaymentWebhookSecretParam}"
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParam}"
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeConfigParam}"
       Events:
         Webhook:
           Type: HttpApi

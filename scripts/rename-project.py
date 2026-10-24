@@ -1,0 +1,148 @@
+"""
+Renames the project: every name this template writes into packages, stacks,
+AWS resources, events and the browser. Run it once in a new copy of the
+template, before its first deploy:
+
+    uv run python scripts/rename-project.py acme
+    uv run python scripts/rename-project.py acme --title "Acme" --dry-run
+
+It reads the current name from pyproject.toml ("<name>-backend"), so it can
+also rename a project again. In every file git tracks it changes:
+
+    saas-shared, saas-<module>, saas-web    package names
+    saas-dev, saas-prod                     stacks, deploy roles (samconfig.toml, README)
+    saas-${Stage}                           user pool name, metrics namespace
+    /saas/dev/payment-webhook-secret        SSM parameter names
+    saas.app                                the event source (shared/events.py, rules)
+    saas.theme, saas.lang, ...              browser storage keys
+
+and, with --title, the app's name on screen (web/index.html and the locale
+files). Then it refreshes uv.lock and the requirements.txt files.
+
+Deployed resources keep their names: a renamed project deploys new stacks.
+It needs a clean git working tree, so `git diff` shows exactly what it did.
+"""
+import argparse
+import html
+import json
+import re
+import shutil
+import subprocess
+import sys
+from collections.abc import Callable
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+VALID_NAME = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
+MAX_LENGTH = 20  # room for the longest generated names, e.g. "<name>-prod-github-deploy"
+LOCALES = sorted((ROOT / "web/src/shared/i18n/locales").glob("*.json"))
+
+
+def current_name() -> str:
+    match = re.search(r'^name = "([a-z0-9-]+)-backend"$', (ROOT / "pyproject.toml").read_text(), re.M)
+    if not match:
+        sys.exit('pyproject.toml has no line name = "<name>-backend"; is this the template?')
+    return match.group(1)
+
+
+def name_rules(old: str, new: str) -> list[tuple[re.Pattern, str]]:
+    o = re.escape(old)
+    return [
+        (re.compile(r"\b" + o + r"-backend-v2\b"), new),                    # the repository, in the README
+        (re.compile(r"(?<![\w-])" + o + r"(?=[-.][\w$<{])"), new),          # saas-shared, saas-${Stage}, saas.app
+        (re.compile(r"(?<=/)" + o + r"(?=/)"), new),                        # /saas/dev/...
+    ]
+
+
+def title_rules(title: str) -> dict[Path, tuple[re.Pattern, Callable[[re.Match], str]]]:
+    tag = f"<title>{html.escape(title)}</title>"
+    quoted = json.dumps(title, ensure_ascii=False)
+    rules = {ROOT / "web/index.html": (re.compile(r"<title>[^<]*</title>"), lambda _: tag)}
+    for locale in LOCALES:  # "app": { "name": "..." }
+        rules[locale] = (re.compile(r'("app":\s*\{\s*"name":\s*)"(?:[^"\\]|\\.)*"'), lambda m: m.group(1) + quoted)
+    return rules
+
+
+def tracked_files() -> list[Path]:
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    return [ROOT / name for name in out.split("\0") if name and (ROOT / name).is_file()]
+
+
+def read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None  # not a text file
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("name", help="lowercase letters, digits and dashes, e.g. acme or acme-shop")
+    parser.add_argument("--title", help='the app\'s name on screen, e.g. "Acme" (default: unchanged)')
+    parser.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
+    args = parser.parse_args()
+
+    old, new = current_name(), args.name
+    if not VALID_NAME.match(new) or len(new) > MAX_LENGTH:
+        sys.exit(f"{new!r}: use 1-{MAX_LENGTH} lowercase letters, digits and dashes, starting with a letter")
+    if new == old and not args.title:
+        sys.exit(f"The project is already called {old!r}.")
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True, check=True)
+    if dirty.stdout.strip() and not args.dry_run:
+        sys.exit("Commit or stash your changes first, so `git diff` shows only the rename.")
+
+    renames = name_rules(old, new) if new != old else []
+    titles = title_rules(args.title) if args.title else {}
+    changed: dict[Path, int] = {}
+    for path in tracked_files():
+        text = read_text(path)
+        if text is None:
+            continue
+        result, count = text, 0
+        for pattern, replacement in renames:
+            result, n = pattern.subn(replacement, result)
+            count += n
+        if path in titles:
+            pattern, replacement = titles[path]
+            result, n = pattern.subn(replacement, result)
+            count += n
+        if count:
+            changed[path] = count
+            if not args.dry_run:
+                path.write_text(result, encoding="utf-8")
+
+    print(f"{'Would change' if args.dry_run else 'Changed'} {sum(changed.values())} names in {len(changed)} files:")
+    for path, count in sorted(changed.items()):
+        print(f"  {count:4}  {path.relative_to(ROOT)}")
+    if args.dry_run or not renames:
+        return
+
+    if shutil.which("uv"):
+        subprocess.run(["uv", "lock", "--quiet"], cwd=ROOT, check=True)
+        subprocess.run(["./scripts/export-requirements.sh"], cwd=ROOT, check=True)
+        print("Refreshed uv.lock and the requirements.txt files.")
+    else:
+        print("uv not found: run `uv lock` and ./scripts/export-requirements.sh yourself.")
+
+    leftovers = [
+        f"{path.relative_to(ROOT)}: {match.group(0)}"
+        for path in tracked_files()
+        if (text := read_text(path)) is not None
+        for pattern, _ in name_rules(old, new)
+        for match in pattern.finditer(text)
+    ]
+    if leftovers:
+        print(f"Still named {old!r} (check by hand):", *leftovers, sep="\n  ")
+
+    print(f"""
+Next:
+  uv sync --all-packages && (cd web && pnpm install)
+  git diff                  # review, then commit
+Before the first deploy (see "CI/CD" in the README):
+  aws ssm put-parameter --name /{new}/dev/payment-webhook-secret \\
+      --type SecureString --value "$(openssl rand -hex 32)"
+  sam build && sam deploy --config-env dev      # creates the stack {new}-dev""")
+
+
+if __name__ == "__main__":
+    main()

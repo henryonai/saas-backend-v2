@@ -38,7 +38,7 @@ class SubscriptionRepository:
 
     def save_change(self, sub: Subscription, expected_revision: int, events: list[Event]) -> None:
         """
-        Saves the new plan/status and its events in one transaction, only if
+        Saves the new plan/status (and the provider's ids) and its events in one transaction, only if
         nobody changed the subscription since it was read at expected_revision.
         Raises ConditionFailed({"subscription"}) otherwise.
         """
@@ -46,7 +46,8 @@ class SubscriptionRepository:
             "Key": _key(sub.tenant_id),
             "UpdateExpression": ("SET tenant_id = :t, #p = :p, #s = :s, revision = :rev, "
                                  "plan_changed_at = :pat, plan_event_id = :pid, "
-                                 "status_changed_at = :sat, status_event_id = :sid"),
+                                 "status_changed_at = :sat, status_event_id = :sid, "
+                                 "customer_id = :cid, subscription_id = :subid"),
             "ConditionExpression": ("attribute_not_exists(pk) OR attribute_not_exists(revision)"
                                     " OR revision = :expected"),
             "ExpressionAttributeNames": {"#p": "plan", "#s": "status"},
@@ -54,6 +55,7 @@ class SubscriptionRepository:
                 ":t": sub.tenant_id, ":p": sub.plan, ":s": sub.status, ":rev": sub.revision,
                 ":pat": sub.plan_changed_at, ":pid": sub.plan_event_id,
                 ":sat": sub.status_changed_at, ":sid": sub.status_event_id, ":expected": expected_revision,
+                ":cid": sub.customer_id, ":subid": sub.subscription_id,
             },
         }}
         events_ops = {f"event_{i}": outbox_put(e) for i, e in enumerate(events)}

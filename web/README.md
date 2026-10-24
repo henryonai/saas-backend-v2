@@ -97,7 +97,7 @@ API outside React (the billing page's wait for the new plan) calls `api.ts`.
 | Overview | `GET /tenants/me`, `GET /orders?limit=5`, `GET /notifications` |
 | Orders | `GET /orders` (cursor pages), `POST /orders`, `GET /orders/{id}`, `PATCH /orders/{id}/status` |
 | Team | `GET /users`, `PATCH /users/{id}/role`, `DELETE /users/{id}`, `GET /users/invitations`, `POST /users/invite`, `DELETE /users/invitations/{email}` |
-| Billing | `GET /billing`, `POST /billing/checkout` |
+| Billing | `GET /billing`, `POST /billing/checkout`, `POST /billing/portal` ("Manage billing") |
 | Notifications (and the bell, every 45 s) | `GET /notifications`, `POST /notifications/{id}/read` |
 | Assistant | AgentCore's `/invocations` (`AssistantUrl`), AG-UI over SSE, not the HTTP API |
 
@@ -143,10 +143,15 @@ through the official client, `@ag-ui/client`:
 
 The AG-UI client (with rxjs) loads with the Assistant page only.
 
-## Testing a checkout locally
+## Testing a checkout
 
-`DevPaymentProvider` sends the owner to `/dev-checkout` instead of a payment
-page. Only a signed webhook changes the plan, and the browser can't sign one,
+On a stack with `PaymentProvider=stripe` (test mode), checkout is Stripe's
+page: pay with Stripe's test card `4242 4242 4242 4242`, any future date and
+any CVC. "Manage billing" opens Stripe's portal, where cancelling and plan
+changes can be tried too.
+
+With `PaymentProvider=dev`, `DevPaymentProvider` sends the owner to
+`/dev-checkout` instead of a payment page. Only a signed webhook changes the plan, and the browser can't sign one,
 so the page shows the command that does, from the repository root:
 
 ```bash

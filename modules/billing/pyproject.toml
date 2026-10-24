@@ -3,7 +3,10 @@ name = "saas-billing"
 version = "0.1.0"
 requires-python = ">=3.13"
 # Add packages only this module needs. Shared ones come from saas-shared (the layer).
-dependencies = ["saas-shared"]
+dependencies = [
+    "saas-shared",
+    "stripe>=16,<17",   # a new major version moves to a new Stripe API version: upgrade on purpose
+]
 
 [dependency-groups]
 dev = ["saas-testkit"]

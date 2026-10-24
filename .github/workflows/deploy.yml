@@ -4,6 +4,14 @@ name: deploy
 # environment. It runs the CI checks, then deploys the backend (sam deploy) and
 # the web app (web/scripts/deploy.sh) to that environment's stack, with the AWS
 # role in the environment's AWS_ROLE_ARN variable ("CI/CD" in the README).
+#
+# Prod deploys in two runs, so the changes are read before they happen:
+#   1. Run it for prod. It prepares a CloudFormation change set, lists every
+#      change in the run's summary, and stops: nothing changes yet.
+#   2. Run it for prod again with "apply" set to the first run's number. It
+#      applies exactly that change set, then publishes the web app from the
+#      same commit.
+# Dev deploys in one run; tick "prepare" to use the two runs there too.
 on:
   workflow_dispatch:
     inputs:
@@ -12,6 +20,14 @@ on:
         type: choice
         options: [dev, prod]
         default: dev
+      apply:
+        description: To apply a prepared deploy, the number of the run that prepared it
+        type: string
+        default: ""
+      prepare:
+        description: Prepare only, then apply in a second run (prod always does)
+        type: boolean
+        default: false
 
 # One deploy per environment at a time: a second one waits for the first.
 concurrency:
@@ -34,6 +50,8 @@ jobs:
       id-token: write          # GitHub's OIDC token, exchanged for the environment's AWS role
     env:
       ENVIRONMENT: ${{ inputs.environment }}
+      APPLY_RUN: ${{ inputs.apply }}
+      PREPARE_ONLY: ${{ inputs.prepare }}
     steps:
       - name: Production deploys only from main
         if: inputs.environment == 'prod' && github.ref != 'refs/heads/main'
@@ -47,7 +65,7 @@ jobs:
         with:
           python-version: "3.13"   # sam build installs dependencies for the Lambda runtime
 
-      - name: Read samconfig.toml
+      - name: Read samconfig.toml and choose the step
         id: config
         run: |
           python - "$ENVIRONMENT" >> "$GITHUB_OUTPUT" <<'PY'
@@ -56,6 +74,11 @@ jobs:
           print("region=" + config["default"]["global"]["parameters"]["region"])
           print("stack=" + config[sys.argv[1]]["deploy"]["parameters"]["stack_name"])
           PY
+          if [[ -n "$APPLY_RUN" ]]; then step=apply
+          elif [[ "$ENVIRONMENT" == prod || "$PREPARE_ONLY" == true ]]; then step=prepare
+          else step=deploy; fi
+          echo "step=$step" >> "$GITHUB_OUTPUT"
+          echo "Step: $step"
 
       - uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -63,25 +86,84 @@ jobs:
           aws-region: ${{ steps.config.outputs.region }}
 
       - uses: aws-actions/setup-sam@v3
+        if: steps.config.outputs.step != 'apply'
         with:
           use-installer: true
 
       - name: Deploy the backend
+        if: steps.config.outputs.step == 'deploy'
         # The run itself is the confirmation: samconfig's confirm_changeset is for people at a terminal.
         run: |
           sam build
           sam deploy --config-env "$ENVIRONMENT" --no-confirm-changeset --no-fail-on-empty-changeset
 
+      - name: Prepare the backend change set
+        if: steps.config.outputs.step == 'prepare'
+        env:
+          STACK: ${{ steps.config.outputs.stack }}
+        run: |
+          sam build
+          sam deploy --config-env "$ENVIRONMENT" --no-execute-changeset --no-confirm-changeset \
+            --no-fail-on-empty-changeset | tee sam.log
+          changeset=$(grep -oE 'arn:aws:cloudformation:[^ ]+:changeSet/[^ ]+' sam.log | tail -n 1 || true)
+          python3 scripts/changeset-summary.py "$STACK" $changeset >> "$GITHUB_STEP_SUMMARY"
+          # What the apply run needs: which change set, and the commit to publish the web app from.
+          state=$(jq -cn --arg run "$GITHUB_RUN_NUMBER" --arg commit "$GITHUB_SHA" --arg changeset "$changeset" '$ARGS.named')
+          aws ssm put-parameter --name "/github-deploy/$STACK/prepared" --type String --overwrite \
+            --value "$state" > /dev/null
+          {
+            echo "Prepared from \`${GITHUB_REF_NAME}\` (${GITHUB_SHA::7}). To apply it, run **deploy** again"
+            echo "on the same branch, environment **${ENVIRONMENT}**, apply: **${GITHUB_RUN_NUMBER}**."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply the prepared change set
+        if: steps.config.outputs.step == 'apply'
+        env:
+          STACK: ${{ steps.config.outputs.stack }}
+        run: |
+          param="/github-deploy/$STACK/prepared"
+          if ! state=$(aws ssm get-parameter --name "$param" --query Parameter.Value --output text 2>/dev/null); then
+            echo "::error::Nothing is prepared for $STACK: run deploy without apply first."
+            exit 1
+          fi
+          run=$(jq -r .run <<<"$state"); commit=$(jq -r .commit <<<"$state"); changeset=$(jq -r .changeset <<<"$state")
+          if [[ "$run" != "$APPLY_RUN" ]]; then
+            echo "::error::Run #$APPLY_RUN isn't the latest prepared deploy of $STACK (that's run #$run)."
+            exit 1
+          fi
+          if [[ "$commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::Run #$run prepared commit ${commit::7}; this run is on ${GITHUB_SHA::7}. Prepare again."
+            exit 1
+          fi
+          aws ssm delete-parameter --name "$param"   # a prepared deploy is applied once
+          if [[ -z "$changeset" ]]; then
+            echo "No backend changes were prepared."
+            exit 0
+          fi
+          # A stack that doesn't exist yet waits for review (REVIEW_IN_PROGRESS) until its first change set runs.
+          before=$(aws cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text)
+          aws cloudformation execute-change-set --change-set-name "$changeset"
+          echo "Applying $changeset to $STACK..."
+          if [[ "$before" == REVIEW_IN_PROGRESS ]]; then
+            aws cloudformation wait stack-create-complete --stack-name "$STACK"
+          else
+            aws cloudformation wait stack-update-complete --stack-name "$STACK"
+          fi
+          aws cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text
+
       - uses: pnpm/action-setup@v6
+        if: steps.config.outputs.step != 'prepare'
         with:
           package_json_file: web/package.json
       - uses: actions/setup-node@v7
+        if: steps.config.outputs.step != 'prepare'
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
 
       - name: Deploy the web app
+        if: steps.config.outputs.step != 'prepare'
         working-directory: web
         env:
           STACK: ${{ steps.config.outputs.stack }}

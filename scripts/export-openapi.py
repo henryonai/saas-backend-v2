@@ -14,6 +14,8 @@ MODULES = sorted(p.name for p in Path("modules").iterdir() if (p / "src" / p.nam
 OUTPUT = Path("docs/openapi")
 
 OUTPUT.mkdir(parents=True, exist_ok=True)
+for stale in OUTPUT.glob("*.json"):   # a removed module leaves no document behind
+    stale.unlink()
 for module in MODULES:
     app = importlib.import_module(f"{module}.handler").app
     schema = json.loads(app.get_openapi_json_schema())

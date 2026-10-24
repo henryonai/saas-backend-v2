@@ -36,7 +36,7 @@ const API: Record<string, unknown> = {
   ],
   'GET /users/invitations': [{ ...invitation, tenant_id: 'tenant-1', email: 'minh@example.com' }],
   'GET /invitations': [invitation],
-  'GET /billing': { plan: 'free', plan_name: 'Free', price_usd_month: 0, status: 'active', limits: { max_users: 3, max_orders: 100 } },
+  'GET /billing': { plan: 'free', plan_name: 'Free', price_usd_month: 0, status: 'active', limits: { max_users: 3, max_orders: 100 }, manageable: true },
   'GET /notifications': [
     { notification_id: 'n-1', tenant_id: 'tenant-1', user_id: 'user-1', title: 'Order created', body: 'Your order for Green tea was created.', read: false, created_at: '2026-10-20T08:00:00Z' },
   ],
@@ -111,5 +111,11 @@ describe('route guards', () => {
     renderAt('/billing', { ...OWNER, role: 'member' });
     expect(await screen.findByText('Only the workspace owner can change the plan.')).toBeInTheDocument();
     expect(screen.queryByText('Upgrade to Pro')).not.toBeInTheDocument();
+    expect(screen.queryByText('Manage billing')).not.toBeInTheDocument();
+  });
+
+  it('lets the owner open the billing portal', async () => {
+    renderAt('/billing');
+    expect(await screen.findByRole('button', { name: 'Manage billing' })).toBeInTheDocument();
   });
 });

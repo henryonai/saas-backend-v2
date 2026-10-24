@@ -262,6 +262,8 @@
     "isCurrent": "Current plan",
     "upgradeTo": "Upgrade to {{plan}}",
     "upgraded": "You're on the {{plan}} plan now.",
+    "manage": "Manage billing",
+    "manageHint": "Change the card, see invoices or cancel.",
     "ownerOnly": "Only the workspace owner can change the plan.",
     "cancelled": "The subscription was cancelled: this workspace is on the Free plan.",
     "features": {
