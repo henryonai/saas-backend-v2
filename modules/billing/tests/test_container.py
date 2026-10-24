@@ -49,7 +49,8 @@ def test_secret_is_hidden_when_printed(monkeypatch):
 
 def test_stripe_is_wired_from_ssm(monkeypatch):
     ssm = boto3.client("ssm")
-    ssm.put_parameter(Name="/saas/test/stripe-secret-key", Value="sk_test_from_ssm", Type="SecureString")
+    ssm.put_parameter(Name="/saas/test/stripe-secret-key", Type="SecureString",
+                      Value="sk_test_from_ssm")
     ssm.put_parameter(Name="/saas/test/stripe-config", Type="String", Value=json.dumps(
         {"prices": {"pro": "price_pro"}, "plan_for_price": {"price_pro": "pro"}, "portal_configuration": "bpc_1"}))
     monkeypatch.setenv("BILLING_TABLE", "billing-dev")

@@ -10,7 +10,7 @@ It reads the current name from pyproject.toml ("<name>-backend"), so it can
 also rename a project again. In every file git tracks it changes:
 
     saas-shared, saas-<module>, saas-web    package names
-    saas-dev, saas-prod                     stacks, deploy roles (samconfig.toml, README)
+    saas-dev, saas-prod                     stack names (samconfig.toml)
     saas-${Stage}                           user pool name, metrics namespace
     saas_${Stage}_...                       AgentCore names (underscores: they allow no dashes)
     /saas/dev/payment-webhook-secret        SSM parameter names
@@ -30,6 +30,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -49,10 +50,12 @@ def current_name() -> str:
 def name_rules(old: str, new: str) -> list[tuple[re.Pattern, str]]:
     o, o_ = re.escape(old), re.escape(old.replace("-", "_"))
     return [
-        (re.compile(r"\b" + o + r"-backend-v2\b"), new),                    # the repository, in the README
-        (re.compile(r"(?<![\w])" + o + r"(?=[-.][\w$<{])"), new),           # saas-shared, saas.app, ${1:-saas-dev}
-        (re.compile(r"(?<=/)" + o + r"(?=/)"), new),                        # /saas/dev/...
-        (re.compile(r"(?<![A-Za-z0-9])" + o_ + r"(?=_[\w$<{])"), new.replace("-", "_")),  # saas_${Stage}_assistant
+        # The examples below say <name>, so a long new name can't push these lines over the limit.
+        (re.compile(r"\b" + o + r"-backend-v2\b"), new),            # the repository, in the README
+        (re.compile(r"(?<![\w])" + o + r"(?=[-.][\w$<{])"), new),   # <name>-shared, <name>.app, ${1:-<name>-dev}
+        (re.compile(r"(?<=/)" + o + r"(?=/)"), new),                # /<name>/dev/...
+        # AgentCore names allow no dashes: <name>_${Stage}_assistant
+        (re.compile(r"(?<![A-Za-z0-9])" + o_ + r"(?=_[\w$<{])"), new.replace("-", "_")),
     ]
 
 
@@ -141,6 +144,17 @@ def main() -> None:
     ]
     if leftovers:
         print(f"Still named {old!r} (check by hand):", *leftovers, sep="\n  ")
+
+    # A longer name makes lines longer: list Python lines now over ruff's limit (CI checks it).
+    limit = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["ruff"]["line-length"]
+    too_long = [
+        f"{path.relative_to(ROOT)}:{number}"
+        for path in changed if path.suffix == ".py"
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if len(line) > limit
+    ]
+    if too_long:
+        print(f"Now longer than {limit} characters (wrap them):", *too_long, sep="\n  ")
 
     print(f"""
 Next:
