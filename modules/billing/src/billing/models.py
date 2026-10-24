@@ -17,7 +17,7 @@ class Subscription(BaseModel):
     # from its webhooks. Plan changes and the billing portal need them.
     customer_id: str = ""
     subscription_id: str = ""
-    # Increases with every change; listeners use it to ignore late events.
+    # Increases with every save; listeners use it to ignore late events.
     revision: int = 0
     # The provider event that last set each field, so older or repeated
     # webhooks don't overwrite newer information (see service.py).

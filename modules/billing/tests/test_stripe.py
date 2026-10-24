@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import pytest
 import stripe
 
+from shared.dynamo import ConditionFailed
+
 from billing.container import get_billing_service
 from billing.handler import app, handler
 from billing.repository import SubscriptionRepository
@@ -126,6 +128,17 @@ def test_updates_that_change_nothing_publish_nothing(ctx, owner):
     ctx.webhook("customer.subscription.created")
     ctx.webhook("customer.subscription.updated")   # e.g. a new invoice: same plan and status
     assert ctx.event_types() == ["SubscriptionChanged"]   # so the owner isn't told twice
+
+
+def test_a_quiet_update_still_stops_an_older_concurrent_write(ctx, owner):
+    ctx.stripe.subscribe(status="active")
+    ctx.webhook("customer.subscription.created")
+    repository = SubscriptionRepository(ctx.table)
+    read_earlier = repository.get("t1")                  # another webhook read the state here...
+    ctx.webhook("customer.subscription.updated")          # ...then this one saved without changing anything
+    with pytest.raises(ConditionFailed):                  # so the other one's write is refused (and retried)
+        repository.save_change(read_earlier.model_copy(update={"status": "past_due"}), read_earlier.revision, [])
+    assert repository.get("t1").status == "active"
 
 
 def test_upgrading_a_subscriber_opens_the_portals_confirm_page(ctx, owner):

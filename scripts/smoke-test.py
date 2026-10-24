@@ -31,6 +31,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -141,6 +142,12 @@ else:
     WEBHOOK_SECRET = ssm_value(params["PaymentWebhookSecretParam"])
 
 
+def checkout_session(r: requests.Response):
+    """The Stripe Checkout session behind a checkout_url, with its line items."""
+    match = r.ok and re.search(r"/(cs_(?:test|live)_[A-Za-z0-9]+)", r.json().get("checkout_url", ""))
+    return stripe_api.v1.checkout.sessions.retrieve(match.group(1), {"expand": ["line_items"]}) if match else None
+
+
 def webhook_body(event_type: str, tenant_id: str, plan: str | None = None, created: int | None = None) -> str:
     return json.dumps({"id": f"evt_smoke_{secrets.token_hex(6)}", "type": event_type, "tenant_id": tenant_id,
                        "plan": plan, "created": created or int(time.time())})
@@ -219,6 +226,13 @@ check("checkout with an unknown plan -> 422",
 if STRIPE:
     check("it is Stripe Checkout",
           r.ok and r.json()["checkout_url"].startswith("https://checkout.stripe.com/"), show(r))
+    session = checkout_session(r)
+    check("the session subscribes this workspace to pro and returns to /billing", bool(session)
+          and session.mode == "subscription" and session.client_reference_id == tenant_id
+          and session.customer_email == owner.email and session.success_url.endswith("/billing")
+          and [i.price.id for i in session.line_items.data] == [PRICES["pro"]],
+          session and {"mode": session.mode, "ref": session.client_reference_id, "success": session.success_url})
+    check("the checkout page loads", requests.get(r.json()["checkout_url"], timeout=30).ok)
     r = call("POST", "/webhooks/payments", data='{"id": "evt_fake"}',
              headers={"Stripe-Signature": "t=1,v1=bad", "Content-Type": "application/json"})
     check("webhook with a bad signature -> 400", r.status_code == 400, show(r))
@@ -226,6 +240,7 @@ if STRIPE:
     customer = stripe_api.v1.customers.create({
         "email": owner.email, "payment_method": "pm_card_visa", "metadata": {"smoke_test": STACK},
         "invoice_settings": {"default_payment_method": "pm_card_visa"}})
+    good_card = customer.invoice_settings.default_payment_method
     subscription = stripe_api.v1.subscriptions.create({
         "customer": customer.id, "items": [{"price": PRICES["pro"]}], "metadata": {"tenant_id": tenant_id}})
     check("Stripe: test subscription to pro is active", subscription.status == "active", subscription.status)
@@ -384,10 +399,20 @@ if STRIPE:
     summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "past_due" and b)
     check("GET /billing: past_due, still pro", bool(summary) and summary["plan"] == "pro",
           summary or owner("GET", "/billing").text)
+    # The owner fixes the card: the open invoice is paid and the upgrade takes effect.
+    stripe_api.v1.customers.update(customer.id, {"invoice_settings": {"default_payment_method": good_card}})
+    invoice = stripe_api.v1.invoices.pay(updated.latest_invoice, {"payment_method": good_card})
+    check("Stripe: the open invoice is paid with a good card", invoice.status == "paid", invoice.status)
+    summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "active" and b)
+    check("GET /billing: business, active (the plan change took effect)", bool(summary) and
+          summary["plan"] == "business", summary or owner("GET", "/billing").text)
     stripe_api.v1.subscriptions.cancel(subscription.id)
     summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "cancelled" and b)
     check("GET /billing: free, cancelled", bool(summary) and summary["plan"] == "free",
           summary or owner("GET", "/billing").text)
+    session = checkout_session(owner("POST", "/billing/checkout", json={"plan": "pro"}))
+    check("subscribing again uses the same Stripe customer", bool(session) and session.customer == customer.id,
+          session and session.customer)
 else:
     r = send_webhook(webhook_body("payment.failed", tenant_id))
     check("webhook payment.failed", r.ok, show(r))
@@ -415,6 +440,10 @@ r = owner("POST", "/users/invite", json={"email": f"smoke-seat3+{RUN}@example.co
 check("a 4th seat on free -> 402", r.status_code == 402, show(r))
 
 if STRIPE:
+    plan_changes = [t for t in titles(owner) if t.startswith("Plan changed")]
+    check("each plan change notified once, however many updates Stripe sent",
+          sorted(plan_changes) == ["Plan changed to business", "Plan changed to free", "Plan changed to pro"],
+          plan_changes)
     stripe_api.v1.customers.delete(customer.id)   # test mode: leave nothing behind in Stripe
 
 print(f"\n{'ALL PASSED' if not failures else f'{len(failures)} FAILED: ' + ', '.join(failures)}")

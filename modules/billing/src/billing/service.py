@@ -12,8 +12,9 @@ provider event that last set them. An event only changes a field if it is
 newer than that event (same second: arrival order, unless it is the same
 event again). A late "activated" can still set the plan after a newer
 "payment failed", but can't undo a newer "cancelled". A newer event that
-leaves plan and status as they are only moves those markers: it publishes
-nothing, so the many updates Stripe sends don't notify anyone again.
+leaves plan and status as they are only moves those markers (and the
+revision): it publishes nothing, so the many updates Stripe sends don't
+notify anyone again. Listeners only compare revisions, so gaps are fine.
 """
 from aws_lambda_powertools import Logger
 
@@ -67,7 +68,9 @@ class BillingService:
             logger.info("Old or repeated webhook skipped", extra={"event_id": event.event_id})
             return
 
-        updates = {}
+        # Every save moves the revision on, so a webhook that read the state
+        # before this one can't overwrite it (save_change's condition).
+        updates = {"revision": current.revision + 1}
         for field in newer:
             updates[f"{field}_changed_at"] = event.occurred_at
             updates[f"{field}_event_id"] = event.event_id
@@ -75,8 +78,7 @@ class BillingService:
             if getattr(event, name):
                 updates[name] = getattr(event, name)
         changed = {field: value for field, value in newer.items() if getattr(current, field) != value}
-        if changed:
-            updates.update(changed, revision=current.revision + 1)
+        updates.update(changed)
         new = current.model_copy(update=updates)
 
         to_publish = [events.subscription_changed(new)] if changed else []
