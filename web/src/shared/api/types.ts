@@ -36,4 +36,4 @@ export type PortalResponse = Billing['schemas']['PortalResponse'];
 export type AssistantConversation = Sent<Assistant['schemas']['ConversationOut']>;
 export type AssistantConversationPage = { items: AssistantConversation[]; next_cursor: string | null };
 /** The API sends the messages as plain objects: they are AG-UI messages, as @ag-ui/client assembles them. */
-export type AssistantConversationDetail = AssistantConversation & { messages: Message[] };
+export type AssistantConversationDetail = Omit<Sent<Assistant['schemas']['ConversationDetail']>, 'messages'> & { messages: Message[] };

@@ -3,13 +3,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { routeTree } from '@/routeTree.gen';
 import type { AssistantConversation } from '@/shared/api/types';
 import { refreshSession, sessionStore } from '@/shared/auth/session';
 import { TooltipProvider } from '@/shared/components/ui/tooltip';
 import { json, OWNER } from '@/test/render';
 import { newConversation } from './conversation';
+import { forgetAllSent, rememberSent, unansweredIn } from './unanswered';
 
 vi.mock('@/shared/config', () => ({
   config: { apiUrl: 'https://api.test', assistantUrl: 'https://agent.test/invocations', userPoolId: 'pool', userPoolClientId: 'client' },
@@ -23,7 +24,8 @@ vi.mock('@/shared/auth/session', async (importOriginal) => ({
 
 type Event = Record<string, unknown>;
 type Ids = { threadId: string; runId: string };
-type Answer = (ids: Ids) => { events: Event[]; status?: number };
+/** `open`: the stream stays open after the events, until the client aborts it. */
+type Answer = (ids: Ids) => { events: Event[]; status?: number; open?: boolean };
 interface Run {
   threadId: string;
   messages: { content: string }[];
@@ -33,12 +35,14 @@ interface Run {
  * The two backends: AgentCore (the chat, AG-UI over SSE), answering each run
  * with the next scripted answer, and the HTTP API, keeping conversations as
  * the server does (the first message is the title until the answer ends).
+ * `answering`: conversations whose answer the server is still writing.
  */
 function backend(...answers: Answer[]) {
   const runs: Run[] = [];
   const calls: string[] = [];
   const conversations = new Map<string, AssistantConversation>();
   const histories = new Map<string, Message[]>();
+  const answering = new Set<string>();
 
   function keep(threadId: string, title: string, messages: Message[]) {
     const now = new Date().toISOString();
@@ -53,8 +57,17 @@ function backend(...answers: Answer[]) {
       runs.push(run);
       const known = conversations.get(run.threadId);
       if (!known) keep(run.threadId, run.messages[0].content, []);
-      const { events, status = 200 } = answers[runs.length - 1]({ threadId: run.threadId, runId: run.runId });
-      return new Response(events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''), { status, headers: { 'Content-Type': 'text/event-stream' } });
+      const { events, status = 200, open = false } = answers[runs.length - 1]({ threadId: run.threadId, runId: run.runId });
+      const body = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
+      const headers = { 'Content-Type': 'text/event-stream' };
+      if (!open) return new Response(body, { status, headers });
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(body));
+          init?.signal?.addEventListener('abort', () => controller.error(new DOMException('The user aborted a request.', 'AbortError')));
+        },
+      });
+      return new Response(stream, { status, headers });
     }
     const path = new URL(url).pathname;
     calls.push(`${method} ${path}`);
@@ -66,7 +79,7 @@ function backend(...answers: Answer[]) {
     }
     const conversation = conversations.get(id);
     if (!conversation) return json({ message: 'No such conversation: it was deleted, or it expired.' }, 404);
-    if (method === 'GET') return json({ ...conversation, messages: histories.get(id) });
+    if (method === 'GET') return json({ ...conversation, answering: answering.has(id), messages: histories.get(id) });
     if (method === 'PATCH') {
       conversation.title = JSON.parse(String(init?.body)).title;
       return json(conversation);
@@ -77,12 +90,14 @@ function backend(...answers: Answer[]) {
     }
     return json({ message: 'Not Found' }, 404);
   }));
-  return { runs, calls, conversations, keep };
+  return { runs, calls, conversations, keep, answering };
 }
 
 const finished = (...events: Event[]): Answer => (ids) => ({
   events: [{ type: 'RUN_STARTED', ...ids }, ...events, { type: 'RUN_FINISHED', ...ids, usage: [{ inputTokens: 1200, outputTokens: 34, totalTokens: 1234 }] }],
 });
+/** Still streaming when the test acts. */
+const streaming = (...events: Event[]): Answer => (ids) => ({ events: [{ type: 'RUN_STARTED', ...ids }, ...events], open: true });
 const failed = (code: string, message: string, status = 200): Answer => (ids) => ({
   events: status === 200 ? [{ type: 'RUN_STARTED', ...ids }, { type: 'RUN_ERROR', code, message }] : [{ type: 'RUN_ERROR', code, message }],
   status,
@@ -94,6 +109,13 @@ const text = (id: string, ...deltas: string[]) => [
 ];
 
 const THREAD = '6f3a3e2b-0f6c-4b0a-9a51-1d1e7c11aa01';
+
+const history: Message[] = [
+  { id: 'u1', role: 'user', content: 'What did we order?' },
+  { id: 'a1', role: 'assistant', content: 'Let me check.', toolCalls: [{ id: 'c1', type: 'function', function: { name: 'list_orders', arguments: '{"limit": 5}' } }] },
+  { id: 't1', role: 'tool', toolCallId: 'c1', content: '{"items": []}' },
+  { id: 'a2', role: 'assistant', content: 'You have no orders yet.' },
+];
 
 function renderAt(path: string) {
   sessionStore.setState({ status: 'signed-in', user: OWNER, reason: null });
@@ -122,6 +144,7 @@ async function conversationList() {
 
 beforeEach(() => {
   newConversation();
+  forgetAllSent();
   vi.mocked(refreshSession).mockReset().mockResolvedValue(OWNER);
 });
 
@@ -208,16 +231,23 @@ describe('chatting', () => {
 
     expect(server.runs[1].threadId).not.toBe(server.runs[0].threadId);
   });
+
+  it('stops showing the answer on Stop, which is no error; a reload would still wait for the rest', async () => {
+    const server = backend(streaming(...text('m1', 'Once upon a time').slice(0, 2)));
+    renderAt('/assistant');
+    const user = await ask('Tell me a story');
+    await screen.findByText('Once upon a time');
+
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+
+    expect(await screen.findByRole('button', { name: 'Send' })).toBeInTheDocument();
+    expect(screen.getByText('Once upon a time')).toBeInTheDocument();
+    expect(screen.queryByText("The assistant couldn't answer")).not.toBeInTheDocument();
+    expect(unansweredIn(server.runs[0].threadId)?.message.content).toBe('Tell me a story'); // the server finishes it
+  });
 });
 
 describe('conversations', () => {
-  const history: Message[] = [
-    { id: 'u1', role: 'user', content: 'What did we order?' },
-    { id: 'a1', role: 'assistant', content: 'Let me check.', toolCalls: [{ id: 'c1', type: 'function', function: { name: 'list_orders', arguments: '{"limit": 5}' } }] },
-    { id: 't1', role: 'tool', toolCallId: 'c1', content: '{"items": []}' },
-    { id: 'a2', role: 'assistant', content: 'You have no orders yet.' },
-  ];
-
   it('reopens one from the list, as it was, and continues it', async () => {
     const server = backend(finished(...text('m3', 'Still none.')));
     server.keep(THREAD, 'Order check', history);
@@ -298,5 +328,59 @@ describe('conversations', () => {
     expect(server.calls).toContain(`DELETE /assistant/conversations/${THREAD}`);
     expect((await conversationList()).queryByText('Order check')).not.toBeInTheDocument();
     expect(await screen.findByText('Ask the assistant')).toBeInTheDocument();
+  });
+});
+
+describe('a reload while an answer was coming', () => {
+  // The page reads the history every 2 seconds while it waits.
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+  afterEach(() => vi.useRealTimers());
+
+  it("shows a new conversation's message before the server has it, then its answer", async () => {
+    const server = backend();
+    rememberSent(THREAD, { id: 'u1', content: 'What did we order?' }, true); // then the page reloaded
+    renderAt(`/assistant/${THREAD}`);
+
+    expect(await screen.findByText('Thinking…')).toBeInTheDocument();
+    expect((await conversationList()).getByText('What did we order?')).toBeInTheDocument();
+    expect(screen.queryByText("This conversation isn't available")).not.toBeInTheDocument();
+
+    server.keep(THREAD, 'Order check', history); // the server got it, and answered
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(await screen.findByText('You have no orders yet.')).toBeInTheDocument();
+    expect(screen.queryByText('Thinking…')).not.toBeInTheDocument();
+    expect(await (await conversationList()).findByText('Order check')).toBeInTheDocument();
+    expect(unansweredIn(THREAD)).toBeNull();
+  });
+
+  it('reopens a conversation whose answer the server is still writing, and shows it once written', async () => {
+    const server = backend();
+    server.keep(THREAD, 'Order check', history.slice(0, 1));
+    server.answering.add(THREAD);
+    renderAt(`/assistant/${THREAD}`);
+
+    expect(await screen.findByText('Thinking…')).toBeInTheDocument();
+    server.keep(THREAD, 'Order check', history);
+    server.answering.delete(THREAD);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(await screen.findByText('You have no orders yet.')).toBeInTheDocument();
+    expect(screen.queryByText('Thinking…')).not.toBeInTheDocument();
+  });
+
+  it('says when the server never got the message, and sends it again', async () => {
+    const server = backend(finished(...text('m1', 'Hello!')));
+    rememberSent(THREAD, { id: 'u1', content: 'Hi' }, true);
+    renderAt(`/assistant/${THREAD}`);
+    await screen.findByText('Thinking…');
+
+    await vi.advanceTimersByTimeAsync(61_000);
+
+    expect(await screen.findByText("Can't reach the server. Check your connection and try again.")).toBeInTheDocument();
+    await userEvent.setup({ advanceTimers: vi.advanceTimersByTime }).click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Hello!')).toBeInTheDocument();
+    expect(server.runs[0].threadId).toBe(THREAD);
+    expect(server.runs[0].messages.map((message) => message.content)).toEqual(['Hi']);
   });
 });

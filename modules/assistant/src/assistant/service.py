@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from aws_lambda_powertools import Logger
@@ -82,12 +83,23 @@ class UsageService:
 TITLE_CHARS = 80               # a conversation's title, however it was set
 TOOL_RESULT_CHARS = 10_000     # of each tool result kept for the history (bash cuts its own output to this)
 MESSAGES_SHOWN = 200           # latest messages returned when a conversation is opened
+# AgentCore ends a streaming request after 60 minutes: an answer marked as
+# started longer ago isn't coming (the runtime stopped before it could say so).
+ANSWER_LIMIT = timedelta(minutes=60)
 
 
 def first_message_title(prompt: str) -> str:
     """A conversation's title until the model writes one: its first message, on one line."""
     text = " ".join(prompt.split())
     return text if len(text) <= TITLE_CHARS else text[:TITLE_CHARS - 1].rstrip() + "…"
+
+
+def is_answering(conversation: Conversation, now: datetime | None = None) -> bool:
+    """Whether the agent is still answering the newest message: its answer isn't in the history yet."""
+    if conversation.answering_since is None:
+        return False
+    started = datetime.fromisoformat(conversation.answering_since)
+    return (now or datetime.now(UTC)) - started < ANSWER_LIMIT
 
 
 class ConversationLog:
@@ -110,8 +122,8 @@ class ConversationLog:
             now=now_iso(), expires_at=self._expires_at())
 
     def record(self, context: AgentContext, messages: list[dict]) -> None:
-        """After the agent ran (or failed, or was cut off): the messages it streamed."""
-        saved = self.conversations.add_messages(
+        """After the agent ran (or failed, or was cut off): the messages it streamed, and that it's done."""
+        saved = self.conversations.add_answer(
             context.user.require_tenant(), context.user.user_id, context.session_id,
             [_kept(message) for message in messages], now=now_iso(), expires_at=self._expires_at())
         if not saved:

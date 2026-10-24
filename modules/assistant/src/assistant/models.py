@@ -43,3 +43,4 @@ class Conversation(BaseModel):
     message_count: int         # AG-UI messages stored: the user's, the assistant's, tool results
     agents: set[str] = set()   # the agents spoken to (forwardedProps.agent): each keeps its own checkpoints
     expires_at: int            # epoch seconds; DynamoDB's TTL removes it some time after
+    answering_since: str | None = None   # while the agent answers the newest message: when it started

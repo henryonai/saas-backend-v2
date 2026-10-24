@@ -53,6 +53,8 @@ export interface components {
             updated_at: string;
             /** Message Count */
             message_count: number;
+            /** Answering */
+            answering: boolean;
             /** Messages */
             messages: {
                 [key: string]: unknown;

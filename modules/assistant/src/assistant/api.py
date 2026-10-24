@@ -17,7 +17,7 @@ from shared.auth import CurrentUser, get_current_user
 
 from assistant.container import get_conversation_service
 from assistant.models import Conversation
-from assistant.service import ConversationService
+from assistant.service import ConversationService, is_answering
 
 router = Router()
 
@@ -45,6 +45,9 @@ class ConversationPage(BaseModel):
 
 
 class ConversationDetail(ConversationOut):
+    # The agent is still answering the newest message: its answer isn't in
+    # `messages` yet (read the conversation again for it).
+    answering: bool
     # AG-UI messages (@ag-ui/client's Message: user, assistant with toolCalls,
     # tool results), oldest first; the latest 200 of a long conversation.
     messages: list[dict[str, Any]]
@@ -70,7 +73,8 @@ def list_conversations(user: User, service: Service,
 @router.get("/assistant/conversations/<thread_id>")
 def get_conversation(thread_id: str, user: User, service: Service) -> ConversationDetail:
     conversation, messages = service.get(user, thread_id)
-    return ConversationDetail(**ConversationOut.of(conversation).model_dump(), messages=messages)
+    return ConversationDetail(**ConversationOut.of(conversation).model_dump(), answering=is_answering(conversation),
+                              messages=messages)
 
 
 @router.patch("/assistant/conversations/<thread_id>")

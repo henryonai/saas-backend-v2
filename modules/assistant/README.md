@@ -269,7 +269,7 @@ it. Routes on the HTTP API, with the same ID token (`handler.py`, a Lambda):
 | Route | |
 |---|---|
 | `GET /assistant/conversations?limit=20&cursor=` | the caller's conversations, most recently used first |
-| `GET /assistant/conversations/{threadId}` | title, and the latest 200 messages as AG-UI messages |
+| `GET /assistant/conversations/{threadId}` | title, `answering`, and the latest 200 messages as AG-UI messages |
 | `PATCH /assistant/conversations/{threadId}` `{"title"}` | rename (cut to 80 characters) |
 | `DELETE /assistant/conversations/{threadId}` | delete (204) |
 
@@ -279,7 +279,20 @@ it. Routes on the HTTP API, with the same ID token (`handler.py`, a Lambda):
   streamed. `agui.Transcript` assembles the AG-UI events into messages as
   `@ag-ui/client` does, so a reopened conversation and the live one are the
   same objects, with the same ids. A tool's output is kept up to 10,000
-  characters.
+  characters. In between, the conversation is `answering` (`answering_since`
+  on `META`); the answer's messages are written before that goes, so a page
+  that reads it answered finds the whole answer. A mark older than 60 minutes,
+  the longest AgentCore streams, counts for nothing: the runtime stopped
+  before it could clear it.
+- **Reloading mid-answer**: the server finishes an answer whatever the page
+  does. A page reloaded (or left) meanwhile shows the conversation with
+  "Thinking…" and reads it every 2 seconds until the answer is in. A new
+  conversation is a new AgentCore session, so the server only has it once a
+  microVM has started (4–5 seconds on dev, October 2026): until the page sees
+  the answer, it keeps the message it sent in `sessionStorage`
+  (`web/src/features/assistant/unanswered.ts`), shows it waiting meanwhile,
+  and keeps the conversation in the list. If the server still doesn't have it
+  a minute later, the page says it couldn't reach the server, with Try again.
 - **Titles**: `TitleMiddleware` asks the stack's default model for a 2–6 word
   title after the first answer: one small call (tagged `nostream`, so it never
   reaches the user's stream), counted against the plan's tokens. If it fails,

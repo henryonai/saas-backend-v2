@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -119,6 +120,29 @@ def test_a_failed_run_keeps_the_question(ctx, alice):
     assert ctx.error(events)["code"] == "INTERNAL_ERROR"
     assert [m["content"] for m in ctx.conversations.messages("t1", "alice", THREAD, 50)] == ["Hi"]
     assert stored(ctx).title == "Hi"
+    assert stored(ctx).answering_since is None   # nothing more is coming
+
+
+def test_while_the_agent_answers_the_conversation_says_so_and_has_the_question(ctx, api, alice):
+    # A page reloaded mid-answer reads the conversation: the question, and that an answer is coming.
+    during = []
+    get = ctx.api.get
+
+    def get_while_answering(authorization, path, params=None):
+        during.append(api.call("GET", f"/assistant/conversations/{THREAD}", alice)[1])
+        return get(authorization, path, params)
+
+    ctx.api.get = get_while_answering
+    ctx.script(ctx.tool_call("list_orders", {"limit": 5}), ctx.answer("No orders yet."))
+
+    ctx.chat("What did we order?", alice)
+
+    [midway] = during
+    assert midway["answering"] is True
+    assert [(m["role"], m["content"]) for m in midway["messages"]] == [("user", "What did we order?")]
+    status, after = api.call("GET", f"/assistant/conversations/{THREAD}", alice)
+    assert status == 200 and after["answering"] is False
+    assert [m["role"] for m in after["messages"]] == ["user", "assistant", "tool", "assistant"]
 
 
 def test_a_message_the_plan_refuses_keeps_nothing(ctx, alice):
@@ -132,8 +156,9 @@ def test_an_answer_that_ends_after_a_delete_does_not_bring_the_conversation_back
                             now="2026-10-24T08:00:00.000Z", expires_at=int(time.time()) + 3600)
     ctx.conversations.delete("t1", "alice", THREAD)
 
-    assert ctx.conversations.add_messages("t1", "alice", THREAD, [{"id": "a1", "role": "assistant", "content": "x"}],
-                                          now="2026-10-24T08:00:01.000Z", expires_at=int(time.time()) + 3600) is False
+    for answer in ([{"id": "a1", "role": "assistant", "content": "x"}], []):
+        assert ctx.conversations.add_answer("t1", "alice", THREAD, answer, now="2026-10-24T08:00:01.000Z",
+                                            expires_at=int(time.time()) + 3600) is False
     assert ctx.table.scan()["Items"] == []
 
 
@@ -164,8 +189,8 @@ def test_the_list_is_newest_first_in_pages(ctx, api, alice):
 def test_a_new_message_moves_the_conversation_to_the_top(ctx, api, alice):
     start(ctx, thread(1), "2026-10-24T08:01:00.000Z", title="Older")
     start(ctx, thread(2), "2026-10-24T08:02:00.000Z", title="Newer")
-    ctx.conversations.add_messages("t1", "alice", thread(1), [{"id": "a", "role": "assistant", "content": "x"}],
-                                   now="2026-10-24T08:03:00.000Z", expires_at=int(time.time()) + 3600)
+    ctx.conversations.add_answer("t1", "alice", thread(1), [{"id": "a", "role": "assistant", "content": "x"}],
+                                 now="2026-10-24T08:03:00.000Z", expires_at=int(time.time()) + 3600)
 
     assert [c["title"] for c in api.call("GET", "/assistant/conversations", alice)[1]["items"]] == ["Older", "Newer"]
 
@@ -179,6 +204,14 @@ def test_opening_a_conversation_returns_its_messages(ctx, api, alice):
     assert status == 200 and conversation["title"] == "Test conversation" and conversation["message_count"] == 2
     assert [(m["role"], m["content"]) for m in conversation["messages"]] == [("user", "Hi"),
                                                                              ("assistant", "Hello Alice!")]
+
+
+def test_an_answer_that_never_ended_stops_counting_after_an_hour(ctx, api, alice):
+    # The runtime stopped mid-answer (AgentCore ends a stream at 60 minutes) before it could say so.
+    for minutes, answering in [(59, True), (61, False)]:
+        started = datetime.now(UTC) - timedelta(minutes=minutes)
+        start(ctx, THREAD, started.isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+        assert api.call("GET", f"/assistant/conversations/{THREAD}", alice)[1]["answering"] is answering
 
 
 def test_rename(ctx, api, alice):

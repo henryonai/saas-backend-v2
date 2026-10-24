@@ -159,14 +159,18 @@ class ConversationRepository:
 
     def start(self, tenant_id: str, user_id: str, thread_id: str, *, agent: str, title: str,
               message: dict, now: str, expires_at: int) -> None:
-        """Creates the conversation the first time (titled `title`), and adds the user's message to it."""
+        """
+        Creates the conversation the first time (titled `title`), adds the
+        user's message to it, and marks it answering until add_answer.
+        """
         names = {"#thread": "thread_id", "#title": "title", "#source": "title_source", "#created": "created_at",
-                 "#updated": "updated_at", "#expires": "expires_at", "#count": "message_count", "#agents": "agents"}
+                 "#updated": "updated_at", "#expires": "expires_at", "#count": "message_count", "#agents": "agents",
+                 "#answering": "answering_since"}
         result = self.table.update_item(
             Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
             UpdateExpression="SET #thread = :thread, #title = if_not_exists(#title, :title), "
                              "#source = if_not_exists(#source, :message), #created = if_not_exists(#created, :now), "
-                             "#updated = :now, #expires = :expires, gsi1pk = :list, gsi1sk = :now "
+                             "#updated = :now, #expires = :expires, gsi1pk = :list, gsi1sk = :now, #answering = :now "
                              "ADD #count :one, #agents :agents",
             ExpressionAttributeNames=names,
             ExpressionAttributeValues={":thread": thread_id, ":title": title, ":message": "message", ":now": now,
@@ -177,27 +181,35 @@ class ConversationRepository:
         self._put_messages(tenant_id, user_id, thread_id, [message], int(result["Attributes"]["message_count"]),
                            expires_at)
 
-    def add_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], *,
-                     now: str, expires_at: int) -> bool:
-        """Appends messages to an existing conversation. False if it no longer exists (deleted meanwhile)."""
-        if not messages:
-            return True
+    def add_answer(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], *,
+                   now: str, expires_at: int) -> bool:
+        """
+        After the agent ran: appends what it streamed (maybe nothing), then
+        marks the conversation answered, in that order, so whoever reads it
+        answered finds the whole answer. False if it no longer exists (deleted
+        meanwhile).
+        """
+        key = {"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"}
         try:
-            result = self.table.update_item(
-                Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
-                UpdateExpression="SET #updated = :now, #expires = :expires, gsi1sk = :now ADD #count :n",
-                ConditionExpression="attribute_exists(pk)",
-                ExpressionAttributeNames={"#updated": "updated_at", "#expires": "expires_at",
-                                          "#count": "message_count"},
-                ExpressionAttributeValues={":now": now, ":expires": expires_at, ":n": len(messages)},
-                ReturnValues="UPDATED_NEW",
-            )
+            if messages:
+                result = self.table.update_item(
+                    Key=key,
+                    UpdateExpression="SET #updated = :now, #expires = :expires, gsi1sk = :now ADD #count :n",
+                    ConditionExpression="attribute_exists(pk)",
+                    ExpressionAttributeNames={"#updated": "updated_at", "#expires": "expires_at",
+                                              "#count": "message_count"},
+                    ExpressionAttributeValues={":now": now, ":expires": expires_at, ":n": len(messages)},
+                    ReturnValues="UPDATED_NEW",
+                )
+                self._put_messages(tenant_id, user_id, thread_id, messages,
+                                   int(result["Attributes"]["message_count"]), expires_at)
+            self.table.update_item(Key=key, UpdateExpression="REMOVE #answering",
+                                   ConditionExpression="attribute_exists(pk)",
+                                   ExpressionAttributeNames={"#answering": "answering_since"})
         except ClientError as e:
             if is_condition_failure(e):
                 return False
             raise
-        self._put_messages(tenant_id, user_id, thread_id, messages,
-                           int(result["Attributes"]["message_count"]), expires_at)
         return True
 
     def _put_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], last: int,
@@ -241,12 +253,13 @@ class ConversationRepository:
         return _conversation(item) if item and item["expires_at"] > time.time() else None
 
     def messages(self, tenant_id: str, user_id: str, thread_id: str, limit: int) -> list[dict]:
-        """The latest `limit` messages, oldest first."""
+        """The latest `limit` messages, oldest first: all that were written, even a moment ago."""
         result = self.table.query(
             KeyConditionExpression=Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id))
             & Key("sk").begins_with("MSG#"),
             ScanIndexForward=False,
             Limit=limit,
+            ConsistentRead=True,
         )
         now = time.time()
         return [item["message"] for item in reversed(result["Items"]) if item["expires_at"] > now]
