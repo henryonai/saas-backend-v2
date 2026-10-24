@@ -25,10 +25,11 @@ from assistant.middleware import (
     ConversationMiddleware,
     MemoryMiddleware,
     PlanToolsMiddleware,
+    TitleMiddleware,
     UsageMiddleware,
     tool_failed,
 )
-from assistant.service import UsageService
+from assistant.service import ConversationLog, UsageService
 from assistant.tools import SANDBOX_TOOLS
 
 # Tool calls in one run, whatever the model decides (maxTurns bounds model calls).
@@ -45,6 +46,8 @@ class AgentDeps:
     usage: UsageService
     memory: LongTermMemory
     tools: dict[str, BaseTool]   # tools.make_tools()
+    history: ConversationLog
+    title_model: BaseChatModel   # names conversations (TitleMiddleware): the stack's default model
 
 
 def build_agents(definitions: dict[str, AgentDefinition], deps: AgentDeps) -> dict[str, Any]:
@@ -70,7 +73,7 @@ def _build(definition: AgentDefinition, deps: AgentDeps, *, top_level: bool, ext
         middleware.append(ConversationMiddleware(MAX_HISTORY_TOKENS))
     middleware.append(PlanToolsMiddleware(deps.usage, SANDBOX_TOOLS))
     if top_level:
-        middleware.append(MemoryMiddleware(deps.memory))
+        middleware += [MemoryMiddleware(deps.memory), TitleMiddleware(deps.title_model, deps.history, deps.usage)]
     middleware += [
         ModelCallLimitMiddleware(run_limit=definition.max_turns, exit_behavior="end"),
         ToolCallLimitMiddleware(run_limit=MAX_TOOL_CALLS_PER_RUN, exit_behavior="continue"),

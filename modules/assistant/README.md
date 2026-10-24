@@ -15,17 +15,23 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
                    1. which agent (agents/*.md; "assistant" by default)
                    2. claims → CurrentUser (shared.auth rules)
                    3. UsageService.start_message → 402 when the month's allowance is used
-                   4. agent.stream(...)   built by factory.py from its Markdown file
+                   4. ConversationLog.start      the conversation's history gets the message
+                   5. agent.stream(...)   built by factory.py from its Markdown file
                         ├─ UsageMiddleware         tokens of every model call → DynamoDB, stop at the cap
                         ├─ ConversationMiddleware  repair cut-off tool calls; send recent history only
                         ├─ PlanToolsMiddleware     hide tools the plan doesn't include
                         ├─ MemoryMiddleware        recall → system prompt; save the exchange
+                        ├─ TitleMiddleware         after the first answer, the model titles the conversation
                         ├─ Model/ToolCallLimit, ToolErrorMiddleware (built-in)
                         ├─ checkpointer      AgentCoreMemorySaver (each agent's side of the conversation)
                         ├─ tools ──user's own token──▶ HTTP API (/orders ...)
                         ├─ bash ──InvokeCodeInterpreter──▶ sandbox microVM (one per conversation,
                         │                                   no AWS role, no internet by default)
                         └─ task ──▶ a subagent (fresh context, same user and sandbox, no checkpoints)
+                   6. ConversationLog.record     the history gets what streamed (AG-UI messages)
+
+browser ──ID token──▶ HTTP API /assistant/conversations ──▶ handler.py (Lambda): list, open, rename, delete
+                                                              └─ delete ──SQS──▶ purge.py: the Memory events
 ```
 
 ## Files
@@ -43,21 +49,28 @@ src/assistant/
 │   ├── orders.py        list_orders, get_order (the HTTP API, with the user's token)
 │   ├── usage.py         assistant_usage
 │   └── bash.py          bash (the sandbox)
-├── middleware/          one file per middleware (usage, conversation, plan_tools, memory, errors)
-├── app.py               AgentCore entry point (the SDK's AGUIApp): agent, auth, quota, stream
-├── agui.py              the agent's stream → AG-UI events
+├── middleware/          one file per middleware (usage, conversation, plan_tools, memory, title, errors)
+├── app.py               AgentCore entry point (the SDK's AGUIApp): agent, auth, quota, history, stream
+├── agui.py              the agent's stream → AG-UI events; Transcript: events → AG-UI messages
 ├── context.py           AgentContext: who the agents work for (runtime context, never in a prompt)
 ├── schemas.py           the AG-UI request and error codes: the frontend contract
-├── memory.py            AgentCore Memory adapter: recall() / remember()
+├── memory.py            AgentCore Memory adapter: recall() / remember() / forget()
 ├── sandbox.py           AgentCore Code Interpreter adapter: one sandbox per conversation
-├── service.py, repository.py, models.py   monthly usage per workspace (DynamoDB counters)
-└── container.py         composition root (models from llm.py, Memory, DynamoDB, httpx)
+├── service.py, repository.py, models.py   usage per workspace; conversations and their history
+├── api.py, handler.py   Lambda: the HTTP API for the users' conversations
+├── purge.py             Lambda: deletes a deleted conversation from AgentCore Memory (SQS)
+└── container.py         composition root (models from llm.py, Memory, DynamoDB, SQS, httpx)
 ../main.py               what AgentCore starts (root of the zip)
 ```
 
 Each layer knows only the one below it: agents (Markdown) name tools and
 subagents; the factory wires them with middleware; tools and middleware use
 the service and the adapters; only `container.py` creates real AWS clients.
+
+The two Lambdas run this same package with only the shared layer, so
+`api.py`, `handler.py`, `purge.py` and everything they import never import
+LangChain, the AgentCore SDK, AG-UI or httpx (`container.get_agents()`
+imports those when it runs). `test_conversations.py` checks it.
 
 ## Agents in Markdown
 
@@ -246,6 +259,48 @@ Assistant page (`web/src/features/assistant/`) is a working client. For a
 custom domain, AWS's pattern is CloudFront in front of the runtime (see
 Sources).
 
+## Conversations (list, reopen, rename, delete)
+
+As in ChatGPT and Claude, the app keeps its own record of each conversation,
+every message as the user saw it, tool calls and results included, separate
+from what the model is sent (the agent's checkpoints). The page reloads from
+it. Routes on the HTTP API, with the same ID token (`handler.py`, a Lambda):
+
+| Route | |
+|---|---|
+| `GET /assistant/conversations?limit=20&cursor=` | the caller's conversations, most recently used first |
+| `GET /assistant/conversations/{threadId}` | title, and the latest 200 messages as AG-UI messages |
+| `PATCH /assistant/conversations/{threadId}` `{"title"}` | rename (cut to 80 characters) |
+| `DELETE /assistant/conversations/{threadId}` | delete (204) |
+
+- **Written by the agent** (`service.ConversationLog`): when a message
+  arrives, the conversation is created the first time, titled with that
+  message, and gets it; when the run ends, however it ended, it gets what
+  streamed. `agui.Transcript` assembles the AG-UI events into messages as
+  `@ag-ui/client` does, so a reopened conversation and the live one are the
+  same objects, with the same ids. A tool's output is kept up to 10,000
+  characters.
+- **Titles**: `TitleMiddleware` asks the stack's default model for a 2–6 word
+  title after the first answer: one small call (tagged `nostream`, so it never
+  reaches the user's stream), counted against the plan's tokens. If it fails,
+  the first message stays the title. It never replaces a title the user chose.
+- **Stored** in the assistant table, under the user's own keys:
+  `TENANT#<t>#USER#<u>#CONV#<threadId>` with `META` and `MSG#<n>` items, and
+  the index `gsi1` for the list (`repository.py`). Every record expires
+  `CONVERSATION_DAYS` after it was written (30 on dev, 90 on prod), as long
+  as AgentCore Memory keeps the agent's copy (`EventExpiryDuration`): a
+  reopened conversation never shows more than the agent remembers.
+- **Continuing one** sends the same threadId, so the agent picks up from its
+  checkpoints. If its microVM stopped (15 minutes idle), a new one starts:
+  the first answer is slower, and the old sandbox's files are gone.
+- **Deleting** removes the history at once, then `purge.py` (an SQS queue and
+  a Lambda, with a dead-letter queue and an alarm) deletes the agent's copy in
+  AgentCore Memory: the conversation's exchanges and each agent's checkpoints.
+  Memory deletes one event per call (a short conversation already has
+  hundreds), so it runs in the background, and a retry continues where the
+  last try stopped. What the agent learned about the user in general (facts,
+  preferences) is not per conversation and stays.
+
 ## Deploy
 
 The template creates the assistant only when it gets the code's location, so
@@ -386,6 +441,9 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   calls would need to count against the token cap too). In its default format,
   `AgentCoreMemorySaver` also reads the whole thread on every message, so the
   frontend should start a new conversation (session id) now and then.
+- **Conversations**: older messages of a conversation past 200 (open returns
+  the latest 200), search, and keeping history longer than the agent's memory
+  (which would need the agent to rebuild its context from the history).
 
 ### Sources
 

@@ -9,7 +9,8 @@ import importlib
 import json
 from pathlib import Path
 
-# Modules with an HTTP API (the assistant streams from AgentCore instead: see its schemas.py).
+# Modules with an HTTP API. The assistant's chat streams from AgentCore over AG-UI (its schemas.py);
+# only its conversations routes (/assistant/conversations) are in its document.
 MODULES = sorted(p.name for p in Path("modules").iterdir() if (p / "src" / p.name / "handler.py").is_file())
 OUTPUT = Path("docs/openapi")
 

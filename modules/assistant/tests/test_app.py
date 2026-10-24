@@ -14,7 +14,7 @@ def sse_events(response) -> list[dict]:
 
 
 def client(ctx) -> TestClient:
-    return TestClient(create_app(lambda: ctx.usage, lambda: ctx.state.agents))
+    return TestClient(create_app(lambda: ctx.usage, lambda: ctx.state.agents, lambda: ctx.history))
 
 
 def run_input(ctx, text: str) -> dict:

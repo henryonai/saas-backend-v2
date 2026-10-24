@@ -15,7 +15,6 @@ import { Route as PublicRouteImport } from './routes/_public'
 import { Route as DevCheckoutRouteImport } from './routes/dev-checkout'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAccountRouteImport } from './routes/_app/account'
-import { Route as AppAssistantRouteImport } from './routes/_app/assistant'
 import { Route as AppBillingRouteImport } from './routes/_app/billing'
 import { Route as AppNotificationsRouteImport } from './routes/_app/notifications'
 import { Route as AppTeamRouteImport } from './routes/_app/team'
@@ -24,6 +23,8 @@ import { Route as PublicConfirmRouteImport } from './routes/_public/confirm'
 import { Route as PublicForgotPasswordRouteImport } from './routes/_public/forgot-password'
 import { Route as PublicSignInRouteImport } from './routes/_public/sign-in'
 import { Route as PublicSignUpRouteImport } from './routes/_public/sign-up'
+import { Route as AppAssistantIndexRouteImport } from './routes/_app/assistant/index'
+import { Route as AppAssistantThreadIdRouteImport } from './routes/_app/assistant/$threadId'
 import { Route as AppOrdersIndexRouteImport } from './routes/_app/orders/index'
 import { Route as AppOrdersOrderIdRouteImport } from './routes/_app/orders/$orderId'
 
@@ -52,11 +53,6 @@ const AppIndexRoute = AppIndexRouteImport.update({
 const AppAccountRoute = AppAccountRouteImport.update({
   id: '/account',
   path: '/account',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppAssistantRoute = AppAssistantRouteImport.update({
-  id: '/assistant',
-  path: '/assistant',
   getParentRoute: () => AppRoute,
 } as any)
 const AppBillingRoute = AppBillingRouteImport.update({
@@ -99,6 +95,16 @@ const PublicSignUpRoute = PublicSignUpRouteImport.update({
   path: '/sign-up',
   getParentRoute: () => PublicRoute,
 } as any)
+const AppAssistantIndexRoute = AppAssistantIndexRouteImport.update({
+  id: '/assistant/',
+  path: '/assistant/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAssistantThreadIdRoute = AppAssistantThreadIdRouteImport.update({
+  id: '/assistant/$threadId',
+  path: '/assistant/$threadId',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppOrdersIndexRoute = AppOrdersIndexRouteImport.update({
   id: '/orders/',
   path: '/orders/',
@@ -114,7 +120,6 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/dev-checkout': typeof DevCheckoutRoute
   '/account': typeof AppAccountRoute
-  '/assistant': typeof AppAssistantRoute
   '/billing': typeof AppBillingRoute
   '/notifications': typeof AppNotificationsRoute
   '/team': typeof AppTeamRoute
@@ -123,14 +128,15 @@ export interface FileRoutesByFullPath {
   '/forgot-password': typeof PublicForgotPasswordRoute
   '/sign-in': typeof PublicSignInRoute
   '/sign-up': typeof PublicSignUpRoute
+  '/assistant/$threadId': typeof AppAssistantThreadIdRoute
   '/orders/$orderId': typeof AppOrdersOrderIdRoute
+  '/assistant/': typeof AppAssistantIndexRoute
   '/orders/': typeof AppOrdersIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/dev-checkout': typeof DevCheckoutRoute
   '/account': typeof AppAccountRoute
-  '/assistant': typeof AppAssistantRoute
   '/billing': typeof AppBillingRoute
   '/notifications': typeof AppNotificationsRoute
   '/team': typeof AppTeamRoute
@@ -139,7 +145,9 @@ export interface FileRoutesByTo {
   '/forgot-password': typeof PublicForgotPasswordRoute
   '/sign-in': typeof PublicSignInRoute
   '/sign-up': typeof PublicSignUpRoute
+  '/assistant/$threadId': typeof AppAssistantThreadIdRoute
   '/orders/$orderId': typeof AppOrdersOrderIdRoute
+  '/assistant': typeof AppAssistantIndexRoute
   '/orders': typeof AppOrdersIndexRoute
 }
 export interface FileRoutesById {
@@ -149,7 +157,6 @@ export interface FileRoutesById {
   '/_public': typeof PublicRouteWithChildren
   '/dev-checkout': typeof DevCheckoutRoute
   '/_app/account': typeof AppAccountRoute
-  '/_app/assistant': typeof AppAssistantRoute
   '/_app/billing': typeof AppBillingRoute
   '/_app/notifications': typeof AppNotificationsRoute
   '/_app/team': typeof AppTeamRoute
@@ -159,7 +166,9 @@ export interface FileRoutesById {
   '/_public/sign-in': typeof PublicSignInRoute
   '/_public/sign-up': typeof PublicSignUpRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/assistant/$threadId': typeof AppAssistantThreadIdRoute
   '/_app/orders/$orderId': typeof AppOrdersOrderIdRoute
+  '/_app/assistant/': typeof AppAssistantIndexRoute
   '/_app/orders/': typeof AppOrdersIndexRoute
 }
 export interface FileRouteTypes {
@@ -168,7 +177,6 @@ export interface FileRouteTypes {
     | '/'
     | '/dev-checkout'
     | '/account'
-    | '/assistant'
     | '/billing'
     | '/notifications'
     | '/team'
@@ -177,14 +185,15 @@ export interface FileRouteTypes {
     | '/forgot-password'
     | '/sign-in'
     | '/sign-up'
+    | '/assistant/$threadId'
     | '/orders/$orderId'
+    | '/assistant/'
     | '/orders/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/dev-checkout'
     | '/account'
-    | '/assistant'
     | '/billing'
     | '/notifications'
     | '/team'
@@ -193,7 +202,9 @@ export interface FileRouteTypes {
     | '/forgot-password'
     | '/sign-in'
     | '/sign-up'
+    | '/assistant/$threadId'
     | '/orders/$orderId'
+    | '/assistant'
     | '/orders'
   id:
     | '__root__'
@@ -202,7 +213,6 @@ export interface FileRouteTypes {
     | '/_public'
     | '/dev-checkout'
     | '/_app/account'
-    | '/_app/assistant'
     | '/_app/billing'
     | '/_app/notifications'
     | '/_app/team'
@@ -212,7 +222,9 @@ export interface FileRouteTypes {
     | '/_public/sign-in'
     | '/_public/sign-up'
     | '/_app/'
+    | '/_app/assistant/$threadId'
     | '/_app/orders/$orderId'
+    | '/_app/assistant/'
     | '/_app/orders/'
   fileRoutesById: FileRoutesById
 }
@@ -265,13 +277,6 @@ declare module '@tanstack/react-router' {
       path: '/account'
       fullPath: '/account'
       preLoaderRoute: typeof AppAccountRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/assistant': {
-      id: '/_app/assistant'
-      path: '/assistant'
-      fullPath: '/assistant'
-      preLoaderRoute: typeof AppAssistantRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/billing': {
@@ -330,6 +335,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PublicSignUpRouteImport
       parentRoute: typeof PublicRoute
     }
+    '/_app/assistant/': {
+      id: '/_app/assistant/'
+      path: '/assistant'
+      fullPath: '/assistant/'
+      preLoaderRoute: typeof AppAssistantIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/assistant/$threadId': {
+      id: '/_app/assistant/$threadId'
+      path: '/assistant/$threadId'
+      fullPath: '/assistant/$threadId'
+      preLoaderRoute: typeof AppAssistantThreadIdRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/orders/': {
       id: '/_app/orders/'
       path: '/orders'
@@ -349,23 +368,25 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppAccountRoute: typeof AppAccountRoute
-  AppAssistantRoute: typeof AppAssistantRoute
   AppBillingRoute: typeof AppBillingRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
   AppTeamRoute: typeof AppTeamRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppAssistantThreadIdRoute: typeof AppAssistantThreadIdRoute
   AppOrdersOrderIdRoute: typeof AppOrdersOrderIdRoute
+  AppAssistantIndexRoute: typeof AppAssistantIndexRoute
   AppOrdersIndexRoute: typeof AppOrdersIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppAccountRoute: AppAccountRoute,
-  AppAssistantRoute: AppAssistantRoute,
   AppBillingRoute: AppBillingRoute,
   AppNotificationsRoute: AppNotificationsRoute,
   AppTeamRoute: AppTeamRoute,
   AppIndexRoute: AppIndexRoute,
+  AppAssistantThreadIdRoute: AppAssistantThreadIdRoute,
   AppOrdersOrderIdRoute: AppOrdersOrderIdRoute,
+  AppAssistantIndexRoute: AppAssistantIndexRoute,
   AppOrdersIndexRoute: AppOrdersIndexRoute,
 }
 

@@ -1,8 +1,8 @@
 """
 Builds the real agents from agents/*.md (create_agent, middleware, tools,
-subagents) and the real UsageService on a fake table, with one scripted model
-per agent, an in-memory checkpointer, and fakes for AgentCore Memory, the
-HTTP API and the sandbox.
+subagents), the real UsageService and ConversationLog on a fake table, with
+one scripted model per agent, a fake model for titles, an in-memory
+checkpointer, and fakes for AgentCore Memory, the HTTP API and the sandbox.
 """
 import base64
 import json
@@ -22,9 +22,9 @@ from assistant.app import handle
 from assistant.definitions import MAIN_AGENT, load_agents
 from assistant.factory import AgentDeps, build_agents
 from assistant.models import current_month
-from assistant.repository import UsageRepository
+from assistant.repository import ConversationRepository, UsageRepository
 from assistant.sandbox import CommandResult
-from assistant.service import UsageService
+from assistant.service import ConversationLog, UsageService
 from assistant.tools import make_tools
 from testkit.aws import create_table
 from testkit.http import claims
@@ -66,6 +66,32 @@ class ScriptedModel(BaseChatModel):
                      for n, c in enumerate(message.tool_calls)] if last else []
             yield ChatGenerationChunk(message=AIMessageChunk(
                 content=piece, tool_call_chunks=calls, usage_metadata=message.usage_metadata if last else None))
+
+
+class TitleModel(BaseChatModel):
+    """
+    The model TitleMiddleware asks for a title: answers `title`, or fails when
+    `fail` is set. Reports token usage only when given `tokens`, so other
+    tests' token counts are the agent's alone.
+    """
+
+    title: str = "Test conversation"
+    fail: bool = False
+    tokens: tuple[int, int] | None = None
+    calls: list[list[BaseMessage]] = []
+
+    @property
+    def _llm_type(self) -> str:
+        return "title"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        self.calls.append(messages)
+        if self.fail:
+            raise RuntimeError("the model is down")
+        usage = None
+        if self.tokens:
+            usage = {"input_tokens": self.tokens[0], "output_tokens": self.tokens[1], "total_tokens": sum(self.tokens)}
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(self.title, usage_metadata=usage))])
 
 
 def answer(text: str, input_tokens: int = 100, output_tokens: int = 20) -> AIMessage:
@@ -133,9 +159,12 @@ def id_token(user_claims: dict) -> str:
 
 @pytest.fixture
 def ctx():
-    table = create_table("assistant-test")
+    table = create_table("assistant-test", with_gsi1=True)
     usage = UsageService(usage=UsageRepository(table))
+    conversations = ConversationRepository(table)
+    history = ConversationLog(conversations, days=30)
     memory, api, sandbox = FakeMemory(), FakeApi(), FakeSandbox()
+    title_model = TitleModel(calls=[])
     tools = make_tools(api, usage, sandbox)
     definitions = load_agents(set(tools))
     models: dict[str, ScriptedModel] = {}
@@ -146,7 +175,8 @@ def ctx():
         models[agent] = ScriptedModel(responses=list(responses), calls=[], tools_shown=[])
         state.agents = build_agents(definitions, AgentDeps(
             make_model=lambda d: models.setdefault(d.name, ScriptedModel(responses=[], calls=[], tools_shown=[])),
-            checkpointer=state.checkpointer, usage=usage, memory=memory, tools=tools))
+            checkpointer=state.checkpointer, usage=usage, memory=memory, tools=tools, history=history,
+            title_model=title_model))
 
     def chat(prompt, user: dict | None = None, session_id: str | None = SESSION, authorization=None,
              agent: str | None = None, thread_id: str | None = None, messages: list | None = None) -> list[dict]:
@@ -160,7 +190,7 @@ def ctx():
             thread_id=thread_id or session_id or SESSION, run_id=str(uuid4()),
             messages=messages if messages is not None else [{"id": str(uuid4()), "role": "user", "content": prompt}],
             forwarded_props={"agent": agent} if agent else {})
-        events = [wire(event) for event in handle(run_input, context, usage, state.agents)]
+        events = [wire(event) for event in handle(run_input, context, usage, state.agents, history)]
         check_agui_order(events)
         return events
 
@@ -170,6 +200,7 @@ def ctx():
 
     script()
     yield SimpleNamespace(table=table, usage=usage, memory=memory, api=api, sandbox=sandbox, state=state,
+                          conversations=conversations, history=history, title_model=title_model,
                           definitions=definitions, script=script, chat=chat, set_usage=set_usage, session=SESSION,
                           answer=answer, tool_call=tool_call, text=text_of, tools=tools_called, error=error_of,
                           check_order=check_agui_order, id_token=id_token,

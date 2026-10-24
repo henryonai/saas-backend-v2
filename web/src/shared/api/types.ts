@@ -4,7 +4,9 @@
  * (ids, timestamps) come out optional; Pydantic always sends them in a
  * response, hence `Sent<...>`.
  */
+import type { Message } from '@ag-ui/client';
 import type { components as Accounts } from './generated/accounts';
+import type { components as Assistant } from './generated/assistant';
 import type { components as Billing } from './generated/billing';
 import type { components as Notifications } from './generated/notifications';
 import type { components as Orders } from './generated/orders';
@@ -29,3 +31,9 @@ export type BillingSummary = Billing['schemas']['BillingSummary'];
 export type PaidPlan = Billing['schemas']['CheckoutRequest']['plan'];
 export type CheckoutResponse = Billing['schemas']['CheckoutResponse'];
 export type PortalResponse = Billing['schemas']['PortalResponse'];
+
+/** One of the user's conversations with the assistant; thread_id is its AG-UI threadId. */
+export type AssistantConversation = Sent<Assistant['schemas']['ConversationOut']>;
+export type AssistantConversationPage = { items: AssistantConversation[]; next_cursor: string | null };
+/** The API sends the messages as plain objects: they are AG-UI messages, as @ag-ui/client assembles them. */
+export type AssistantConversationDetail = AssistantConversation & { messages: Message[] };

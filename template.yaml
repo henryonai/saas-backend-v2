@@ -771,10 +771,18 @@ Resources:
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
         - { AttributeName: sk, AttributeType: S }
+        - { AttributeName: gsi1pk, AttributeType: S }
+        - { AttributeName: gsi1sk, AttributeType: S }
       KeySchema:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
-      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # old monthly usage
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1                # each user's conversations, most recent first (repository.py)
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # old usage and conversations
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
   # Conversation checkpoints (short-term) and what the agent learns about each
@@ -787,7 +795,7 @@ Resources:
     Properties:
       Name: !Sub saas_${Stage}_assistant
       Description: Assistant conversations and long-term memories, per user and workspace
-      EventExpiryDuration: !If [IsProd, 90, 30]   # days a conversation is kept
+      EventExpiryDuration: !If [IsProd, 90, 30]   # days a conversation is kept; CONVERSATION_DAYS must match
       MemoryStrategies:
         - SemanticMemoryStrategy:
             Name: facts
@@ -846,9 +854,9 @@ Resources:
                   - bedrock-agentcore:ListEvents
                   - bedrock-agentcore:RetrieveMemoryRecords
                 Resource: !GetAtt AssistantMemory.MemoryArn
-              - Sid: Usage
+              - Sid: Table                # usage counters, and each conversation's history (service.ConversationLog)
                 Effect: Allow
-                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
                 Resource: !GetAtt AssistantTable.Arn
               - Sid: Sandbox                # assistant/sandbox.py
                 Effect: Allow
@@ -920,6 +928,91 @@ Resources:
         OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParam
         REGION: !Ref AWS::Region
         SANDBOX_ID: !GetAtt AssistantSandbox.CodeInterpreterId
+        CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # as long as AssistantMemory keeps the agent's copy
+
+  # The users' conversations (/assistant/conversations): list, reopen, rename,
+  # delete. A Lambda behind the HTTP API like the other modules; the agent
+  # writes the history as it answers. Same code as the agent, but only the
+  # shared layer: these files never import LangChain (a test checks).
+  AssistantApiFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasAssistant
+    Properties:
+      CodeUri: modules/assistant/src/
+      Handler: assistant.handler.handler
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: assistant
+          ASSISTANT_TABLE: !Ref AssistantTable
+          PURGE_QUEUE_URL: !Ref AssistantPurgeQueue
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
+              Resource: [!GetAtt AssistantTable.Arn, !Sub "${AssistantTable.Arn}/index/gsi1"]
+        - SQSSendMessagePolicy: { QueueName: !GetAtt AssistantPurgeQueue.QueueName }
+      Events:
+        ListGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/conversations, Method: GET } }
+        OneGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: GET } }
+        OnePatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: PATCH } }
+        OneDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: DELETE } }
+
+  # Deleted conversations, for the agent's copy in AgentCore Memory: Memory
+  # deletes one event per call, too many for the request (assistant/purge.py).
+  AssistantPurgeDLQ:
+    Type: AWS::SQS::Queue
+    Condition: HasAssistant
+    Properties:
+      MessageRetentionPeriod: 1209600   # keep failed messages 14 days
+
+  AssistantPurgeQueue:
+    Type: AWS::SQS::Queue
+    Condition: HasAssistant
+    Properties:
+      VisibilityTimeout: 1800           # 6x the worker timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AssistantPurgeDLQ.Arn
+        maxReceiveCount: 5              # each try continues where the last stopped
+
+  AssistantPurgeFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasAssistant
+    Properties:
+      CodeUri: modules/assistant/src/
+      Handler: assistant.purge.handler
+      Timeout: 300
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: assistant
+          MEMORY_ID: !GetAtt AssistantMemory.MemoryId
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock-agentcore:ListEvents, bedrock-agentcore:DeleteEvent]
+              Resource: !GetAtt AssistantMemory.MemoryArn
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AssistantPurgeQueue.Arn
+            BatchSize: 1                # one conversation per run: a retry repeats only that one
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 2 }   # gentle on Memory's API, which the agent needs too
+
+  AssistantPurgeDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAssistant
+    Properties:
+      AlarmDescription: Deleted assistant conversations are still in AgentCore Memory (messages in the purge dead-letter queue)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt AssistantPurgeDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertsTopic]
 
 Outputs:
   ApiUrl:

@@ -14,14 +14,15 @@ Each message, in order:
   1. which agent: forwardedProps.agent (agents/*.md), "assistant" by default
   2. who is calling: the token's claims, checked like every other module does
   3. may they: start_message counts the message against the plan, or stops (402)
-  4. the agent answers, with middleware for the token cap and memory, and the
-     answer streams back as AG-UI events
+  4. the conversation's history gets the message (created the first time)
+  5. the agent answers, with middleware for the token cap, memory and the
+     title, and the answer streams back as AG-UI events
+  6. the history gets what streamed, however the run ended
 """
 import asyncio
 import base64
 import contextvars
 import json
-import re
 from collections.abc import AsyncIterator, Callable, Iterator
 
 from ag_ui.core import BaseEvent, RunAgentInput, RunFinishedEvent, RunStartedEvent, TokenUsage
@@ -33,25 +34,24 @@ from langchain_core.messages import AIMessage, HumanMessage
 from shared.auth import user_from_claims
 from shared.errors import AppError, InvalidRequest, NotFound, Unauthorized
 
-from assistant.agui import AgUiStream
-from assistant.container import get_agents, get_usage_service
-from assistant.context import AgentContext
+from assistant.agui import AgUiStream, Transcript
+from assistant.container import get_agents, get_conversation_log, get_usage_service
+from assistant.context import SESSION_ID, AgentContext
 from assistant.factory import thread_config
 from assistant.schemas import chat_request, error_event, internal_error
-from assistant.service import UsageService
+from assistant.service import ConversationLog, UsageService
 
 logger = Logger()
 
-# AgentCore Runtime wants 33+ characters; AgentCore Memory allows these, up to 100.
-SESSION_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{32,99}")
 
-
-def create_app(get_usage: Callable[[], UsageService], get_agents: Callable[[], dict]) -> AGUIApp:
+def create_app(get_usage: Callable[[], UsageService], get_agents: Callable[[], dict],
+               get_log: Callable[[], ConversationLog]) -> AGUIApp:
     app = AGUIApp()
 
     @app.entrypoint
     async def invoke(run_input: RunAgentInput, context: RequestContext) -> AsyncIterator[BaseEvent]:
-        async for event in in_worker_thread(lambda: handle(run_input, context, get_usage(), get_agents())):
+        async for event in in_worker_thread(
+                lambda: handle(run_input, context, get_usage(), get_agents(), get_log())):
             yield event
 
     return app
@@ -83,7 +83,7 @@ async def in_worker_thread[T](events: Callable[[], Iterator[T]]) -> AsyncIterato
 
 
 def handle(run_input: RunAgentInput, context: RequestContext, usage: UsageService,
-           agents: dict) -> Iterator[BaseEvent]:
+           agents: dict, history: ConversationLog) -> Iterator[BaseEvent]:
     thread_id, run_id = run_input.thread_id, run_input.run_id
     yield RunStartedEvent(thread_id=thread_id, run_id=run_id)
     try:
@@ -93,6 +93,7 @@ def handle(run_input: RunAgentInput, context: RequestContext, usage: UsageServic
         agent = agents[request.agent]
         run = agent_context(context, thread_id)
         usage.start_message(run.user)
+        history.start(run, request.agent, request.message_id, request.prompt)
     except AppError as e:
         yield error_event(e)
         return
@@ -104,21 +105,29 @@ def handle(run_input: RunAgentInput, context: RequestContext, usage: UsageServic
     log = {"tenant_id": run.user.tenant_id, "user_id": run.user.user_id, "session_id": run.session_id,
            "agent": request.agent}
     input_tokens = output_tokens = 0
-    events = AgUiStream()
+    events, transcript = AgUiStream(), Transcript()
     try:
         # Subagents' own output doesn't come through here (see delegation.py), only the calling agent's.
         stream = agent.stream({"messages": [HumanMessage(request.prompt)]}, thread_config(run, request.agent),
                               context=run, stream_mode="messages")
         for message, _ in stream:
-            yield from events.message(message)
+            for event in events.message(message):
+                transcript.add(event)
+                yield event
             if isinstance(message, AIMessage) and message.usage_metadata:
                 input_tokens += message.usage_metadata["input_tokens"]
                 output_tokens += message.usage_metadata["output_tokens"]
-        yield from events.close()
+        for event in events.close():
+            transcript.add(event)
+            yield event
     except Exception:
         logger.exception("The agent failed", extra=log)
         yield internal_error()
         return
+    finally:
+        # What the user saw, however the run ended; before RUN_FINISHED, so a
+        # client that reloads the conversation then finds all of it.
+        keep_history(history, run, transcript, log)
 
     # One line per message, with tokens: per-tenant cost in CloudWatch Logs Insights.
     # (A subagent's tokens are in the usage table, not in these numbers.)
@@ -126,6 +135,14 @@ def handle(run_input: RunAgentInput, context: RequestContext, usage: UsageServic
     yield RunFinishedEvent(thread_id=thread_id, run_id=run_id, result={"agent": request.agent},
                            usage=[TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens,
                                              total_tokens=input_tokens + output_tokens)])
+
+
+def keep_history(history: ConversationLog, run: AgentContext, transcript: Transcript, log: dict) -> None:
+    """Best effort: the user has the answer already, and the agent its checkpoint."""
+    try:
+        history.record(run, transcript.messages)
+    except Exception:
+        logger.exception("Could not save the conversation's history", extra=log)
 
 
 def agent_context(context: RequestContext, thread_id: str) -> AgentContext:
@@ -163,4 +180,4 @@ def claims_from_bearer(authorization: str) -> dict:
     return claims
 
 
-app = create_app(get_usage_service, get_agents)
+app = create_app(get_usage_service, get_agents, get_conversation_log)

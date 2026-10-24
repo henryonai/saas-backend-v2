@@ -77,8 +77,9 @@ saas-backend-v2/
 │       │   ├── handler.py      # Lambda entry point for the HTTP API
 │       │   └── ...             # other entry points (worker, webhook, triggers)
 │       └── tests/
-│   (modules/assistant runs on AgentCore Runtime instead: app.py instead of
-│    handler.py; its agents are Markdown files in src/assistant/agents/)
+│   (modules/assistant's chat runs on AgentCore Runtime: app.py, with its
+│    agents as Markdown files in src/assistant/agents/; its handler.py serves
+│    the users' conversations on the HTTP API)
 ├── testkit/                    # package "saas-testkit": test helpers and fakes (not deployed)
 ├── web/                        # the React app (see web/README.md)
 ├── template.yaml               # one section per module

@@ -43,10 +43,11 @@ ERROR_CODES = {
 class ChatRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
     agent: str = Field(default=MAIN_AGENT, max_length=64)   # an agent's `name` (agents/*.md)
+    message_id: str = Field(min_length=1, max_length=100)    # the client's id for it: the history keeps it
 
 
 def chat_request(run_input: RunAgentInput) -> ChatRequest:
-    """The user's new message and the agent it is for. Raises InvalidRequest."""
+    """The user's new message, its id and the agent it is for. Raises InvalidRequest."""
     last = run_input.messages[-1] if run_input.messages else None
     if last is None or last.role != "user":
         raise InvalidRequest("End `messages` with the user's new message.")
@@ -58,10 +59,10 @@ def chat_request(run_input: RunAgentInput) -> ChatRequest:
         raise InvalidRequest("Send the message as text only.")
     props = run_input.forwarded_props if isinstance(run_input.forwarded_props, dict) else {}
     try:
-        return ChatRequest(prompt=prompt, agent=props.get("agent", MAIN_AGENT))
+        return ChatRequest(prompt=prompt, agent=props.get("agent", MAIN_AGENT), message_id=last.id)
     except ValidationError:
-        raise InvalidRequest("Send a message of 1 to 4000 characters, and optionally forwardedProps.agent "
-                             "(an agent's name).")
+        raise InvalidRequest("Send a message of 1 to 4000 characters with an id of up to 100, and optionally "
+                             "forwardedProps.agent (an agent's name).")
 
 
 def error_event(error: AppError) -> RunErrorEvent:

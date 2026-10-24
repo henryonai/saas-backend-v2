@@ -32,7 +32,7 @@ class MemoryMiddleware(AgentMiddleware):
         self.memory = memory
 
     def before_agent(self, state: MemoryState, runtime: Runtime[AgentContext]) -> dict:
-        question, _ = _this_exchange(state["messages"])
+        question, _ = this_exchange(state["messages"])
         recalled = self.memory.recall(runtime.context.actor_id, question.text) if question else []
         return {"recalled": recalled}
 
@@ -46,12 +46,12 @@ class MemoryMiddleware(AgentMiddleware):
         return handler(request)
 
     def after_agent(self, state: MemoryState, runtime: Runtime[AgentContext]) -> None:
-        question, answer = _this_exchange(state["messages"])
+        question, answer = this_exchange(state["messages"])
         if question and answer:
             self.memory.remember(runtime.context.actor_id, runtime.context.session_id, question.text, answer.text)
 
 
-def _this_exchange(messages: list[BaseMessage]) -> tuple[HumanMessage | None, AIMessage | None]:
+def this_exchange(messages: list[BaseMessage]) -> tuple[HumanMessage | None, AIMessage | None]:
     """The user's latest message and the final answer to it (None until there is one)."""
     for i in range(len(messages) - 1, -1, -1):
         if isinstance(messages[i], HumanMessage):

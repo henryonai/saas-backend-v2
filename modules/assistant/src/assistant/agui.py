@@ -10,6 +10,9 @@ The tool calls of one model call share its message id (their parentMessageId),
 so a client shows them on that assistant message. Only the calling agent's
 model streams: a subagent runs inside the `task` tool, and its answer arrives
 as that tool's result.
+
+Transcript assembles the same events into AG-UI messages, as a client does:
+the conversation's history, which the page shows again when it is reopened.
 """
 import json
 from collections.abc import Iterator
@@ -94,3 +97,40 @@ class AgUiStream:
         if self.text is not None:
             yield TextMessageEndEvent(message_id=self.text)
             self.text = None
+
+
+@dataclass
+class Transcript:
+    """
+    The AG-UI messages a run's events add up to, assembled as @ag-ui/client
+    does: text and tool calls on the assistant message they belong to (a tool
+    call's parentMessageId), each tool's result as a tool message. JSON as on
+    the wire, so the page reads it back as it read the stream.
+    """
+    messages: list[dict] = field(default_factory=list)
+    _by_id: dict[str, dict] = field(default_factory=dict)
+    _calls: dict[str, dict] = field(default_factory=dict)
+
+    def add(self, event: BaseEvent) -> None:
+        match event:
+            case TextMessageStartEvent():
+                self._assistant(event.message_id).setdefault("content", "")
+            case TextMessageContentEvent():
+                message = self._assistant(event.message_id)
+                message["content"] = message.get("content", "") + event.delta
+            case ToolCallStartEvent():
+                call = {"id": event.tool_call_id, "type": "function",
+                        "function": {"name": event.tool_call_name, "arguments": ""}}
+                self._assistant(event.parent_message_id or event.tool_call_id).setdefault("toolCalls", []).append(call)
+                self._calls[event.tool_call_id] = call
+            case ToolCallArgsEvent():
+                self._calls[event.tool_call_id]["function"]["arguments"] += event.delta
+            case ToolCallResultEvent():
+                self.messages.append({"id": event.message_id, "role": "tool", "toolCallId": event.tool_call_id,
+                                      "content": event.content})
+
+    def _assistant(self, message_id: str) -> dict:
+        if message_id not in self._by_id:
+            self._by_id[message_id] = {"id": message_id, "role": "assistant"}
+            self.messages.append(self._by_id[message_id])
+        return self._by_id[message_id]

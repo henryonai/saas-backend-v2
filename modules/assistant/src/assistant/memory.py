@@ -73,3 +73,40 @@ class AgentCoreMemory:
             )
         except (BotoCoreError, ClientError):
             logger.warning("Could not save the exchange to memory", exc_info=True)
+
+    def forget(self, actor_id: str, session_ids: list[str]) -> int:
+        """
+        Deletes every event of these sessions: a deleted conversation's
+        exchanges and each agent's checkpoints. Memory deletes one event per
+        call, so this is for the purge worker, not a request. Unlike recall()
+        and remember() it raises, so the worker's queue retries; running it
+        again finishes the job. Returns how many events it deleted.
+        """
+        deleted = 0
+        for session_id in session_ids:
+            for event_id in self._event_ids(actor_id, session_id):
+                try:
+                    self.client.delete_event(memoryId=self.memory_id, actorId=actor_id, sessionId=session_id,
+                                             eventId=event_id)
+                except ClientError as e:
+                    if e.response["Error"]["Code"] != "ResourceNotFoundException":
+                        raise
+                    continue   # already gone: a retried purge
+                deleted += 1
+        return deleted
+
+    def _event_ids(self, actor_id: str, session_id: str) -> list[str]:
+        """All of a session's event ids, listed before deleting any (deleting would move the pages)."""
+        ids, params = [], {"memoryId": self.memory_id, "actorId": actor_id, "sessionId": session_id,
+                           "includePayloads": False, "maxResults": 100}
+        while True:
+            try:
+                response = self.client.list_events(**params)
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "ResourceNotFoundException":
+                    return ids
+                raise
+            ids += [event["eventId"] for event in response.get("events", [])]
+            if not response.get("nextToken"):
+                return ids
+            params["nextToken"] = response["nextToken"]

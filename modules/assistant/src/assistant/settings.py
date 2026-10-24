@@ -14,6 +14,9 @@ class AssistantSettings(BaseAppSettings):
     # vendor/model = OpenRouter; any other id = Bedrock (see llm.py).
     model_id: str = "deepseek/deepseek-v4.1-flash-1017"
     sandbox_session_seconds: int = 900   # a sandbox, and its files, last this long; then a new one starts
+    # Days a conversation's history is kept after its last message: the
+    # AgentCore Memory's EventExpiryDuration, so it never outlives what the agent remembers.
+    conversation_days: int = 30
 
     # The OpenRouter API key, needed only for OpenRouter models. In AWS, set
     # OPENROUTER_API_KEY_PARAM to the name of an SSM SecureString parameter
@@ -21,3 +24,14 @@ class AssistantSettings(BaseAppSettings):
     # OPENROUTER_API_KEY directly in .env instead.
     openrouter_api_key_param: str | None = None
     openrouter_api_key: SecretStr | None = None  # SecretStr: hidden in logs
+
+
+class ConversationsApiSettings(BaseAppSettings):
+    """The HTTP API's Lambda (handler.py): the users' conversations."""
+    assistant_table: str
+    purge_queue_url: str   # where deleted conversations go for purge.py
+
+
+class PurgeSettings(BaseAppSettings):
+    """The purge worker's Lambda (purge.py)."""
+    memory_id: str

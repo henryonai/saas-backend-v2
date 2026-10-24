@@ -5,10 +5,11 @@ import { endSession, getIdToken, refreshSession, sessionStore } from '@/shared/a
 import { AssistantAgent, MAIN_AGENT, type RunError, runError } from './api';
 
 /**
- * The conversation on the Assistant page. It outlives the page, so the user
- * can look at an order and come back; a reload, "New conversation", signing
- * out or changing workspace starts a new one. The server keeps every
- * conversation, but has no way yet to list or reopen one.
+ * The conversation on the Assistant page: the one streaming now, or one
+ * reopened from its history (openConversation). It outlives the page, so the
+ * user can look at an order and come back while an answer streams; signing
+ * out or changing workspace clears it. The URL names the conversation, so a
+ * reload reopens it from the server.
  */
 export interface ConversationState {
   threadId: string;
@@ -71,6 +72,17 @@ export function newConversation(): void {
   agent?.abortRun();
   agent = null;
   conversationStore.setState(fresh());
+}
+
+/**
+ * Shows a conversation from its history (GET /assistant/conversations/{id}).
+ * The next message continues it: same threadId, so the agent picks up from
+ * its own checkpoints on the server.
+ */
+export function openConversation(threadId: string, messages: Message[]): void {
+  agent?.abortRun();
+  agent = new AssistantAgent(threadId, messages);
+  conversationStore.setState({ threadId, messages, running: false, error: null, tokens: null });
 }
 
 // Nothing from one user or workspace may show in the next, as main.tsx does

@@ -1,17 +1,26 @@
 """
 Assistant table:
-  pk = TENANT#<tenant_id>   sk = USAGE#<YYYY-MM>   the workspace's usage that month
+  pk = TENANT#<t>                         sk = USAGE#<YYYY-MM>   the workspace's usage that month
+  pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = META              a conversation (models.Conversation)
+  pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = MSG#<000001>      one of its AG-UI messages, in order
+  gsi1pk = TENANT#<t>#USER#<u>#CONVS      gsi1sk = <updated_at>  on META only: the user's list, newest first
 
-The tenant is part of every key, so one workspace never sees another's usage.
-Records expire (TTL) about 13 months after the month started.
+The tenant is part of every key, and the user of every conversation key, so
+one workspace never sees another's usage and one user never sees another's
+conversations. Usage expires (TTL) about 13 months after the month started;
+a conversation's records some days after they were written (the days of
+AgentCore Memory, which holds the agent's own copy).
 """
+import base64
+import json
 import time
 
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from shared.dynamo import is_condition_failure
 
-from assistant.models import Usage
+from assistant.models import Conversation, TitleSource, Usage
 
 USAGE_TTL_SECONDS = 400 * 24 * 60 * 60
 
@@ -120,3 +129,171 @@ class UsageRepository:
     def get(self, tenant_id: str, month: str) -> Usage:
         item = self.table.get_item(Key=_key(tenant_id, month), ConsistentRead=True).get("Item")
         return _usage(item) if item else Usage(tenant_id=tenant_id, month=month)
+
+
+def _conversation_pk(tenant_id: str, user_id: str, thread_id: str) -> str:
+    return f"TENANT#{tenant_id}#USER#{user_id}#CONV#{thread_id}"
+
+
+def _list_pk(tenant_id: str, user_id: str) -> str:
+    return f"TENANT#{tenant_id}#USER#{user_id}#CONVS"
+
+
+def _conversation(item: dict) -> Conversation:
+    return Conversation.model_validate({k: v for k, v in item.items() if k not in ("pk", "sk", "gsi1pk", "gsi1sk")})
+
+
+class InvalidCursor(ValueError):
+    pass
+
+
+class ConversationRepository:
+    """
+    Conversations and their messages. Every method takes the tenant and user
+    from the caller's token, so a thread id from a client can only ever name
+    one of that user's own conversations.
+    """
+
+    def __init__(self, table):
+        self.table = table
+
+    def start(self, tenant_id: str, user_id: str, thread_id: str, *, agent: str, title: str,
+              message: dict, now: str, expires_at: int) -> None:
+        """Creates the conversation the first time (titled `title`), and adds the user's message to it."""
+        names = {"#thread": "thread_id", "#title": "title", "#source": "title_source", "#created": "created_at",
+                 "#updated": "updated_at", "#expires": "expires_at", "#count": "message_count", "#agents": "agents"}
+        result = self.table.update_item(
+            Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
+            UpdateExpression="SET #thread = :thread, #title = if_not_exists(#title, :title), "
+                             "#source = if_not_exists(#source, :message), #created = if_not_exists(#created, :now), "
+                             "#updated = :now, #expires = :expires, gsi1pk = :list, gsi1sk = :now "
+                             "ADD #count :one, #agents :agents",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues={":thread": thread_id, ":title": title, ":message": "message", ":now": now,
+                                       ":expires": expires_at, ":list": _list_pk(tenant_id, user_id), ":one": 1,
+                                       ":agents": {agent}},
+            ReturnValues="UPDATED_NEW",
+        )
+        self._put_messages(tenant_id, user_id, thread_id, [message], int(result["Attributes"]["message_count"]),
+                           expires_at)
+
+    def add_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], *,
+                     now: str, expires_at: int) -> bool:
+        """Appends messages to an existing conversation. False if it no longer exists (deleted meanwhile)."""
+        if not messages:
+            return True
+        try:
+            result = self.table.update_item(
+                Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
+                UpdateExpression="SET #updated = :now, #expires = :expires, gsi1sk = :now ADD #count :n",
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeNames={"#updated": "updated_at", "#expires": "expires_at",
+                                          "#count": "message_count"},
+                ExpressionAttributeValues={":now": now, ":expires": expires_at, ":n": len(messages)},
+                ReturnValues="UPDATED_NEW",
+            )
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+        self._put_messages(tenant_id, user_id, thread_id, messages,
+                           int(result["Attributes"]["message_count"]), expires_at)
+        return True
+
+    def _put_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], last: int,
+                      expires_at: int) -> None:
+        """Numbers the messages so that the last one is `last` (the conversation's message_count)."""
+        pk = _conversation_pk(tenant_id, user_id, thread_id)
+        first = last - len(messages) + 1
+        with self.table.batch_writer() as batch:
+            for n, message in enumerate(messages, start=first):
+                batch.put_item(Item={"pk": pk, "sk": f"MSG#{n:06d}", "message": message, "expires_at": expires_at})
+
+    def set_title(self, tenant_id: str, user_id: str, thread_id: str, title: str, source: TitleSource,
+                  only_over: TitleSource | None = None) -> bool:
+        """
+        Renames the conversation. With `only_over`, only while its title still
+        comes from there (the model never replaces a title the user chose).
+        False if there is no such conversation, or the condition failed.
+        """
+        condition, values = "attribute_exists(pk)", {":title": title, ":source": source}
+        if only_over:
+            condition += " AND #source = :only"
+            values[":only"] = only_over
+        try:
+            self.table.update_item(
+                Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
+                UpdateExpression="SET #title = :title, #source = :source",
+                ConditionExpression=condition,
+                ExpressionAttributeNames={"#title": "title", "#source": "title_source"},
+                ExpressionAttributeValues=values,
+            )
+            return True
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+
+    def get(self, tenant_id: str, user_id: str, thread_id: str) -> Conversation | None:
+        item = self.table.get_item(Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
+                                   ConsistentRead=True).get("Item")
+        # TTL removes expired items within days, not at once: hide them meanwhile.
+        return _conversation(item) if item and item["expires_at"] > time.time() else None
+
+    def messages(self, tenant_id: str, user_id: str, thread_id: str, limit: int) -> list[dict]:
+        """The latest `limit` messages, oldest first."""
+        result = self.table.query(
+            KeyConditionExpression=Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id))
+            & Key("sk").begins_with("MSG#"),
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        now = time.time()
+        return [item["message"] for item in reversed(result["Items"]) if item["expires_at"] > now]
+
+    def list(self, tenant_id: str, user_id: str, limit: int,
+             cursor: str | None = None) -> tuple[list[Conversation], str | None]:
+        """Newest first. Returns the conversations and a cursor for the next page (None at the end)."""
+        params = {
+            "IndexName": "gsi1",
+            "KeyConditionExpression": Key("gsi1pk").eq(_list_pk(tenant_id, user_id)),
+            "FilterExpression": Attr("expires_at").gt(int(time.time())),
+            "ScanIndexForward": False,
+            "Limit": limit,
+        }
+        if cursor:
+            # Only the thread id and time come from the cursor: the user's keys come from the token.
+            thread_id, updated_at = _read_cursor(cursor)
+            params["ExclusiveStartKey"] = {"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META",
+                                           "gsi1pk": _list_pk(tenant_id, user_id), "gsi1sk": updated_at}
+        result = self.table.query(**params)
+        last = result.get("LastEvaluatedKey")
+        next_cursor = _cursor(last["pk"].rsplit("#CONV#", 1)[1], last["gsi1sk"]) if last else None
+        return [_conversation(item) for item in result["Items"]], next_cursor
+
+    def delete(self, tenant_id: str, user_id: str, thread_id: str) -> None:
+        """Removes the conversation and all its messages."""
+        params = {"KeyConditionExpression": Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id)),
+                  "ProjectionExpression": "pk, sk"}
+        with self.table.batch_writer() as batch:
+            while True:
+                result = self.table.query(**params)
+                for item in result["Items"]:
+                    batch.delete_item(Key={"pk": item["pk"], "sk": item["sk"]})
+                if "LastEvaluatedKey" not in result:
+                    break
+                params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
+
+def _cursor(thread_id: str, updated_at: str) -> str:
+    return base64.urlsafe_b64encode(json.dumps([thread_id, updated_at]).encode()).decode().rstrip("=")
+
+
+def _read_cursor(cursor: str) -> tuple[str, str]:
+    try:
+        thread_id, updated_at = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    except (ValueError, TypeError) as e:   # not base64, not JSON, or not a pair
+        raise InvalidCursor(cursor) from e
+    if not (isinstance(thread_id, str) and isinstance(updated_at, str)):
+        raise InvalidCursor(cursor)
+    return thread_id, updated_at

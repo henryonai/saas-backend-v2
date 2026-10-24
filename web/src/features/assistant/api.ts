@@ -1,11 +1,15 @@
 import { HttpAgent, type Message, type RunAgentInput } from '@ag-ui/client';
+import { api } from '@/shared/api/client';
+import type { AssistantConversation, AssistantConversationDetail, AssistantConversationPage } from '@/shared/api/types';
 import { config } from '@/shared/config';
 
 /**
- * The assistant's one endpoint: AgentCore Runtime's /invocations, which speaks
- * AG-UI (modules/assistant/README.md, "Calling it from the frontend"). The
- * official client, @ag-ui/client, sends the RunAgentInput, reads the events
- * and assembles them into messages.
+ * The assistant has two backends (modules/assistant/README.md):
+ * - the chat: AgentCore Runtime's /invocations, which speaks AG-UI. The
+ *   official client, @ag-ui/client, sends the RunAgentInput, reads the events
+ *   and assembles them into messages.
+ * - the user's conversations: /assistant/conversations on the HTTP API, which
+ *   returns a conversation's history as the same AG-UI messages.
  */
 
 /** The agent the frontend talks to (modules/assistant/src/assistant/agents/assistant.md). */
@@ -19,11 +23,12 @@ export interface RunError {
 
 /**
  * The AG-UI client for one conversation. The threadId is the conversation and
- * the AgentCore session, so it also goes in the session header.
+ * the AgentCore session, so it also goes in the session header. `messages`:
+ * the history of a conversation that is reopened.
  */
 export class AssistantAgent extends HttpAgent {
-  constructor(threadId: string) {
-    super({ url: config.assistantUrl, threadId });
+  constructor(threadId: string, messages: Message[] = []) {
+    super({ url: config.assistantUrl, threadId, initialMessages: messages });
   }
 
   /** Before each run: a current ID token (AgentCore's authorizer checks it, as API Gateway does). */
@@ -77,6 +82,25 @@ export function runError(error: unknown): RunError {
 
 function codeOf(status: number): string {
   return STATUS_CODES[status] ?? (status >= 500 ? 'INTERNAL_ERROR' : 'VALIDATION_ERROR');
+}
+
+/** The user's conversations, most recently used first. Pass `next_cursor` as `cursor` for the next page. */
+export function listConversations(query: { limit: number; cursor?: string }, signal?: AbortSignal) {
+  return api<AssistantConversationPage>('/assistant/conversations', { query, signal });
+}
+
+/** A conversation and its messages (the latest 200 of a long one). 404 once deleted or expired. */
+export function getConversation(threadId: string, signal?: AbortSignal) {
+  return api<AssistantConversationDetail>(`/assistant/conversations/${encodeURIComponent(threadId)}`, { signal });
+}
+
+export function renameConversation(threadId: string, title: string) {
+  return api<AssistantConversation>(`/assistant/conversations/${encodeURIComponent(threadId)}`, { method: 'PATCH', body: { title } });
+}
+
+/** Gone at once; the server deletes the agent's own copy in the background. */
+export function deleteConversation(threadId: string) {
+  return api<void>(`/assistant/conversations/${encodeURIComponent(threadId)}`, { method: 'DELETE' });
 }
 
 /** The first `data:` line of an SSE body, parsed. */
