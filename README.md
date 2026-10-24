@@ -148,8 +148,13 @@ fields such as `subscription_revision`).
 an `OUTBOX#` item in the same transaction as the change (kept 7 days) → the
 table's DynamoDB stream triggers `OutboxRelayFunction` → it publishes to this
 stack's event bus, retrying until it works → a rule sends it to the
-listener's SQS queue → the listener's worker (with a dead-letter queue).
-Delivery is at least once and not in order, hence rule 9.
+listener's SQS queue (EventBridge retries for 24 hours; what it can't deliver
+goes to the listener's dead-letter queue, never dropped) → the listener's
+worker, at most 5 at once (failed messages retried, then the same
+dead-letter queue). Delivery is at least once and not in order, hence rule 9.
+Every step that can fail ends in a dead-letter queue with an alarm, and a
+delay alarms before then; `tests/test_template.py` checks that every rule,
+queue and stream in `template.yaml` is set up this way.
 
 ## Main flows
 
@@ -328,6 +333,7 @@ they are out of date. boto3 is not bundled because the Lambda runtime provides i
 uv sync --all-packages
 uv run pytest                   # everything
 uv run pytest modules/orders    # one module
+uv run pytest tests             # template.yaml's event plumbing rules
 uvx ruff check .                # lint
 uvx cfn-lint template.yaml      # template
 uv run python scripts/export-openapi.py   # OpenAPI documents for the frontend
@@ -465,13 +471,19 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
 - **Tracing:** X-Ray tracing is on for every function. (The X-Ray SDK is in
   maintenance mode; for spans inside your code, use OpenTelemetry/ADOT.)
 - **Metrics:** the relay emits `EventsPublished` to the `saas-<stage>` namespace.
-- **Alarms:** messages in any dead-letter queue (accounts, notifications,
-  outbox) trigger an alarm sent to `AlertsTopic`; set `AlertEmail` to get an
-  email. For the accounts and notifications queues, fix the cause and move the
-  messages back with SQS "Start DLQ redrive". The outbox queue only says which
-  stream records the relay could not publish within 24 hours; republish those
-  events from the table (they are kept 7 days):
-  `uv run python scripts/replay-outbox.py --table <table> --bus <EventBusName> --since <time>`.
+- **Alarms** go to `AlertsTopic`; set `AlertEmail` to get them by email.
+
+  | Alarm | Means | Do |
+  |---|---|---|
+  | `OutboxRelayLagAlarm` | Events have waited over 5 minutes to be published | Check the relay's logs; it keeps retrying for 24 hours |
+  | `OutboxDLQAlarm` | The relay gave up on some events after 24 hours | Fix the cause, then `uv run python scripts/replay-outbox.py --table <table> --bus <EventBusName> --since <time>` (events are kept 7 days) |
+  | `<Listener>QueueAgeAlarm` | A message has waited over 15 minutes in a listener's queue | Check the worker's logs: failing, or too slow for its concurrency cap |
+  | `<Listener>DLQAlarm` | Messages in a listener's dead-letter queue: the worker failed 5 times, or EventBridge couldn't deliver them | Fix the cause, then SQS "Start DLQ redrive" with the listener's queue as the custom destination |
+  | `<Listener>LostEventsAlarm` | EventBridge couldn't deliver events, nor put them in the dead-letter queue | Check the dead-letter queue's policy; republish from the outbox with `replay-outbox.py` |
+- **Workers' concurrency:** each listener runs at most 5 at once
+  (`ScalingConfig` on its SQS event), so a burst waits in the queue instead of
+  overrunning SES or whatever a worker calls. Raise it if its queue age alarm
+  fires under normal load.
 - **Busy items:** transactions that collide on the same item (for example many
   orders at once in one workspace) are retried; if they keep colliding, the
   API answers 503 and the client should retry.
@@ -487,8 +499,10 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
    (the workspace picks up `modules/*` automatically).
 4. Add a section to `template.yaml` (table + functions + routes).
 5. If it publishes events: enable a stream and `expires_at` TTL on its table
-   and add the stream to `OutboxRelayFunction`. If it listens: add a rule, a
-   queue with a dead-letter queue and an alarm, like accounts does.
+   and add the stream to `OutboxRelayFunction`. If it listens: copy accounts'
+   listener resources (rule with a retry policy and dead-letter queue, queue,
+   both queue policies, concurrency cap and the three alarms).
+   `uv run pytest tests` fails until each of them is there.
 6. Talk to other modules only through events or the token.
 
 ## The sample module

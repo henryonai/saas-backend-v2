@@ -296,6 +296,23 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       AlarmActions: [!Ref AlertsTopic]
 
+  # The relay normally publishes within a second. If it falls behind (failing,
+  # throttled), this fires long before OutboxDLQ, which waits 24 hours.
+  OutboxRelayLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Events are waiting to be published for over 5 minutes (see the relay's logs)
+      Namespace: AWS/Lambda
+      MetricName: IteratorAge
+      Dimensions: [{ Name: FunctionName, Value: !Ref OutboxRelayFunction }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 300000                 # milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching    # no metric when nothing happens
+      AlarmActions: [!Ref AlertsTopic]
+
   # =====================================================================
   # Module: accounts  (/tenants, /users, login trigger, plan listener)
   # =====================================================================
@@ -392,7 +409,13 @@ Resources:
         source: [saas.app]
         detail-type: [SubscriptionChanged]
       Targets:
-        - { Id: AccountsQueue, Arn: !GetAtt AccountsQueue.Arn }
+        - Id: AccountsQueue
+          Arn: !GetAtt AccountsQueue.Arn
+          # EventBridge retries for up to 24 hours, but not errors like a broken queue
+          # policy; either way the event goes to the dead-letter queue instead of being
+          # dropped. Redrive it from there to AccountsQueue.
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 86400 }
+          DeadLetterConfig: { Arn: !GetAtt AccountsDLQ.Arn }
 
   AccountsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -404,6 +427,19 @@ Resources:
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
             Resource: !GetAtt AccountsQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt AccountsRule.Arn }
+
+  AccountsDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref AccountsDLQ]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt AccountsDLQ.Arn
             Condition:
               ArnEquals: { aws:SourceArn: !GetAtt AccountsRule.Arn }
 
@@ -429,11 +465,14 @@ Resources:
             Queue: !GetAtt AccountsQueue.Arn
             BatchSize: 10
             FunctionResponseTypes: [ReportBatchItemFailures]
+            # At most 5 at once, so a burst can't overrun what the listener calls;
+            # the rest wait in the queue. Raise it if the queue's age alarm fires under load.
+            ScalingConfig: { MaximumConcurrency: 5 }
 
   AccountsDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Plan changes keep failing (messages in the accounts dead-letter queue)
+      AlarmDescription: Plan changes failed or couldn't be delivered (messages in the accounts dead-letter queue)
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt AccountsDLQ.QueueName }]
@@ -442,6 +481,38 @@ Resources:
       EvaluationPeriods: 1
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertsTopic]
+
+  AccountsQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Plan changes are waiting over 15 minutes in the accounts queue
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions: [{ Name: QueueName, Value: !GetAtt AccountsQueue.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 900                    # seconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  AccountsLostEventsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Plan changes were lost (EventBridge could deliver them neither to the queue nor to the dead-letter queue)
+      Namespace: AWS/Events
+      MetricName: InvocationsFailedToBeSentToDlq
+      Dimensions:
+        - { Name: EventBusName, Value: !Ref EventBus }
+        - { Name: RuleName, Value: !Select [1, !Split ["|", !Ref AccountsRule]] }   # Ref is "bus|rule"
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertsTopic]
 
   # =====================================================================
@@ -541,7 +612,13 @@ Resources:
         source: [saas.app]
         detail-type: [OrderCreated, UserInvited, SubscriptionChanged, PaymentFailed]
       Targets:
-        - { Id: NotificationsQueue, Arn: !GetAtt NotificationsQueue.Arn }
+        - Id: NotificationsQueue
+          Arn: !GetAtt NotificationsQueue.Arn
+          # EventBridge retries for up to 24 hours, but not errors like a broken queue
+          # policy; either way the event goes to the dead-letter queue instead of being
+          # dropped. Redrive it from there to NotificationsQueue.
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 86400 }
+          DeadLetterConfig: { Arn: !GetAtt NotificationsDLQ.Arn }
 
   NotificationsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -553,6 +630,19 @@ Resources:
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
             Resource: !GetAtt NotificationsQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt NotificationsRule.Arn }
+
+  NotificationsDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref NotificationsDLQ]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt NotificationsDLQ.Arn
             Condition:
               ArnEquals: { aws:SourceArn: !GetAtt NotificationsRule.Arn }
 
@@ -581,11 +671,14 @@ Resources:
             Queue: !GetAtt NotificationsQueue.Arn
             BatchSize: 10
             FunctionResponseTypes: [ReportBatchItemFailures]
+            # At most 5 at once, so a burst can't overrun what the worker (SES has a sending rate) calls;
+            # the rest wait in the queue. Raise it if the queue's age alarm fires under load.
+            ScalingConfig: { MaximumConcurrency: 5 }
 
   NotificationsDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Notifications keep failing (messages in the dead-letter queue)
+      AlarmDescription: Notifications failed or couldn't be delivered (messages in the notifications dead-letter queue)
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt NotificationsDLQ.QueueName }]
@@ -594,6 +687,38 @@ Resources:
       EvaluationPeriods: 1
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertsTopic]
+
+  NotificationsQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Notifications are waiting over 15 minutes in the notifications queue
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions: [{ Name: QueueName, Value: !GetAtt NotificationsQueue.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 900                    # seconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  NotificationsLostEventsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Notification events were lost (EventBridge could deliver them neither to the queue nor to the dead-letter queue)
+      Namespace: AWS/Events
+      MetricName: InvocationsFailedToBeSentToDlq
+      Dimensions:
+        - { Name: EventBusName, Value: !Ref EventBus }
+        - { Name: RuleName, Value: !Select [1, !Split ["|", !Ref NotificationsRule]] }   # Ref is "bus|rule"
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertsTopic]
 
   # =====================================================================
