@@ -1,7 +1,8 @@
 """
 Assistant table:
   pk = TENANT#<t>                         sk = USAGE#<YYYY-MM>   the workspace's usage that month
-  pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = META              a conversation (models.Conversation)
+  pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = META              a conversation (models.Conversation),
+                                                                 with its run while one answers
   pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = MSG#<000001>      one of its AG-UI messages, in order
   gsi1pk = TENANT#<t>#USER#<u>#CONVS      gsi1sk = <updated_at>  on META only: the user's list, newest first
 
@@ -20,7 +21,7 @@ from botocore.exceptions import ClientError
 
 from shared.dynamo import is_condition_failure
 
-from assistant.models import Conversation, TitleSource, Usage
+from assistant.models import Conversation, Run, TitleSource, Usage
 
 USAGE_TTL_SECONDS = 400 * 24 * 60 * 60
 
@@ -157,37 +158,52 @@ class ConversationRepository:
     def __init__(self, table):
         self.table = table
 
-    def start(self, tenant_id: str, user_id: str, thread_id: str, *, agent: str, title: str,
-              message: dict, now: str, expires_at: int) -> None:
+    def add_question(self, tenant_id: str, user_id: str, thread_id: str, *, message: dict, run: Run, title: str,
+                     append: bool, now: str, expires_at: int, stale_before: str) -> bool:
         """
-        Creates the conversation the first time (titled `title`), adds the
-        user's message to it, and marks it answering until add_answer.
+        The user's message and the run that will answer it: creates the
+        conversation the first time (titled `title`), adds the message unless
+        it is the newest already (`append` False: sent again after a failed
+        run), and sets the run. False while an earlier run, started after
+        `stale_before`, is still answering.
         """
         names = {"#thread": "thread_id", "#title": "title", "#source": "title_source", "#created": "created_at",
-                 "#updated": "updated_at", "#expires": "expires_at", "#count": "message_count", "#agents": "agents",
-                 "#answering": "answering_since"}
-        result = self.table.update_item(
-            Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
-            UpdateExpression="SET #thread = :thread, #title = if_not_exists(#title, :title), "
-                             "#source = if_not_exists(#source, :message), #created = if_not_exists(#created, :now), "
-                             "#updated = :now, #expires = :expires, gsi1pk = :list, gsi1sk = :now, #answering = :now "
-                             "ADD #count :one, #agents :agents",
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues={":thread": thread_id, ":title": title, ":message": "message", ":now": now,
-                                       ":expires": expires_at, ":list": _list_pk(tenant_id, user_id), ":one": 1,
-                                       ":agents": {agent}},
-            ReturnValues="UPDATED_NEW",
-        )
-        self._put_messages(tenant_id, user_id, thread_id, [message], int(result["Attributes"]["message_count"]),
-                           expires_at)
+                 "#updated": "updated_at", "#expires": "expires_at", "#agents": "agents", "#run": "run",
+                 "#question": "question_id"}
+        values = {":thread": thread_id, ":title": title, ":message": "message", ":now": now, ":expires": expires_at,
+                  ":list": _list_pk(tenant_id, user_id), ":agents": {run.agent}, ":run": run.model_dump(),
+                  ":question": message["id"], ":stale": stale_before}
+        update = ("SET #thread = :thread, #title = if_not_exists(#title, :title), "
+                  "#source = if_not_exists(#source, :message), #created = if_not_exists(#created, :now), "
+                  "#updated = :now, #expires = :expires, gsi1pk = :list, gsi1sk = :now, #run = :run, "
+                  "#question = :question ADD #agents :agents")
+        if append:
+            update += ", #count :one"
+            names["#count"], values[":one"] = "message_count", 1
+        try:
+            result = self.table.update_item(
+                Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
+                UpdateExpression=update,
+                ConditionExpression="attribute_not_exists(#run) OR #run.since < :stale",
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+                ReturnValues="UPDATED_NEW",
+            )
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+        if append:
+            self._put_messages(tenant_id, user_id, thread_id, [message], int(result["Attributes"]["message_count"]),
+                               expires_at)
+        return True
 
-    def add_answer(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], *,
+    def add_answer(self, tenant_id: str, user_id: str, thread_id: str, run_id: str, messages: list[dict], *,
                    now: str, expires_at: int) -> bool:
         """
-        After the agent ran: appends what it streamed (maybe nothing), then
-        marks the conversation answered, in that order, so whoever reads it
-        answered finds the whole answer. False if it no longer exists (deleted
-        meanwhile).
+        After the run: appends what it streamed (maybe nothing), then removes
+        the run, in that order, so whoever finds it answered finds the whole
+        answer. False if the conversation no longer exists (deleted meanwhile).
         """
         key = {"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"}
         try:
@@ -203,14 +219,30 @@ class ConversationRepository:
                 )
                 self._put_messages(tenant_id, user_id, thread_id, messages,
                                    int(result["Attributes"]["message_count"]), expires_at)
-            self.table.update_item(Key=key, UpdateExpression="REMOVE #answering",
-                                   ConditionExpression="attribute_exists(pk)",
-                                   ExpressionAttributeNames={"#answering": "answering_since"})
+            self.table.update_item(Key=key, UpdateExpression="REMOVE #run", ConditionExpression="#run.run_id = :run",
+                                   ExpressionAttributeNames={"#run": "run"},
+                                   ExpressionAttributeValues={":run": run_id})
         except ClientError as e:
             if is_condition_failure(e):
                 return False
             raise
         return True
+
+    def cancel(self, tenant_id: str, user_id: str, thread_id: str, run_id: str) -> bool:
+        """Asks the run to stop. False if it isn't the conversation's run any more: it ended."""
+        try:
+            self.table.update_item(
+                Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
+                UpdateExpression="SET #run.cancelled = :yes",
+                ConditionExpression="#run.run_id = :run",
+                ExpressionAttributeNames={"#run": "run"},
+                ExpressionAttributeValues={":yes": True, ":run": run_id},
+            )
+            return True
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
 
     def _put_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], last: int,
                       expires_at: int) -> None:

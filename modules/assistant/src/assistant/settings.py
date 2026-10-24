@@ -30,6 +30,7 @@ class ConversationsApiSettings(BaseAppSettings):
     """The HTTP API's Lambda (handler.py): the users' conversations."""
     assistant_table: str
     purge_queue_url: str   # where deleted conversations go for purge.py
+    conversation_days: int = 30   # as the runtime's (AssistantSettings): a message saved here expires with the rest
 
 
 class PurgeSettings(BaseAppSettings):

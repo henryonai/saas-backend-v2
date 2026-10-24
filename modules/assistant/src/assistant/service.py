@@ -2,15 +2,17 @@ import json
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
+from uuid import uuid4
 
 from aws_lambda_powertools import Logger
 
 from shared.auth import CurrentUser
-from shared.errors import InvalidRequest, NotFound, PlanLimitReached
+from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached
 from shared.plans import get_limit
 
+from assistant.agent_names import agent_names
 from assistant.context import SESSION_ID, AgentContext, actor_of, checkpoint_session
-from assistant.models import Conversation, Usage, current_month, now_iso
+from assistant.models import Conversation, Run, Usage, current_month, iso, now_iso
 from assistant.repository import ConversationRepository, InvalidCursor, UsageLimitReached, UsageRepository
 
 logger = Logger()
@@ -83,9 +85,9 @@ class UsageService:
 TITLE_CHARS = 80               # a conversation's title, however it was set
 TOOL_RESULT_CHARS = 10_000     # of each tool result kept for the history (bash cuts its own output to this)
 MESSAGES_SHOWN = 200           # latest messages returned when a conversation is opened
-# AgentCore ends a streaming request after 60 minutes: an answer marked as
-# started longer ago isn't coming (the runtime stopped before it could say so).
-ANSWER_LIMIT = timedelta(minutes=60)
+# AgentCore ends a streaming request after 60 minutes: a run started longer
+# ago isn't answering any more (its runtime stopped before it could say so).
+RUN_LIMIT = timedelta(minutes=60)
 
 
 def first_message_title(prompt: str) -> str:
@@ -94,38 +96,51 @@ def first_message_title(prompt: str) -> str:
     return text if len(text) <= TITLE_CHARS else text[:TITLE_CHARS - 1].rstrip() + "…"
 
 
-def is_answering(conversation: Conversation, now: datetime | None = None) -> bool:
-    """Whether the agent is still answering the newest message: its answer isn't in the history yet."""
-    if conversation.answering_since is None:
-        return False
-    started = datetime.fromisoformat(conversation.answering_since)
-    return (now or datetime.now(UTC)) - started < ANSWER_LIMIT
+def active_run(conversation: Conversation, now: datetime | None = None) -> Run | None:
+    """The run still answering the conversation's newest message, if any: its answer isn't in the history yet."""
+    run = conversation.run
+    if run is None or (now or datetime.now(UTC)) - datetime.fromisoformat(run.since) >= RUN_LIMIT:
+        return None
+    return run
+
+
+def _expires_at(days: int) -> int:
+    """When a record written now expires: as long as AgentCore Memory keeps the agent's copy."""
+    return int(time.time()) + days * 24 * 3600
 
 
 class ConversationLog:
     """
-    Keeps the history of each conversation as the agent answers (the agent
-    itself remembers through its checkpoints): the user's message, then what
-    streamed back, as the AG-UI messages the page showed. What the HTTP API
-    reads back when a user opens a conversation.
+    The runtime's side of a conversation's history (the agent itself
+    remembers through its checkpoints): the run it is to answer, whether the
+    user stopped it, and what streamed back, kept as the AG-UI messages the
+    page showed. The user's message was saved when it was sent
+    (ConversationService.send).
     """
 
     def __init__(self, conversations: ConversationRepository, days: int):
         self.conversations = conversations
-        self.days = days   # how long the history is kept: as long as AgentCore Memory keeps the agent's copy
+        self.days = days
 
-    def start(self, context: AgentContext, agent: str, message_id: str, prompt: str) -> None:
-        """Before the agent runs: creates the conversation the first time, and saves the user's message."""
-        self.conversations.start(
-            context.user.require_tenant(), context.user.user_id, context.session_id, agent=agent,
-            title=first_message_title(prompt), message={"id": message_id, "role": "user", "content": prompt},
-            now=now_iso(), expires_at=self._expires_at())
+    def pending_run(self, context: AgentContext, run_id: str) -> Run | None:
+        """The conversation's run, if it is `run_id` and still to be answered."""
+        conversation = self.conversations.get(context.user.require_tenant(), context.user.user_id,
+                                              context.session_id)
+        run = conversation and active_run(conversation)
+        return run if run and run.run_id == run_id else None
 
-    def record(self, context: AgentContext, messages: list[dict]) -> None:
-        """After the agent ran (or failed, or was cut off): the messages it streamed, and that it's done."""
+    def cancelled(self, context: AgentContext, run_id: str) -> bool:
+        """Whether the user stopped the run, or deleted the conversation: nobody wants the rest."""
+        conversation = self.conversations.get(context.user.require_tenant(), context.user.user_id,
+                                              context.session_id)
+        return conversation is None or conversation.run is None or conversation.run.run_id != run_id \
+            or conversation.run.cancelled
+
+    def record(self, context: AgentContext, run_id: str, messages: list[dict]) -> None:
+        """After the run (answered, failed, stopped or cut off): the messages it streamed, and that it's over."""
         saved = self.conversations.add_answer(
-            context.user.require_tenant(), context.user.user_id, context.session_id,
-            [_kept(message) for message in messages], now=now_iso(), expires_at=self._expires_at())
+            context.user.require_tenant(), context.user.user_id, context.session_id, run_id,
+            [_kept(message) for message in messages], now=now_iso(), expires_at=_expires_at(self.days))
         if not saved:
             logger.info("The conversation was deleted while the agent answered; its answer is not kept")
 
@@ -134,9 +149,6 @@ class ConversationLog:
         return self.conversations.set_title(
             context.user.require_tenant(), context.user.user_id, context.session_id,
             title[:TITLE_CHARS], source="model", only_over="message")
-
-    def _expires_at(self) -> int:
-        return int(time.time()) + self.days * 24 * 3600
 
 
 def _kept(message: dict) -> dict:
@@ -164,14 +176,52 @@ class SqsPurgeQueue:
 
 
 NOT_FOUND = "No such conversation: it was deleted, or it expired."
+STILL_ANSWERING = "The assistant is still answering in this conversation: wait for the answer, or stop it."
 
 
 class ConversationService:
-    """The user's conversations, for the HTTP API: list, open, rename, delete."""
+    """The user's conversations, for the HTTP API: send a message, stop its answer, list, open, rename, delete."""
 
-    def __init__(self, conversations: ConversationRepository, purge: PurgeQueue):
+    def __init__(self, conversations: ConversationRepository, purge: PurgeQueue, usage: UsageService, days: int):
         self.conversations = conversations
         self.purge = purge
+        self.usage = usage
+        self.days = days
+
+    def send(self, user: CurrentUser, thread_id: str, message_id: str, content: str, agent: str) -> Run:
+        """
+        Saves the user's message, and the run that will answer it, before
+        anything runs: the conversation has them from now on, whatever the
+        page does next. Counts the message against the plan (402); one answer
+        at a time per conversation (409). The page then has AgentCore run it.
+        """
+        tenant_id = user.require_tenant()
+        if not SESSION_ID.fullmatch(thread_id):
+            raise InvalidRequest("Use a threadId of 33 to 100 letters, digits, '-' or '_' (for example a UUID).")
+        if agent not in agent_names():
+            raise NotFound(f"No agent named {agent!r}. Agents: {', '.join(sorted(agent_names()))}.")
+        conversation = self.conversations.get(tenant_id, user.user_id, thread_id)
+        if conversation and active_run(conversation):
+            raise Conflict(STILL_ANSWERING)
+        self.usage.start_message(user)
+        now = datetime.now(UTC)
+        run = Run(run_id=str(uuid4()), message_id=message_id, prompt=content, agent=agent, since=iso(now))
+        saved = self.conversations.add_question(
+            tenant_id, user.user_id, thread_id, run=run, title=first_message_title(content),
+            message={"id": message_id, "role": "user", "content": content},
+            append=conversation is None or conversation.question_id != message_id,   # else: Try again
+            now=run.since, expires_at=_expires_at(self.days), stale_before=iso(now - RUN_LIMIT))
+        if not saved:
+            raise Conflict(STILL_ANSWERING)   # sent from another tab a moment ago
+        return run
+
+    def cancel(self, user: CurrentUser, thread_id: str, run_id: str) -> None:
+        """
+        Stops the run: it ends at its next chunk and keeps what it wrote. A
+        Stop that comes after the answer ended is late, not wrong.
+        """
+        self._get(user, thread_id)
+        self.conversations.cancel(user.require_tenant(), user.user_id, thread_id, run_id)
 
     def list_mine(self, user: CurrentUser, limit: int,
                   cursor: str | None = None) -> tuple[list[Conversation], str | None]:

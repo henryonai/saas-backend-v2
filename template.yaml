@@ -930,10 +930,11 @@ Resources:
         SANDBOX_ID: !GetAtt AssistantSandbox.CodeInterpreterId
         CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # as long as AssistantMemory keeps the agent's copy
 
-  # The users' conversations (/assistant/conversations): list, reopen, rename,
-  # delete. A Lambda behind the HTTP API like the other modules; the agent
-  # writes the history as it answers. Same code as the agent, but only the
-  # shared layer: these files never import LangChain (a test checks).
+  # The users' conversations (/assistant/conversations): send a message (saved,
+  # with the run that will answer it, before AgentCore runs it), stop an
+  # answer, list, reopen, rename, delete. A Lambda behind the HTTP API like
+  # the other modules; the agent writes the answers. Same code as the agent,
+  # but only the shared layer: these files never import LangChain (a test checks).
   AssistantApiFunction:
     Type: AWS::Serverless::Function
     Condition: HasAssistant
@@ -945,6 +946,7 @@ Resources:
           POWERTOOLS_SERVICE_NAME: assistant
           ASSISTANT_TABLE: !Ref AssistantTable
           PURGE_QUEUE_URL: !Ref AssistantPurgeQueue
+          CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # as the runtime's: a message expires with its answer
       Policies:
         - Statement:
             - Effect: Allow
@@ -954,6 +956,7 @@ Resources:
       Events:
         ListGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/conversations, Method: GET } }
         OneGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: GET } }
+        OnePost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: POST } }
         OnePatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: PATCH } }
         OneDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: DELETE } }
 

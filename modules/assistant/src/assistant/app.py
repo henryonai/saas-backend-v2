@@ -10,137 +10,180 @@ Authorization header on (request header allowlist). So, as with API Gateway
 for the HTTP API, we only read the claims. A local dev server has no
 authorizer in front of it: never expose one.
 
-Each message, in order:
-  1. which agent: forwardedProps.agent (agents/*.md), "assistant" by default
-  2. who is calling: the token's claims, checked like every other module does
-  3. may they: start_message counts the message against the plan, or stops (402)
-  4. the conversation's history gets the message (created the first time)
-  5. the agent answers, with middleware for the token cap, memory and the
-     title, and the answer streams back as AG-UI events
-  6. the history gets what streamed, however the run ended
+A message is sent in two steps, as in ChatGPT:
+  1. the HTTP API saves it, with the run that will answer it, and counts it
+     against the plan (ConversationService.send): from then on the
+     conversation has it, whatever the page does;
+  2. the page sends that run here (AG-UI runId; threadId: the conversation).
+
+A run goes on whatever happens to the request that started it: it writes to
+a log in this microVM (runs.py), which the response reads. A page reloaded
+mid-answer sends the same run again and reads it from the start, then live.
+Each request:
+  1. who is calling: the token's claims, checked like every other module does
+  2. which run: one this microVM has (follow it), or the conversation's run
+     still to be answered (start it, then follow it); else NOT_FOUND
+  3. the run: the agent answers, with middleware for the token cap, memory
+     and the title, as AG-UI events; it ends early if the user pressed Stop
+  4. the history gets what streamed, however the run ended, and the
+     conversation's run is removed
 """
 import asyncio
 import base64
-import contextvars
 import json
+import time
 from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import closing
 
 from ag_ui.core import BaseEvent, RunAgentInput, RunFinishedEvent, RunStartedEvent, TokenUsage
 from aws_lambda_powertools import Logger
 from bedrock_agentcore import RequestContext
 from bedrock_agentcore.runtime.ag_ui import AGUIApp
+from bedrock_agentcore.runtime.models import PingStatus
 from langchain_core.messages import AIMessage, HumanMessage
 
 from shared.auth import user_from_claims
 from shared.errors import AppError, InvalidRequest, NotFound, Unauthorized
 
 from assistant.agui import AgUiStream, Transcript
-from assistant.container import get_agents, get_conversation_log, get_usage_service
-from assistant.context import SESSION_ID, AgentContext
+from assistant.container import get_agents, get_conversation_log
+from assistant.context import SESSION_ID, AgentContext, actor_of
 from assistant.factory import thread_config
-from assistant.schemas import chat_request, error_event, internal_error
-from assistant.service import ConversationLog, UsageService
+from assistant.models import Run
+from assistant.runs import Runs
+from assistant.schemas import error_event, internal_error
+from assistant.service import ConversationLog
 
 logger = Logger()
 
+NO_RUN = "No such run in this conversation: it ended (read the conversation), or its message was never sent."
+STOP_CHECK_SECONDS = 1.0   # how often a run asks whether the user pressed Stop
 
-def create_app(get_usage: Callable[[], UsageService], get_agents: Callable[[], dict],
-               get_log: Callable[[], ConversationLog]) -> AGUIApp:
+
+def create_app(get_agents: Callable[[], dict], get_log: Callable[[], ConversationLog],
+               runs: Runs | None = None) -> AGUIApp:
     app = AGUIApp()
+    runs = runs if runs is not None else Runs()
 
     @app.entrypoint
     async def invoke(run_input: RunAgentInput, context: RequestContext) -> AsyncIterator[BaseEvent]:
-        async for event in in_worker_thread(
-                lambda: handle(run_input, context, get_usage(), get_agents(), get_log())):
+        thread_id, run_id = run_input.thread_id, run_input.run_id
+        try:
+            caller = agent_context(context, thread_id)
+            if not SESSION_ID.fullmatch(run_id):
+                raise InvalidRequest("Send the runId the HTTP API gave the message "
+                                     "(POST /assistant/conversations/{threadId}/messages).")
+        except AppError as e:
+            yield RunStartedEvent(thread_id=thread_id, run_id=run_id)
+            yield error_event(e)
+            return
+        owner = actor_of(caller.user)
+        log = runs.get(run_id, owner)
+        if log is None:
+            try:
+                pending = await asyncio.to_thread(lambda: get_log().pending_run(caller, run_id))
+            except Exception:
+                logger.exception("Could not read the conversation's run")
+                yield RunStartedEvent(thread_id=thread_id, run_id=run_id)
+                yield internal_error()
+                return
+            log = runs.get(run_id, owner)   # another request for it may have started it meanwhile
+            if log is None:
+                if pending is None:
+                    yield RunStartedEvent(thread_id=thread_id, run_id=run_id)
+                    yield error_event(NotFound(NO_RUN))
+                    return
+                log = runs.start(run_id, owner, lambda: handle(caller, pending, get_agents(), get_log()))
+        async for event in log.follow():
             yield event
+
+    @app.ping
+    def ping() -> PingStatus:
+        # Busy while a run goes, even with nobody reading it: an idle session gets stopped.
+        return PingStatus.HEALTHY_BUSY if runs.busy() else PingStatus.HEALTHY
 
     return app
 
 
-async def in_worker_thread[T](events: Callable[[], Iterator[T]]) -> AsyncIterator[T]:
-    """
-    Runs a synchronous generator (the agent: boto3, httpx) start to finish in
-    one worker thread, and hands its items to the event loop. The loop stays
-    free, so /ping keeps answering while the agent works (a blocked ping gets
-    the session recycled). If the client goes away, the run still finishes,
-    so its checkpoint and usage are complete.
-    """
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-    done = object()
-
-    def run() -> None:
-        try:
-            for item in events():
-                loop.call_soon_threadsafe(queue.put_nowait, item)
-        finally:
-            loop.call_soon_threadsafe(queue.put_nowait, done)
-
-    worker = loop.run_in_executor(None, contextvars.copy_context().run, run)
-    while (item := await queue.get()) is not done:
-        yield item
-    await worker   # re-raises what the generator raised
-
-
-def handle(run_input: RunAgentInput, context: RequestContext, usage: UsageService,
-           agents: dict, history: ConversationLog) -> Iterator[BaseEvent]:
-    thread_id, run_id = run_input.thread_id, run_input.run_id
+def handle(context: AgentContext, run: Run, agents: dict, history: ConversationLog) -> Iterator[BaseEvent]:
+    """One run, start to finish, as AG-UI events. Its history is kept however it ends."""
+    thread_id, run_id = context.session_id, run.run_id
     yield RunStartedEvent(thread_id=thread_id, run_id=run_id)
-    try:
-        request = chat_request(run_input)
-        if request.agent not in agents:
-            raise NotFound(f"No agent named {request.agent!r}. Agents: {', '.join(sorted(agents))}.")
-        agent = agents[request.agent]
-        run = agent_context(context, thread_id)
-        usage.start_message(run.user)
-        history.start(run, request.agent, request.message_id, request.prompt)
-    except AppError as e:
-        yield error_event(e)
-        return
-    except Exception:
-        logger.exception("Could not start the message")
-        yield internal_error()
-        return
-
-    log = {"tenant_id": run.user.tenant_id, "user_id": run.user.user_id, "session_id": run.session_id,
-           "agent": request.agent}
+    log = {"tenant_id": context.user.tenant_id, "user_id": context.user.user_id, "session_id": thread_id,
+           "run_id": run_id, "agent": run.agent}
     input_tokens = output_tokens = 0
+    stopped = False
     events, transcript = AgUiStream(), Transcript()
     try:
+        agent = agents.get(run.agent)
+        if agent is None:   # the HTTP API checked it: a deploy removed it since
+            raise NotFound(f"No agent named {run.agent!r}. Agents: {', '.join(sorted(agents))}.")
+        stop_requested = stop_check(history, context, run_id)
         # Subagents' own output doesn't come through here (see delegation.py), only the calling agent's.
-        stream = agent.stream({"messages": [HumanMessage(request.prompt)]}, thread_config(run, request.agent),
-                              context=run, stream_mode="messages")
-        for message, _ in stream:
-            for event in events.message(message):
-                transcript.add(event)
-                yield event
-            if isinstance(message, AIMessage) and message.usage_metadata:
-                input_tokens += message.usage_metadata["input_tokens"]
-                output_tokens += message.usage_metadata["output_tokens"]
+        stream = agent.stream({"messages": [HumanMessage(run.prompt)]}, thread_config(context, run.agent),
+                              context=context, stream_mode="messages")
+        with closing(stream):
+            for message, _ in stream:
+                for event in events.message(message):
+                    transcript.add(event)
+                    yield event
+                if isinstance(message, AIMessage) and message.usage_metadata:
+                    input_tokens += message.usage_metadata["input_tokens"]
+                    output_tokens += message.usage_metadata["output_tokens"]
+                if stop_requested():
+                    stopped = True
+                    break
         for event in events.close():
             transcript.add(event)
             yield event
+    except AppError as e:
+        yield error_event(e)
+        return
     except Exception:
         logger.exception("The agent failed", extra=log)
         yield internal_error()
         return
     finally:
-        # What the user saw, however the run ended; before RUN_FINISHED, so a
+        # What streamed, however the run ended; before RUN_FINISHED, so a
         # client that reloads the conversation then finds all of it.
-        keep_history(history, run, transcript, log)
+        keep_history(history, context, run_id, transcript, log)
 
     # One line per message, with tokens: per-tenant cost in CloudWatch Logs Insights.
     # (A subagent's tokens are in the usage table, not in these numbers.)
-    logger.info("Assistant answered", extra={**log, "input_tokens": input_tokens, "output_tokens": output_tokens})
-    yield RunFinishedEvent(thread_id=thread_id, run_id=run_id, result={"agent": request.agent},
+    logger.info("Assistant answered", extra={**log, "input_tokens": input_tokens, "output_tokens": output_tokens,
+                                              "stopped": stopped})
+    yield RunFinishedEvent(thread_id=thread_id, run_id=run_id,
+                           result={"agent": run.agent, **({"stopped": True} if stopped else {})},
                            usage=[TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens,
                                              total_tokens=input_tokens + output_tokens)])
 
 
-def keep_history(history: ConversationLog, run: AgentContext, transcript: Transcript, log: dict) -> None:
+def stop_check(history: ConversationLog, context: AgentContext, run_id: str) -> Callable[[], bool]:
+    """
+    Whether the user pressed Stop (the HTTP API marks the run) or deleted the
+    conversation: asked at most once a STOP_CHECK_SECONDS, between chunks.
+    """
+    next_check = time.monotonic() + STOP_CHECK_SECONDS
+
+    def stop_requested() -> bool:
+        nonlocal next_check
+        if time.monotonic() < next_check:
+            return False
+        next_check = time.monotonic() + STOP_CHECK_SECONDS
+        try:
+            return history.cancelled(context, run_id)
+        except Exception:
+            logger.warning("Could not check whether the run was stopped; it goes on", exc_info=True)
+            return False
+
+    return stop_requested
+
+
+def keep_history(history: ConversationLog, context: AgentContext, run_id: str, transcript: Transcript,
+                 log: dict) -> None:
     """Best effort: the user has the answer already, and the agent its checkpoint."""
     try:
-        history.record(run, transcript.messages)
+        history.record(context, run_id, transcript.messages)
     except Exception:
         logger.exception("Could not save the conversation's history", extra=log)
 
@@ -180,4 +223,4 @@ def claims_from_bearer(authorization: str) -> dict:
     return claims
 
 
-app = create_app(get_usage_service, get_agents, get_conversation_log)
+app = create_app(get_agents, get_conversation_log)

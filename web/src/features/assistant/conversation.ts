@@ -1,18 +1,21 @@
 import type { Message, RunFinishedEvent } from '@ag-ui/client';
 import { useStore } from 'zustand';
 import { createStore } from 'zustand/vanilla';
-import { ApiError } from '@/shared/api/client';
 import type { AssistantConversationDetail } from '@/shared/api/types';
 import { endSession, getIdToken, refreshSession, sessionStore } from '@/shared/auth/session';
-import { AssistantAgent, getConversation, MAIN_AGENT, type RunError, runError } from './api';
-import { forgetAllSent, forgetSent, overdue, rememberSent, type Unanswered, unansweredIn } from './unanswered';
+import { AssistantAgent, cancelRun, getConversation, MAIN_AGENT, postMessage, type RunError, requestError, runError } from './api';
 
 /**
  * The conversation on the Assistant page: the one streaming now, or one
  * reopened from its history (openConversation). It outlives the page, so the
  * user can look at an order and come back while an answer streams; signing
- * out or changing workspace clears it. The URL names the conversation, so a
- * reload reopens it from the server, waiting for an answer still coming.
+ * out or changing workspace clears it.
+ *
+ * As in ChatGPT, the server keeps it all. Sending saves the message, with the
+ * run that will answer it, before anything runs (the HTTP API); the run goes
+ * on whatever this page does, and AgentCore streams it to whoever asks for
+ * it, from the start. So the URL names the conversation, and a reload reopens
+ * it from the server and, while its answer is coming, follows the run again.
  */
 export interface ConversationState {
   threadId: string;
@@ -35,8 +38,10 @@ export function useConversation(): ConversationState {
 }
 
 let agent: AssistantAgent | null = null;
-/** Stops reading the history of a conversation whose answer the page waits for (waitForAnswer). */
-let waiting: AbortController | null = null;
+/** The run on screen, which Stop stops. */
+let shown: { agent: AssistantAgent; runId: string } | null = null;
+/** A run the page gave up following (AgentCore unreachable): Try again follows it, rather than asking again. */
+let unreached: { agent: AssistantAgent; runId: string } | null = null;
 
 function currentAgent(): AssistantAgent {
   const { threadId } = conversationStore.getState();
@@ -51,183 +56,174 @@ function update(from: AssistantAgent, changes: Partial<ConversationState>): void
 
 /** The run failed because of the token: AgentCore's authorizer, or our own check of its claims. */
 const AUTH_CODES = new Set(['UNAUTHORIZED', 'ACCESS_DENIED']);
+/** The code @ag-ui/client gives the RUN_ERROR it makes up when a run is aborted mid-stream. */
+const ABORTED = 'abort';
+/**
+ * AgentCore's own RUN_ERROR (in a 200 stream) when it got no answer from the
+ * session's microVM: "Received error (502) from runtime". Not the run's.
+ */
+const AGENTCORE_ERROR = 'AGENT_ERROR';
+/**
+ * Waits before following a run again when its stream failed on the way (a
+ * dropped connection, AgentCore busy or failing): the run goes on, so it is
+ * worth asking again. A new session answers a second request with
+ * AGENT_ERROR until its microVM has started, a few seconds: what a reload
+ * right after sending meets (dev, October 2026).
+ */
+const FOLLOW_DELAYS_MS = [1000, 2000, 4000, 8000];
 
 /** Sends the user's message and streams the answer into the state. */
 export async function sendMessage(text: string): Promise<void> {
   const prompt = text.trim();
   if (!prompt || conversationStore.getState().running) return;
   const target = currentAgent();
-  target.addMessage({ id: crypto.randomUUID(), role: 'user', content: prompt });
+  const id = crypto.randomUUID();
+  target.addMessage({ id, role: 'user', content: prompt });
   conversationStore.setState({ messages: [...target.messages] });
-  await answer(target);
-}
-
-/** Asks again after a failed run: the newest user message goes out again (the server counts it again). */
-export async function retry(): Promise<void> {
-  if (conversationStore.getState().running) return;
-  await answer(currentAgent());
+  await ask(target, id, prompt);
 }
 
 /**
- * Stops showing the answer, or waiting for it. The server still finishes it,
- * so the next message continues from all of it.
+ * Asks again after a failed run: the newest user message goes out again
+ * (counted again, not saved twice). A run the page couldn't reach is
+ * followed again instead: it may well have answered.
  */
-export function stopAnswer(): void {
-  agent?.abortRun();
-  if (stopWaiting()) conversationStore.setState({ running: false });
+export async function retry(): Promise<void> {
+  if (conversationStore.getState().running) return;
+  const target = currentAgent();
+  if (unreached?.agent === target) return follow(target, unreached.runId);
+  const newest = [...target.messages].reverse().find((message) => message.role === 'user');
+  if (newest && typeof newest.content === 'string') await ask(target, newest.id, newest.content);
 }
 
+/** Stops the answer: on screen at once, and on the server, which keeps what it wrote. */
+export function stopAnswer(): void {
+  if (shown && shown.agent === agent) void cancelRun(shown.agent.threadId, shown.runId).catch(() => {});
+  shown = null;
+  agent?.abortRun();
+}
+
+/** Leaves the conversation on screen: its answer, if one is coming, goes on and is there to reopen. */
 export function newConversation(): void {
   agent?.abortRun();
-  stopWaiting();
-  agent = null;
+  agent = shown = unreached = null;
   conversationStore.setState(fresh());
 }
 
 /**
- * Shows a conversation from its history (GET /assistant/conversations/{id}),
- * or, with none, from the message this tab sent in it: the server doesn't
- * have it yet. While its newest message is still being answered (the page
- * was reloaded or left meanwhile), it shows as running, and the history is
- * read again until the answer is in it. The next message continues it: same
- * threadId, so the agent picks up from its own checkpoints on the server.
+ * Shows a conversation from its history (GET /assistant/conversations/{id}).
+ * While its newest message is still being answered (`run_id`: the page was
+ * reloaded or left meanwhile), it follows that run: AgentCore sends what it
+ * said so far, then the rest. The next message continues the conversation:
+ * same threadId, so the agent picks up from its own checkpoints on the server.
  */
-export function openConversation(threadId: string, history: AssistantConversationDetail | null): void {
+export function openConversation(threadId: string, history: AssistantConversationDetail): void {
   agent?.abortRun();
-  stopWaiting();
-  const sent = unansweredIn(threadId);
-  const { messages, pending, lost } = awaited(history, sent);
-  agent = new AssistantAgent(threadId, messages);
-  conversationStore.setState({ threadId, messages, running: pending, error: lost ? NOT_RECEIVED : null, tokens: null });
-  if (pending) void waitForAnswer(agent, sent);
-  else if (!lost) forgetSent(threadId);
+  shown = unreached = null;
+  agent = new AssistantAgent(threadId, history.messages);
+  conversationStore.setState({ threadId, messages: history.messages, running: false, error: null, tokens: null });
+  if (history.run_id) void follow(agent, history.run_id);
 }
 
 // Nothing from one user or workspace may show in the next, as main.tsx does
 // for the query cache. Here rather than there: main.tsx would load the AG-UI
 // client on every page, not only with this one.
 sessionStore.subscribe((state, previous) => {
-  if (state.status === 'signed-out' || state.user?.tenantId !== previous.user?.tenantId) {
-    newConversation();
-    forgetAllSent();
-  }
+  if (state.status === 'signed-out' || state.user?.tenantId !== previous.user?.tenantId) newConversation();
 });
 
-/** A message sent before a reload that the server never got: sending it again (Try again) is all there is to do. */
-const NOT_RECEIVED: RunError = { code: 'NETWORK_ERROR', message: 'The assistant never got the message' };
-/** How often the history is read while an answer is awaited. */
-const POLL_MS = 2000;
-
-/**
- * What to show of a conversation, given its history (null: not on the server)
- * and the message this tab sent in it without seeing the answer: the message
- * stays on screen however far the server got. `pending`: an answer is still
- * coming. `lost`: the server never got the message.
- */
-function awaited(history: AssistantConversationDetail | null, sent: Unanswered | null) {
-  const messages = history?.messages ?? [];
-  const missing = sent !== null && !messages.some((message) => message.id === sent.message.id);
-  const shown: Message[] = missing ? [...messages, { id: sent.message.id, role: 'user', content: sent.message.content }] : messages;
-  const late = missing && overdue(sent);
-  return { messages: shown, pending: (history?.answering ?? false) || (missing && !late), lost: late && !history?.answering };
-}
-
-/** Reads the history until the awaited answer is in it, then shows the conversation with it. */
-async function waitForAnswer(target: AssistantAgent, sent: Unanswered | null): Promise<void> {
-  const controller = new AbortController();
-  waiting = controller;
-  const { signal } = controller;
-  while (!signal.aborted) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-    if (signal.aborted) return;
-    let history: AssistantConversationDetail | null;
-    try {
-      history = await getConversation(target.threadId, signal);
-    } catch (error) {
-      if (signal.aborted) return;
-      if (!(error instanceof ApiError && error.status === 404)) continue; // out of reach for now: read again
-      history = null;
-    }
-    if (signal.aborted) return;
-    const { messages, pending, lost } = awaited(history, sent);
-    if (pending) continue;
-    waiting = null;
-    target.setMessages(messages);
-    update(target, { messages, running: false, error: lost ? NOT_RECEIVED : null });
-    if (!lost) forgetSent(target.threadId);
+/** Saves the message with the run that will answer it (the HTTP API), then follows the run. */
+async function ask(target: AssistantAgent, id: string, content: string): Promise<void> {
+  update(target, { running: true, error: null, tokens: null });
+  let runId: string;
+  try {
+    ({ run_id: runId } = await postMessage(target.threadId, { id, content, agent: MAIN_AGENT }));
+  } catch (error) {
+    update(target, { running: false, error: requestError(error) });
     return;
   }
+  await follow(target, runId);
 }
 
-/** True if the page was waiting for an answer. */
-function stopWaiting(): boolean {
-  const was = waiting;
-  waiting = null;
-  was?.abort();
-  return was !== null;
-}
-
-async function answer(target: AssistantAgent): Promise<void> {
-  remember(target);
+/**
+ * Streams a run into the state: one just sent, or one already going.
+ * AgentCore starts it if nobody has, and sends every event from the first.
+ */
+async function follow(target: AssistantAgent, runId: string): Promise<void> {
+  const following = { agent: target, runId };
+  shown = following;
+  unreached = null;
+  const before = [...target.messages]; // what the page showed before any of this run
   update(target, { running: true, error: null, tokens: null });
-  let result = await run(target);
-  // Rejected for the token before anything ran (nothing was counted): one retry
-  // with new tokens, as the HTTP API client does. A failed refresh signs out.
+  let result = await stream(target, runId);
+  // Rejected for the token before anything ran: one retry with new tokens, as
+  // the HTTP API client does. A failed refresh signs out.
   if (result.error && AUTH_CODES.has(result.error.code) && (await refreshSession())) {
-    result = await run(target);
+    result = await stream(target, runId);
     if (result.error?.code === 'UNAUTHORIZED') await endSession('expired');
   }
-  // The server said the run is over: nothing to wait for after a reload. Stopped
-  // or cut off on the way, its answer may still be coming.
-  if (result.ended) forgetSent(target.threadId);
+  for (const delay of FOLLOW_DELAYS_MS) {
+    if (!result.transient) break;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (shown !== following) {
+      update(target, { running: false }); // stopped, or left, meanwhile
+      return;
+    }
+    // AgentCore sends the run from the start again: take back what this page drew of it.
+    target.setMessages(before);
+    update(target, { messages: before });
+    result = await stream(target, runId);
+  }
+  if (result.error?.code === 'NOT_FOUND') {
+    // It ended before this page asked, and AgentCore has let it go: the history has the answer.
+    await showHistory(target);
+    return;
+  }
+  if (result.transient) unreached = following;
   update(target, { running: false, error: result.error });
 }
 
-/** Until its answer ends here, the newest user message is remembered for a reload (unanswered.ts). */
-function remember(target: AssistantAgent): void {
-  const asked = target.messages.filter((message) => message.role === 'user');
-  const newest = asked.at(-1);
-  if (newest && typeof newest.content === 'string') {
-    rememberSent(target.threadId, { id: newest.id, content: newest.content }, asked.length === 1);
-  }
-}
-
-/** The code @ag-ui/client gives the RUN_ERROR it makes up when a run is aborted mid-stream. */
-const ABORTED = 'abort';
-
-interface RunResult {
+interface Streamed {
   error: RunError | null;
-  /** The server ended the run (RUN_FINISHED, RUN_ERROR, an HTTP error), or it never started. */
-  ended: boolean;
+  /** It failed on the way, not because of the run: AgentCore or the network. Asking again may get it. */
+  transient: boolean;
 }
 
-async function run(target: AssistantAgent): Promise<RunResult> {
+async function stream(target: AssistantAgent, runId: string): Promise<Streamed> {
   const token = await getIdToken();
-  if (!token) return { error: { code: 'UNAUTHORIZED', message: 'Not signed in' }, ended: true };
+  if (!token) return { error: { code: 'UNAUTHORIZED', message: 'Not signed in' }, transient: false };
   target.authorize(token);
   let error: RunError | null = null;
-  let ended = false;
+  let transient = false;
   try {
     await target.runAgent(
-      { forwardedProps: { agent: MAIN_AGENT } },
+      { runId, forwardedProps: { agent: MAIN_AGENT } },
       {
         onMessagesChanged: ({ messages }) => update(target, { messages: [...messages] }),
         onRunErrorEvent: ({ event }) => {
           if (event.code === ABORTED) return; // the user stopped it, or left the conversation
-          ended = true;
           error = { code: event.code ?? 'INTERNAL_ERROR', message: event.message };
+          transient = event.code === AGENTCORE_ERROR;
         },
-        onRunFinishedEvent: ({ event }) => {
-          ended = true;
-          update(target, { tokens: totalTokens(event) });
-        },
+        onRunFinishedEvent: ({ event }) => update(target, { tokens: totalTokens(event) }),
       },
     );
   } catch (thrown) {
     error = runError(thrown);
-    ended = error.code !== 'NETWORK_ERROR'; // an HTTP error is the server's answer; with none, it may have the message
+    const { status } = (thrown ?? {}) as { status?: unknown };
+    transient = typeof status !== 'number' || status >= 500 || status === 429;
   }
-  return { error, ended };
+  return { error, transient };
+}
+
+async function showHistory(target: AssistantAgent): Promise<void> {
+  try {
+    const { messages } = await getConversation(target.threadId);
+    target.setMessages(messages);
+    update(target, { messages, running: false, error: null });
+  } catch (error) {
+    update(target, { running: false, error: requestError(error) });
+  }
 }
 
 function totalTokens(event: RunFinishedEvent): number | null {

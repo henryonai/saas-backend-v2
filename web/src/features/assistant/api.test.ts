@@ -6,7 +6,7 @@ vi.mock('@/shared/config', () => ({ config: { assistantUrl: 'https://agent.test/
 const THREAD = '0f6c1d1e-4b0a-4f5e-9a51-6f3a3e2b7c11';
 
 describe('AssistantAgent', () => {
-  it('sends the token, the threadId as the session, and only the newest user message', async () => {
+  it('sends the token, the threadId as the session, and the run: no messages (the server saved them)', async () => {
     const fetch = vi.fn(async (_url: string, init: RequestInit) => {
       const { threadId, runId } = JSON.parse(String(init.body));
       return new Response(
@@ -21,15 +21,14 @@ describe('AssistantAgent', () => {
     agent.addMessage({ id: 'u2', role: 'user', content: 'Second' });
     agent.authorize('id-token');
 
-    await agent.runAgent({ forwardedProps: { agent: 'assistant' } });
+    await agent.runAgent({ runId: 'run-1', forwardedProps: { agent: 'assistant' } });
 
     const [url, init] = fetch.mock.calls[0];
     expect(url).toBe('https://agent.test/invocations?qualifier=DEFAULT');
     expect(init.headers).toMatchObject({ Authorization: 'Bearer id-token', 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': THREAD });
     const body = JSON.parse(String(init.body));
-    expect(body.threadId).toBe(THREAD);
-    expect(body.messages).toEqual([{ id: 'u2', role: 'user', content: 'Second' }]);
-    expect(body.forwardedProps).toEqual({ agent: 'assistant' });
+    expect(body).toMatchObject({ threadId: THREAD, runId: 'run-1', messages: [], forwardedProps: { agent: 'assistant' } });
+    expect(agent.messages).toHaveLength(3); // what the page shows stays whole
   });
 });
 

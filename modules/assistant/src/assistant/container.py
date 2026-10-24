@@ -5,7 +5,8 @@ Three entry points use it:
   app.py      AgentCore Runtime: the agents, usage, the conversation log.
               Built once per Runtime session (a microVM) and reused by its
               following messages.
-  handler.py  Lambda: the HTTP API for the users' conversations.
+  handler.py  Lambda: the HTTP API for the users' conversations, which also
+              takes their messages (and counts them against the plan).
   purge.py    Lambda: deletes a deleted conversation from AgentCore Memory.
 
 The two Lambdas get the shared layer, not the agents' dependencies (LangChain,
@@ -88,8 +89,10 @@ def get_agents() -> dict:
 @lru_cache
 def get_conversation_service() -> ConversationService:
     settings = ConversationsApiSettings()
-    return ConversationService(ConversationRepository(_table(settings.assistant_table)),
-                               purge=SqsPurgeQueue(boto3.client("sqs"), settings.purge_queue_url))
+    table = _table(settings.assistant_table)
+    return ConversationService(ConversationRepository(table),
+                               purge=SqsPurgeQueue(boto3.client("sqs"), settings.purge_queue_url),
+                               usage=UsageService(usage=UsageRepository(table)), days=settings.conversation_days)
 
 
 @lru_cache

@@ -1,15 +1,16 @@
 import { HttpAgent, type Message, type RunAgentInput } from '@ag-ui/client';
-import { api } from '@/shared/api/client';
-import type { AssistantConversation, AssistantConversationDetail, AssistantConversationPage } from '@/shared/api/types';
+import { ApiError, api } from '@/shared/api/client';
+import type { AssistantConversation, AssistantConversationDetail, AssistantConversationPage, AssistantRun } from '@/shared/api/types';
 import { config } from '@/shared/config';
 
 /**
  * The assistant has two backends (modules/assistant/README.md):
- * - the chat: AgentCore Runtime's /invocations, which speaks AG-UI. The
- *   official client, @ag-ui/client, sends the RunAgentInput, reads the events
- *   and assembles them into messages.
- * - the user's conversations: /assistant/conversations on the HTTP API, which
- *   returns a conversation's history as the same AG-UI messages.
+ * - the user's conversations: /assistant/conversations on the HTTP API. A
+ *   message is sent here first: it is saved, with the run that will answer
+ *   it. A conversation's history comes back as AG-UI messages.
+ * - the answers: AgentCore Runtime's /invocations, which speaks AG-UI. The
+ *   official client, @ag-ui/client, sends it the run and assembles the events
+ *   into messages; sent again, it follows the same run from the start.
  */
 
 /** The agent the frontend talks to (modules/assistant/src/assistant/agents/assistant.md). */
@@ -24,7 +25,8 @@ export interface RunError {
 /**
  * The AG-UI client for one conversation. The threadId is the conversation and
  * the AgentCore session, so it also goes in the session header. `messages`:
- * the history of a conversation that is reopened.
+ * the history of a conversation that is reopened. Each run is one the HTTP
+ * API created (`runAgent({ runId })`).
  */
 export class AssistantAgent extends HttpAgent {
   constructor(threadId: string, messages: Message[] = []) {
@@ -40,26 +42,22 @@ export class AssistantAgent extends HttpAgent {
   }
 
   /**
-   * Only the newest user message goes out: the server keeps the conversation
-   * and reads nothing else, so the request stays small however long it gets.
+   * No messages go out: the server answers the message it saved for the run,
+   * and reads nothing else, so the request stays small however long the
+   * conversation gets.
    */
   protected override requestInit(input: RunAgentInput): RequestInit {
-    const newest = lastUserMessage(input.messages);
-    return { ...super.requestInit(input), body: JSON.stringify({ ...input, messages: newest ? [newest] : [] }) };
+    return { ...super.requestInit(input), body: JSON.stringify({ ...input, messages: [] }) };
   }
 }
 
-function lastUserMessage(messages: Message[]): Message | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') return messages[i];
-  }
-  return undefined;
-}
-
-/** By HTTP status, for an error body that isn't a RUN_ERROR event (the names schemas.ERROR_CODES uses). */
+/** By HTTP status, for an error that isn't a RUN_ERROR event (the names schemas.ERROR_CODES uses). */
 const STATUS_CODES: Record<number, string> = {
   401: 'UNAUTHORIZED',
+  402: 'PLAN_LIMIT_REACHED',
   403: 'ACCESS_DENIED',
+  404: 'NOT_FOUND',
+  409: 'CONFLICT',
   429: 'RATE_LIMIT_EXCEEDED',
   503: 'SERVICE_BUSY',
 };
@@ -82,6 +80,26 @@ export function runError(error: unknown): RunError {
 
 function codeOf(status: number): string {
   return STATUS_CODES[status] ?? (status >= 500 ? 'INTERNAL_ERROR' : 'VALIDATION_ERROR');
+}
+
+/** A failed HTTP API call as a run's error, so the page shows it the same way (402: the upgrade notice). */
+export function requestError(error: unknown): RunError {
+  if (error instanceof ApiError) return { code: codeOf(error.status), message: error.message };
+  return { code: 'NETWORK_ERROR', message: String(error) };
+}
+
+/**
+ * Sends the user's message: the server saves it (creating the conversation
+ * the first time) with the run that will answer it, and counts it against
+ * the plan. 402 at the plan's limit; 409 while the previous answer is coming.
+ */
+export function postMessage(threadId: string, message: { id: string; content: string; agent: string }) {
+  return api<AssistantRun>(`/assistant/conversations/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: message });
+}
+
+/** Stops the answer on the server, which keeps what it wrote. Fine after the end too. */
+export function cancelRun(threadId: string, runId: string) {
+  return api<void>(`/assistant/conversations/${encodeURIComponent(threadId)}/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' });
 }
 
 /** The user's conversations, most recently used first. Pass `next_cursor` as `cursor` for the next page. */

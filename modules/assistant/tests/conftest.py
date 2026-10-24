@@ -1,8 +1,10 @@
 """
 Builds the real agents from agents/*.md (create_agent, middleware, tools,
-subagents), the real UsageService and ConversationLog on a fake table, with
-one scripted model per agent, a fake model for titles, an in-memory
-checkpointer, and fakes for AgentCore Memory, the HTTP API and the sandbox.
+subagents), the real UsageService and conversation services on a fake table,
+the real HTTP API (handler.py) and AgentCore Runtime app (app.py) around
+them, with one scripted model per agent, a fake model for titles, an
+in-memory checkpointer, and fakes for AgentCore Memory, the HTTP API the
+tools call and the sandbox.
 """
 import base64
 import json
@@ -10,26 +12,29 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from ag_ui.core import RunAgentInput
-from ag_ui.encoder import EventEncoder
-from bedrock_agentcore import RequestContext
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
+from starlette.testclient import TestClient
 
-from assistant.app import handle
+from assistant.app import create_app
+from assistant.container import get_conversation_service
 from assistant.definitions import MAIN_AGENT, load_agents
 from assistant.factory import AgentDeps, build_agents
+from assistant.handler import app as http_app
+from assistant.handler import handler
 from assistant.models import current_month
 from assistant.repository import ConversationRepository, UsageRepository
+from assistant.runs import Runs
 from assistant.sandbox import CommandResult
-from assistant.service import ConversationLog, UsageService
+from assistant.service import ConversationLog, ConversationService, UsageService
 from assistant.tools import make_tools
 from testkit.aws import create_table
-from testkit.http import claims
+from testkit.http import call, claims
 
 SESSION = "11111111-2222-3333-4444-555555555555"
+SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
 
 
 class ScriptedModel(BaseChatModel):
@@ -178,34 +183,65 @@ def ctx():
             checkpointer=state.checkpointer, usage=usage, memory=memory, tools=tools, history=history,
             title_model=title_model))
 
-    def chat(prompt, user: dict | None = None, session_id: str | None = SESSION, authorization=None,
-             agent: str | None = None, thread_id: str | None = None, messages: list | None = None) -> list[dict]:
+    # The HTTP API (handler.py) with this table, and the AgentCore Runtime app (app.py) with these agents.
+    purges: list[tuple[str, list[str]]] = []
+    service = ConversationService(conversations, usage=usage, days=30,
+                                  purge=SimpleNamespace(send=lambda actor, sessions: purges.append((actor, sessions))))
+    http_app.dependency_overrides[get_conversation_service] = lambda: service
+    runs = Runs()
+
+    def send(prompt: str, user: dict | None, thread_id: str = SESSION, agent: str | None = None,
+             message_id: str | None = None) -> tuple[int, dict | None]:
+        """What the page does first: POST /assistant/conversations/{threadId}/messages. (status, body)"""
+        body = {"id": message_id or str(uuid4()), "content": prompt, **({"agent": agent} if agent else {})}
+        return call(handler, "POST", f"/assistant/conversations/{thread_id}/messages", user, body=body)
+
+    def run(run_id: str, user: dict | None = None, thread_id: str = SESSION, session_id: str | None = SESSION,
+            authorization: str | None = None, messages: list | None = None) -> list[dict]:
         """
-        Sends one message as `user` (claims), as an AG-UI client does, and
-        returns every event as it goes on the wire, after checking their order.
+        What the page does next, and again to follow the answer after a
+        reload: sends AgentCore the run. Every event as it went on the wire,
+        after checking their order.
         """
         headers = {"Authorization": authorization if authorization is not None else id_token(user)}
-        context = RequestContext(session_id=session_id, request_headers=headers)
-        run_input = RunAgentInput(
-            thread_id=thread_id or session_id or SESSION, run_id=str(uuid4()),
-            messages=messages if messages is not None else [{"id": str(uuid4()), "role": "user", "content": prompt}],
-            forwarded_props={"agent": agent} if agent else {})
-        events = [wire(event) for event in handle(run_input, context, usage, state.agents, history)]
+        if session_id:
+            headers[SESSION_HEADER] = session_id
+        response = runtime.post("/invocations", headers=headers, json={
+            "threadId": thread_id, "runId": run_id, "state": {}, "tools": [], "context": [], "forwardedProps": {},
+            "messages": messages or []})
+        assert response.status_code == 200, response.text
+        events = sse_events(response)
         check_agui_order(events)
         return events
+
+    def post(prompt: str, user: dict, thread_id: str = SESSION, agent: str | None = None,
+             message_id: str | None = None) -> str:
+        """send() that must succeed: the run's id."""
+        status, body = send(prompt, user, thread_id, agent, message_id)
+        assert status == 201, body
+        return body["run_id"]
+
+    def chat(prompt: str, user: dict, agent: str | None = None, thread_id: str = SESSION) -> list[dict]:
+        """Sends one message as `user` (claims), as the page does: saved, then run. Every event of the answer."""
+        return run(post(prompt, user, thread_id, agent), user, thread_id=thread_id, session_id=thread_id)
 
     def set_usage(tenant_id: str, **counters):
         table.put_item(Item={"pk": f"TENANT#{tenant_id}", "sk": f"USAGE#{current_month()}",
                              "tenant_id": tenant_id, "month": current_month(), **counters})
 
     script()
-    yield SimpleNamespace(table=table, usage=usage, memory=memory, api=api, sandbox=sandbox, state=state,
-                          conversations=conversations, history=history, title_model=title_model,
-                          definitions=definitions, script=script, chat=chat, set_usage=set_usage, session=SESSION,
-                          answer=answer, tool_call=tool_call, text=text_of, tools=tools_called, error=error_of,
-                          check_order=check_agui_order, id_token=id_token,
-                          model_calls=lambda agent=MAIN_AGENT: models[agent].calls,
-                          tools_shown=lambda agent=MAIN_AGENT: models[agent].tools_shown)
+    # One event loop for every request, as uvicorn has: a run outlives the request that started it.
+    with TestClient(create_app(lambda: state.agents, lambda: history, runs)) as runtime:
+        yield SimpleNamespace(table=table, usage=usage, memory=memory, api=api, sandbox=sandbox, state=state,
+                              conversations=conversations, history=history, title_model=title_model,
+                              definitions=definitions, script=script, send=send, post=post, run=run, chat=chat,
+                              runs=runs,
+                              runtime=runtime, purges=purges, set_usage=set_usage, session=SESSION,
+                              answer=answer, tool_call=tool_call, text=text_of, tools=tools_called, error=error_of,
+                              check_order=check_agui_order, id_token=id_token,
+                              model_calls=lambda agent=MAIN_AGENT: models[agent].calls,
+                              tools_shown=lambda agent=MAIN_AGENT: models[agent].tools_shown)
+    http_app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -214,9 +250,10 @@ def alice():
     return claims("alice", "t1", "member", plan="free")
 
 
-def wire(event) -> dict:
-    """An AG-UI event as the client receives it: the JSON of one SSE `data:` line."""
-    return json.loads(EventEncoder().encode(event).removeprefix("data: "))
+def sse_events(response) -> list[dict]:
+    """The AG-UI events of an SSE response: the JSON of each `data:` line."""
+    return [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
+            if line.startswith("data: ")]
 
 
 def text_of(events: list[dict]) -> str:

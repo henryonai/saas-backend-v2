@@ -14,8 +14,13 @@ def current_month() -> str:
     return datetime.now(UTC).strftime("%Y-%m")
 
 
+def iso(moment: datetime) -> str:
+    """As every time is stored: UTC, to the millisecond, so that they also sort as strings."""
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return iso(datetime.now(UTC))
 
 
 class Usage(BaseModel):
@@ -33,6 +38,20 @@ class Usage(BaseModel):
 TitleSource = Literal["message", "model", "user"]
 
 
+class Run(BaseModel):
+    """
+    The answer being written to a conversation's newest message: one at a
+    time. Created when the message is sent (the HTTP API), run by AgentCore,
+    removed once the answer is in the history.
+    """
+    run_id: str                # the AG-UI runId: what the page sends AgentCore to start it, or to follow it
+    message_id: str            # the user's message it answers
+    prompt: str
+    agent: str
+    since: str
+    cancelled: bool = False    # the user pressed Stop
+
+
 class Conversation(BaseModel):
     """One user's conversation with the assistant: the threadId, which is also the AgentCore session."""
     thread_id: str
@@ -43,4 +62,5 @@ class Conversation(BaseModel):
     message_count: int         # AG-UI messages stored: the user's, the assistant's, tool results
     agents: set[str] = set()   # the agents spoken to (forwardedProps.agent): each keeps its own checkpoints
     expires_at: int            # epoch seconds; DynamoDB's TTL removes it some time after
-    answering_since: str | None = None   # while the agent answers the newest message: when it started
+    question_id: str | None = None   # the newest user message's: sent again (a retry), it isn't added twice
+    run: Run | None = None

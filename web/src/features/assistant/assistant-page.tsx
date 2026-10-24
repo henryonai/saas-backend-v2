@@ -18,7 +18,6 @@ import { AssistantTurn, UserTurn } from './components/turn';
 import { conversationStore, newConversation, openConversation, retry, sendMessage, stopAnswer, useConversation } from './conversation';
 import { refreshConversations, showNewConversation, useConversationHistory } from './hooks';
 import { toTurns } from './transcript';
-import { unansweredIn } from './unanswered';
 
 const SUGGESTIONS = ['assistant.suggestions.orders', 'assistant.suggestions.usage', 'assistant.suggestions.analyze'] as const;
 
@@ -116,25 +115,20 @@ function StartConversation() {
 
 /**
  * A conversation by its URL: the one on screen already, or loaded from its
- * history. One this tab just started may not be on the server yet: it shows
- * from the message sent, waiting for the answer.
+ * history, following its answer if one is still coming.
  */
 function OpenConversation({ threadId }: { threadId: string }) {
   const { t } = useTranslation();
   const live = useConversation().threadId === threadId;
   const history = useConversationHistory(threadId, !live);
-  const notFound = history.error instanceof ApiError && history.error.status === 404;
-  const sentHere = notFound && unansweredIn(threadId) !== null;
 
   useEffect(() => {
-    if (conversationStore.getState().threadId === threadId) return;
-    if (history.data) openConversation(threadId, history.data);
-    else if (sentHere) openConversation(threadId, null);
-  }, [history.data, sentHere, threadId]);
+    if (history.data && conversationStore.getState().threadId !== threadId) openConversation(threadId, history.data);
+  }, [history.data, threadId]);
 
   if (live) return <Conversation />;
-  if (history.isError && !sentHere) {
-    if (notFound) {
+  if (history.isError) {
+    if (history.error instanceof ApiError && history.error.status === 404) {
       return (
         <Empty className="border border-dashed">
           <EmptyHeader>

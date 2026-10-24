@@ -1,6 +1,7 @@
 """Delegation: the assistant hands a task to the analyst (its `subagents:`), which starts fresh and reports back."""
 from langchain_core.messages import AIMessage
 
+from assistant.agent_names import agent_names
 from assistant.middleware import ALLOWANCE_USED
 from assistant.models import current_month
 from testkit.http import claims
@@ -102,6 +103,11 @@ def test_the_frontend_can_talk_to_any_agent_directly(ctx):
 
 
 def test_an_unknown_agent_is_refused_before_anything_counts(ctx):
-    events = ctx.chat("Hello", PRO, agent="nobody")
-    assert ctx.error(events)["code"] == "NOT_FOUND" and "assistant" in ctx.error(events)["message"]
+    status, body = ctx.send("Hello", PRO, agent="nobody")
+    assert status == 404 and "assistant" in body["message"]
     assert ctx.usage.usage.get("t1", current_month()).messages == 0
+
+
+def test_the_http_api_knows_the_agents_without_loading_them(ctx):
+    # agent_names() reads the names the way the Lambda can (no YAML); load_agents() is the truth.
+    assert agent_names() == set(ctx.definitions)
