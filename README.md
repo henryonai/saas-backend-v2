@@ -2,11 +2,31 @@
 
 Python on AWS Lambda, with Lambda Powertools, DynamoDB, Cognito and EventBridge.
 Four self-contained modules: **accounts, orders, notifications, billing**.
+Orders is the sample module: a small domain module to copy for your own.
+
+## Starting a new project from this template
+
+1. Copy the repository (GitHub's "Use this template", or clone it into a new
+   repository).
+2. Give it its own name. This renames the packages, stacks, SSM parameter
+   names, the event source and the browser storage keys, so two projects never
+   collide in one AWS account:
+
+   ```bash
+   uv run python scripts/rename-project.py acme --title "Acme"   # add --dry-run to preview
+   uv sync --all-packages && (cd web && pnpm install)
+   git diff                                                      # review, then commit
+   ```
+
+3. Create the stack's webhook secret ("Configuration and secrets"), deploy
+   ("Deploy"), and set up the deploy workflow ("CI/CD").
+4. Build your first module from the sample, then remove the sample
+   ("The sample module").
 
 ## Layout
 
 ```
-saas-backend/
+saas-backend-v2/
 ├── pyproject.toml              # uv workspace root: dev tools, pytest and ruff config
 ├── uv.lock                     # exact versions of every package (commit it)
 ├── .python-version             # 3.13, same as the Lambda runtime
@@ -21,7 +41,8 @@ saas-backend/
 │   ├── stripe-setup.py         # Stripe prices, portal and webhook for a stack
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
 │   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
-│   └── replay-outbox.py        # publish saved events again after an outage
+│   ├── replay-outbox.py        # publish saved events again after an outage
+│   └── rename-project.py       # give a new copy of the template its own name
 ├── layers/shared/              # package "saas-shared"
 │   ├── pyproject.toml          # powertools, pydantic, pydantic-settings
 │   ├── layer/                  # deployed as a Lambda layer
@@ -215,7 +236,9 @@ app.dependency_overrides[get_order_service] = lambda: OrderService(OrderReposito
 - For local runs, copy `.env.example` to `.env` (never commit `.env`). Tests
   ignore it.
 - Dev and prod run the same code with different values (`samconfig.toml`).
-  Each stack has its own event bus; still, prefer one AWS account per stage.
+  Each stack has its own resources, names, event bus and secret, so both can
+  live in one AWS account, as they do by default ("Before production" says
+  when a second account is worth it).
 
 ## Payments
 
@@ -447,6 +470,34 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
    queue with a dead-letter queue and an alarm, like accounts does.
 6. Talk to other modules only through events or the token.
 
+## The sample module
+
+`modules/orders` is a small domain module kept as a worked example: its own
+table and routes, a plan limit read from the token (`max_orders`), a counter
+kept by a DynamoDB condition, allowed status changes, cursor paging, the
+`OrderCreated` event through the outbox, the notification it causes, and the
+web pages that use it. Copy it to start your first module ("Adding a
+module"), then remove it. Outside its own folders, this is what uses it:
+
+| Where | What to change |
+|---|---|
+| `modules/orders/` | Delete it, then run `uv lock` and `./scripts/export-requirements.sh` |
+| `template.yaml` | The "Module: orders" section, the `Orders` stream of `OutboxRelayFunction`, `OrderCreated` in `NotificationsRule`, and the stack's `Description` |
+| `modules/notifications/` | `_on_order_created` and its `HANDLERS` entry in `service.py`; the two tests in `test_notifications.py` that use `OrderCreated`; the docstring in `__init__.py` |
+| `layers/shared/layer/shared/plans.py` | `max_orders`: rename it to your module's limit, or remove it here, in `web/src/shared/lib/plans.ts` and on the billing page |
+| `scripts/smoke-test.py` | The auth checks, the Orders section, and the order checks in the isolation and roles sections: point them at your module's routes |
+| `.env.example` | `ORDERS_TABLE` |
+| `web/src/features/orders/`, `web/src/routes/_app/orders/` | Delete them; `pnpm gen:api` then removes the generated types |
+| `web/src/features/shell/app-shell.tsx` | The Orders menu item and the `PackageIcon` import |
+| `web/src/features/overview/overview-page.tsx` | The order-limit card and the recent-orders card |
+| `web/src/shared/api/types.ts`, `keys.ts` | The `Order*` types and the order query keys |
+| `web/src/routes.test.tsx` | The orders page cases, and the two guard tests that use `/orders` as their example path |
+| `web/src/shared/i18n/locales/*.json` | `orders`, `nav.orders`, and the order keys under `overview` and `billing.features` |
+
+The type check and the tests point at most of what is left; check the smoke
+test, the locale files and the query keys by hand. This README's examples
+(dependency injection, events, flows) use orders too.
+
 ## Moving a module to its own repository
 
 Copy `modules/<name>/`, move its section of `template.yaml`, and give it its
@@ -481,4 +532,8 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
   you need to charge tax
 - Review the rate limits and the invitation rules (`INVITATION_DAYS`,
   `INVITES_PER_DAY`, `MAX_PENDING_INVITATIONS_PER_EMAIL`)
-- Deploy prod to its own AWS account
+- Dev and prod share one AWS account by default. A separate prod account is
+  a stronger boundary: in a shared account the dev deploy role, which any
+  branch can use, could also change prod's resources directly. If you move
+  prod, create its deploy role (with `CreateOidcProvider=true`) and its SSM
+  secret in that account

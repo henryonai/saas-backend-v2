@@ -416,6 +416,8 @@ Resources:
 
   # =====================================================================
   # Module: orders  (/orders)
+  # The sample module: copy it to start your own, remove it once you don't need
+  # the example ("The sample module" in the README lists what uses it).
   # =====================================================================
   OrdersTable:
     Type: AWS::DynamoDB::Table
@@ -468,6 +470,7 @@ Resources:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
       TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # processed-event records
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
   NotificationsApiFunction:
     Type: AWS::Serverless::Function
