@@ -289,7 +289,12 @@ it. Routes on the HTTP API, with the same ID token (`handler.py`, a Lambda):
   the index `gsi1` for the list (`repository.py`). Every record expires
   `CONVERSATION_DAYS` after it was written (30 on dev, 90 on prod), as long
   as AgentCore Memory keeps the agent's copy (`EventExpiryDuration`): a
-  reopened conversation never shows more than the agent remembers.
+  reopened conversation never shows more than the agent remembers. On a stack
+  that had the assistant before, the deploy that adds `gsi1` finishes before
+  DynamoDB has built it, and DynamoDB refuses to read an index it's still
+  building: the list answers 500 for the first minutes (about 5 on dev,
+  October 2026) while `IndexStatus` is `CREATING`. Chatting, reopening, and
+  the history it writes meanwhile all work; the list then includes it.
 - **Continuing one** sends the same threadId, so the agent picks up from its
   checkpoints. If its microVM stopped (15 minutes idle), a new one starts:
   the first answer is slower, and the old sandbox's files are gone.
