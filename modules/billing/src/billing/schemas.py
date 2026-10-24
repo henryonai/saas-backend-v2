@@ -23,6 +23,10 @@ class CheckoutResponse(BaseModel):
     checkout_url: str
 
 
+class PortalResponse(BaseModel):
+    portal_url: str
+
+
 class BillingSummary(BaseModel):
     """A subscription as clients see it, with the plan's price and limits."""
     plan: str
@@ -30,9 +34,11 @@ class BillingSummary(BaseModel):
     price_usd_month: int
     status: str
     limits: dict
+    manageable: bool  # the provider has a billing portal for this workspace (POST /billing/portal)
 
     @classmethod
     def of(cls, sub: Subscription) -> "BillingSummary":
         plan = get_plan(sub.plan)
         return cls(plan=sub.plan, plan_name=plan["name"], price_usd_month=plan["price_usd_month"],
-                   status=sub.status, limits={k: v for k, v in plan.items() if k.startswith("max_")})
+                   status=sub.status, limits={k: v for k, v in plan.items() if k.startswith("max_")},
+                   manageable=bool(sub.customer_id))

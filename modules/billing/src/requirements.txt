@@ -1,1 +1,15 @@
 # Generated from uv.lock by scripts/export-requirements.sh. Do not edit: change pyproject.toml instead.
+certifi==2026.10.19
+    # via requests
+charset-normalizer==3.5.2
+    # via requests
+idna==3.20
+    # via requests
+requests==2.34.2
+    # via stripe
+stripe==16.0.0
+    # via saas-billing
+typing-extensions==4.16.0
+    # via stripe
+urllib3==2.8.0
+    # via requests

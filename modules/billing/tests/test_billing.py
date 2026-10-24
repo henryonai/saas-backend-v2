@@ -148,3 +148,8 @@ def test_failed_save_can_be_retried(ctx, owner):
 
     assert activate(ctx, "evt_9") == 200   # the provider's retry is applied
     assert ctx.event_types() == ["SubscriptionChanged"]
+
+
+def test_dev_provider_has_no_billing_portal(ctx, owner):
+    assert ctx.api("GET", "/billing", owner)[1]["manageable"] is False
+    assert ctx.api("POST", "/billing/portal", owner)[0] == 400

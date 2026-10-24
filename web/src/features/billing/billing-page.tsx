@@ -11,14 +11,14 @@ import { ErrorState, LoadingRows } from '@/shared/components/query-state';
 import { Alert, AlertDescription, AlertTitle } from '@/shared/components/ui/alert';
 import { Badge } from '@/shared/components/ui/badge';
 import { Button } from '@/shared/components/ui/button';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/shared/components/ui/card';
+import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/shared/components/ui/card';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { toastError } from '@/shared/lib/errors';
 import { formatNumber } from '@/shared/lib/format';
 import { getPlan, type Plan, PLANS } from '@/shared/lib/plans';
 import { cn } from '@/shared/lib/utils';
 import { waitForWorkspacePlan } from './api';
-import { useBilling, useCheckout } from './hooks';
+import { useBilling, useCheckout, usePortal } from './hooks';
 import { clearPendingCheckout, type PendingCheckout, readPendingCheckout, savePendingCheckout } from './pending-checkout';
 
 const POLL_MS = 3000;
@@ -105,7 +105,7 @@ export function BillingPage() {
         ) : (
           <>
             <StatusNotice billing={billing.data} />
-            <CurrentPlan billing={billing.data} />
+            <CurrentPlan billing={billing.data} canManage={role === 'owner' && billing.data.manageable} />
             {role !== 'owner' && (
               <Alert>
                 <InfoIcon />
@@ -152,7 +152,7 @@ function StatusNotice({ billing }: { billing: BillingSummary }) {
   return null;
 }
 
-function CurrentPlan({ billing }: { billing: BillingSummary }) {
+function CurrentPlan({ billing, canManage }: { billing: BillingSummary; canManage: boolean }) {
   const { t } = useTranslation();
   const status = billing.status in STATUS_STYLES ? billing.status : 'active';
   return (
@@ -165,13 +165,40 @@ function CurrentPlan({ billing }: { billing: BillingSummary }) {
             {t(`billing.status.${status as 'active' | 'past_due' | 'cancelled'}`)}
           </Badge>
         </CardTitle>
+        {canManage && (
+          <CardAction>
+            <ManageBilling />
+          </CardAction>
+        )}
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-1">
         <p className="text-sm text-muted-foreground">
           {billing.price_usd_month === 0 ? t('billing.free') : t('billing.price', { price: billing.price_usd_month })}
         </p>
+        {canManage && <p className="text-sm text-muted-foreground">{t('billing.manageHint')}</p>}
       </CardContent>
     </Card>
+  );
+}
+
+function ManageBilling() {
+  const { t } = useTranslation();
+  const portal = usePortal();
+
+  async function open() {
+    try {
+      const { portal_url } = await portal.mutateAsync();
+      window.location.assign(portal_url);
+    } catch (error) {
+      toastError(error, t);
+    }
+  }
+
+  return (
+    <Button variant="outline" onClick={open} disabled={portal.isPending}>
+      {portal.isPending && <Spinner />}
+      {t('billing.manage')}
+    </Button>
   );
 }
 

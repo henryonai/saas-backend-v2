@@ -261,6 +261,8 @@
     "isCurrent": "Gói hiện tại",
     "upgradeTo": "Nâng cấp lên {{plan}}",
     "upgraded": "Workspace đã chuyển sang gói {{plan}}.",
+    "manage": "Quản lý thanh toán",
+    "manageHint": "Đổi thẻ, xem hóa đơn hoặc hủy gói.",
     "ownerOnly": "Chỉ chủ sở hữu workspace mới đổi được gói.",
     "cancelled": "Gói trả phí đã bị hủy: workspace này đang dùng gói Free.",
     "features": {
