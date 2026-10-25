@@ -35,7 +35,7 @@ def process_batch(event: dict, context, service: NotificationService, store: Bas
 
     return process_partial_response(
         event=event, record_handler=record_handler,
-        processor=BatchProcessor(event_type=EventType.SQS), context=context,
+        processor=BatchProcessor(event_type=EventType.SQS, logger=logger), context=context,   # logs each failure
     )
 
 

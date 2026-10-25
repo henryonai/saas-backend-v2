@@ -1,7 +1,9 @@
 import pytest
 from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError
 
+from notifications import worker
 from testkit.http import claims
+from testkit.logs import captured_logs
 from testkit.sqs import with_event_ids
 
 ALICE = claims("alice", "t1", "owner")
@@ -73,12 +75,15 @@ def test_unknown_event_ignored(ctx):
 
 
 def test_only_the_broken_message_is_retried(ctx):
-    result = ctx.deliver_batch(
-        ("OrderCreated", with_event_ids({"tenant_id": "t1"})),  # broken: missing fields
-        ("OrderCreated", order_created()),
-    )
+    with captured_logs(worker.logger) as logs:
+        result = ctx.deliver_batch(
+            ("OrderCreated", with_event_ids({"tenant_id": "t1"})),  # broken: missing fields
+            ("OrderCreated", order_created()),
+        )
     assert result == {"batchItemFailures": [{"itemIdentifier": "m1"}]}
     assert len(notes(ctx)) == 1  # the good one went through
+    [failure] = [line for line in logs() if line["level"] == "WARNING"]   # logged, with its traceback
+    assert "KeyError" in failure["exception"]
 
 
 def test_repeated_delivery_sends_one_email_and_one_notification(ctx):

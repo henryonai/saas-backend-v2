@@ -42,7 +42,7 @@ def process_batch(event: dict, context, checkpoints: CheckpointPurge) -> dict:
 
     return process_partial_response(
         event=event, record_handler=record_handler,
-        processor=BatchProcessor(event_type=EventType.SQS), context=context,
+        processor=BatchProcessor(event_type=EventType.SQS, logger=logger), context=context,   # logs each failure
     )
 
 
@@ -65,7 +65,7 @@ def process_expired(event: dict, context, checkpoints: CheckpointPurge,
 
     return process_partial_response(
         event=event, record_handler=record_handler,
-        processor=BatchProcessor(event_type=EventType.DynamoDBStreams), context=context,
+        processor=BatchProcessor(event_type=EventType.DynamoDBStreams, logger=logger), context=context,
     )
 
 

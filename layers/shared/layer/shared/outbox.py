@@ -52,7 +52,8 @@ def relay(event: dict, context, publisher: EventPublisher) -> dict:
 
     return process_partial_response(
         event=event, record_handler=record_handler,
-        processor=BatchProcessor(event_type=EventType.DynamoDBStreams), context=context,
+        # With the logger, each failed record is a WARNING with its traceback (else only DEBUG).
+        processor=BatchProcessor(event_type=EventType.DynamoDBStreams, logger=logger), context=context,
     )
 
 
