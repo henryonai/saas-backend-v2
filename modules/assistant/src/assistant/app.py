@@ -31,6 +31,7 @@ Each request:
 import asyncio
 import base64
 import json
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import closing
@@ -40,7 +41,8 @@ from aws_lambda_powertools import Logger
 from bedrock_agentcore import RequestContext
 from bedrock_agentcore.runtime.ag_ui import AGUIApp
 from bedrock_agentcore.runtime.models import PingStatus
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
 
 from shared.auth import user_from_claims
 from shared.errors import AppError, InvalidRequest, NotFound, Unauthorized
@@ -113,17 +115,20 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
            "run_id": run_id, "agent": run.agent}
     input_tokens = output_tokens = 0
     stopped = False
-    events, transcript = AgUiStream(), Transcript()
+    events, transcript, streamed, stop_model = AgUiStream(), Transcript(), Streamed(), StopModel()
     try:
         agent = agents.get(run.agent)
         if agent is None:   # the HTTP API checked it: a deploy removed it since
             raise NotFound(f"No agent named {run.agent!r}. Agents: {', '.join(sorted(agents))}.")
         stop_requested = stop_check(history, context, run_id)
+        config = {**thread_config(context, run.agent), "callbacks": [stop_model]}
         # Subagents' own output doesn't come through here (see delegation.py), only the calling agent's.
-        stream = agent.stream({"messages": [HumanMessage(run.prompt)]}, thread_config(context, run.agent),
-                              context=context, stream_mode="messages")
+        # durability="exit": one checkpoint when the run ends (stopped, failed or done), not one per step.
+        stream = agent.stream({"messages": [HumanMessage(run.prompt)]}, config, context=context,
+                              stream_mode="messages", durability="exit")
         with closing(stream):
             for message, _ in stream:
+                streamed.add(message)
                 for event in events.message(message):
                     transcript.add(event)
                     yield event
@@ -132,7 +137,10 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
                     output_tokens += message.usage_metadata["output_tokens"]
                 if stop_requested():
                     stopped = True
+                    stop_model.stopping.set()
                     break
+        if stopped:
+            keep_what_the_user_saw(agent, config, streamed.messages, log)
         for event in events.close():
             transcript.add(event)
             yield event
@@ -177,6 +185,77 @@ def stop_check(history: ConversationLog, context: AgentContext, run_id: str) -> 
             return False
 
     return stop_requested
+
+
+class Stopped(Exception):
+    """The user pressed Stop: ends the model call the run is in."""
+
+
+class StopModel(BaseCallbackHandler):
+    """
+    Ends a model call once the run stops. Closing the stream waits for the
+    step that is running, and a model streaming a long answer would go on to
+    its end: tokens nobody reads, and the conversation busy (409) meanwhile.
+    Raised from its next token, the error ends the model's stream.
+    """
+    raise_error = True
+
+    def __init__(self):
+        self.stopping = threading.Event()
+
+    def on_llm_new_token(self, token: str, **kwargs) -> None:
+        if self.stopping.is_set():
+            raise Stopped()
+
+
+class Streamed:
+    """The agent's messages as they streamed: chunks joined into whole messages, in order."""
+
+    def __init__(self):
+        self._messages: dict[str, BaseMessage] = {}
+
+    def add(self, message: BaseMessage) -> None:
+        if isinstance(message, ToolMessage):
+            key = f"tool:{message.tool_call_id}"
+        else:
+            key = f"ai:{message.id or len(self._messages)}"
+        earlier = self._messages.get(key)
+        if isinstance(earlier, AIMessageChunk) and isinstance(message, AIMessageChunk):
+            self._messages[key] = earlier + message
+        else:
+            self._messages[key] = message
+
+    @property
+    def messages(self) -> list[BaseMessage]:
+        return list(self._messages.values())
+
+
+def keep_what_the_user_saw(agent, config: dict, streamed: list[BaseMessage], log: dict) -> None:
+    """
+    Stop closes the stream in the middle of a step, and LangGraph checkpoints
+    only whole steps: a tool's result that came back just before stays a
+    pending write, which the next message's run discards, and the answer's
+    text so far isn't kept at all. The user saw both, and the history has
+    them, so they go into the agent's state too. A tool call cut short is
+    left out (ConversationMiddleware answers one that never ran).
+    """
+    try:
+        # The checkpoint as saved: get_state() would add the pending writes, which the next run drops.
+        saved = agent.checkpointer.get_tuple(config)
+        kept = saved.checkpoint["channel_values"].get("messages", []) if saved else []
+        answered = {m.tool_call_id for m in kept if isinstance(m, ToolMessage)}
+        said = {m.id for m in kept if isinstance(m, AIMessage)}
+        missing = []
+        for message in streamed:
+            if isinstance(message, ToolMessage) and message.tool_call_id not in answered:
+                missing.append(message)
+            elif isinstance(message, AIMessage) and message.id not in said and message.text:
+                missing.append(AIMessage(content=message.text, id=message.id))
+        if missing:
+            agent.update_state(config, {"messages": missing}, as_node="model")
+    except Exception:
+        logger.warning("Could not keep what the stopped run showed; the agent goes without it", extra=log,
+                       exc_info=True)
 
 
 def keep_history(history: ConversationLog, context: AgentContext, run_id: str, transcript: Transcript,

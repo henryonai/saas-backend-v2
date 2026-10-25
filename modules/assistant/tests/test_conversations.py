@@ -24,17 +24,21 @@ import pytest
 from ag_ui.core import Message
 from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError
 from botocore.exceptions import ClientError
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph_checkpoint_aws import DynamoDBSaver
 from pydantic import TypeAdapter
 
 import assistant.app
+from assistant.app import Streamed, keep_what_the_user_saw
 from assistant.checkpoints import CheckpointPurge
-from assistant.context import checkpoint_session
+from assistant.context import AgentContext, checkpoint_session
+from assistant.factory import thread_config
 from assistant.handler import handler
+from assistant.middleware import INTERRUPTED
 from assistant.models import Run, current_month, iso
 from assistant.purge import process_batch
+from shared.auth import user_from_claims
 from testkit.http import FakeContext, call, claims
 
 THREAD = "11111111-2222-3333-4444-555555555555"   # conftest's SESSION: the threadId is the session
@@ -311,6 +315,71 @@ def test_stop_ends_the_answer_and_keeps_what_it_wrote(ctx, api, alice, monkeypat
     assert conversation["run_id"] is None
     assert [m["role"] for m in conversation["messages"]] == ["user", "assistant", "tool"]
     assert stop(api, alice, run_id) == 204   # a Stop that comes late is not wrong
+
+    # The next message: the agent has the tool's result, once, as the user saw it.
+    ctx.script(ctx.answer("Nothing yet."))
+    ctx.chat("And now?", alice)
+    results = [m for m in ctx.model_calls()[0] if m.type == "tool"]
+    assert len(results) == 1 and INTERRUPTED not in results[0].text
+
+
+def test_stop_ends_the_model_call_and_the_agent_keeps_the_text_so_far(ctx, api, alice, monkeypatch):
+    monkeypatch.setattr(assistant.app, "STOP_CHECK_SECONDS", 0)
+    story = " ".join(f"word{n}" for n in range(30))
+    ctx.script(ctx.answer(story), pause=0.1)   # 3 s to write it all
+    run_id = ctx.post("Tell me a story", alice)
+    assert stop(api, alice, run_id) == 204     # seen at the first word
+
+    started = time.monotonic()
+    events = ctx.run(run_id, alice)
+
+    assert time.monotonic() - started < 1.5    # the model's call ended too, not just the stream
+    assert events[-1]["result"] == {"agent": "assistant", "stopped": True}
+    said = opened(api, alice)["messages"][-1]["content"]
+    assert story.startswith(said) and len(said) < len(story)
+    # The next message: the agent has its answer as far as the user saw it.
+    ctx.script(ctx.answer("Where was I?"))
+    ctx.chat("Go on", alice)
+    assert ("ai", said) in [(m.type, m.text) for m in ctx.model_calls()[0]]
+
+
+def test_after_a_stop_the_agent_keeps_what_the_user_saw(ctx, alice):
+    # Stop closes the stream mid-step. LangGraph had saved the tool call, but not
+    # the result that streamed right after (as on dev), nor the answer's text so far.
+    agent = ctx.state.agents["assistant"]
+    config = thread_config(AgentContext(user=user_from_claims(alice), authorization="", session_id=ctx.session),
+                           "assistant")
+    call = {"name": "list_orders", "args": {}, "id": "call-1", "type": "tool_call"}
+    agent.update_state(config, {"messages": [HumanMessage("What did we order?"),
+                                             AIMessage("", id="ai-1", tool_calls=[call])]}, as_node="model")
+    streamed = Streamed()
+    for message in (AIMessageChunk("", id="ai-1"), ToolMessage("No orders.", tool_call_id="call-1"),
+                    AIMessageChunk("You haven't ", id="ai-2"), AIMessageChunk("ordered", id="ai-2")):
+        streamed.add(message)
+
+    keep_what_the_user_saw(agent, config, streamed.messages, {})
+    keep_what_the_user_saw(agent, config, streamed.messages, {})   # again: nothing twice
+
+    kept = agent.get_state(config).values["messages"]
+    assert [(m.type, m.text) for m in kept] == [("human", "What did we order?"), ("ai", ""), ("tool", "No orders."),
+                                                 ("ai", "You haven't ordered")]
+    ctx.script(ctx.answer("Shall I look again?"))
+    ctx.chat("Go on", alice)
+    sent = [(m.type, m.text) for m in ctx.model_calls()[0] if m.type != "system"]
+    assert ("tool", "No orders.") in sent and ("ai", "You haven't ordered") in sent
+    assert not any(INTERRUPTED in text for _, text in sent)
+
+
+def test_a_message_is_checkpointed_once_when_its_run_ends(ctx, alice):
+    puts = []
+    put = ctx.state.checkpointer.put
+    ctx.state.checkpointer.put = lambda *args, **kwargs: puts.append(1) or put(*args, **kwargs)
+    ctx.api.responses["/orders"] = {"items": [], "next_cursor": None}
+    ctx.script(ctx.tool_call("list_orders", {}), ctx.answer("None yet."))
+
+    ctx.chat("What did we order?", alice)
+
+    assert len(puts) == 1   # durability="exit": not one per step (here 7)
 
 
 def test_deleting_the_conversation_mid_answer_stops_it(ctx, api, alice, monkeypatch):

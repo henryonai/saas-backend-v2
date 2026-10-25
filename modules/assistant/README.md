@@ -178,8 +178,10 @@ details the main conversation doesn't need: analysis, reports, research.
 
 The conversation itself is checkpointed by `DynamoDBSaver`
 (langgraph-checkpoint-aws) in its own table, `AssistantCheckpointTable`: the
-library names the keys (`PK`, `SK`) and the TTL attribute (`ttl`), and writes
-several records per step. Each checkpoint holds the agent's whole state,
+library names the keys (`PK`, `SK`) and the TTL attribute (`ttl`). The run
+checkpoints once, when it ends (`durability="exit"` in `app.handle`), not
+after every step: a run that dies with its microVM is lost to the agent, but
+the history has what streamed. Each checkpoint holds the agent's whole state,
 gzip-compressed; one over 350 KB goes to `AssistantCheckpointBucket`. Each
 expires `CONVERSATION_DAYS` after it was written (the library sets the
 bucket's lifecycle rule to match), and only the newest one matters, so an
@@ -332,7 +334,14 @@ token (`handler.py`, a Lambda):
 - **Stop** marks the run (`run.cancelled`); the run asks at most once a
   second, between chunks, then ends with `RUN_FINISHED` `{"stopped": true}`
   and keeps what it wrote. Deleting the conversation stops it the same way. A
-  long tool call (a sandbox command, a subagent) finishes first.
+  long tool call (a sandbox command, a subagent) finishes first. The model's
+  call ends too (`StopModel` raises from its next token): closing the stream
+  waits for the step that is running, so a long answer would otherwise go on
+  being written, and billed, to its end, with the conversation busy. The agent
+  keeps what the user saw, too (`keep_what_the_user_saw`): closing the stream
+  mid-step leaves a tool's result that just came back as a pending write,
+  which the next message's run drops, and the answer's text so far nowhere, so
+  both are added to its checkpoint.
 - **Reloading**: the page reads the conversation; with a `run_id`, it sends
   AgentCore that run and draws it from the start, then live.
 - **Titles**: `TitleMiddleware` asks the stack's default model for a 2–6 word
@@ -515,7 +524,7 @@ There is no authorizer locally, so the server trusts any token: never expose it.
 - **Long conversations**: older messages are dropped from what the model sees,
   not summarized. `SummarizationMiddleware` could keep their gist (its model
   calls would need to count against the token cap too). Each checkpoint holds
-  the whole conversation, so a long one writes more at every step.
+  the whole conversation, so a long one writes more with every message.
 - **Conversations**: older messages of a conversation past 200 (open returns
   the latest 200), search, and keeping history longer than the checkpoints
   (which would need the agent to rebuild its context from the history).

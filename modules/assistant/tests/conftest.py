@@ -8,6 +8,7 @@ sandbox.
 """
 import base64
 import json
+import time
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -47,6 +48,7 @@ class ScriptedModel(BaseChatModel):
     responses: list[AIMessage]
     calls: list[list[BaseMessage]] = []
     tools_shown: list[list[str]] = []   # tool names offered to the model, per call
+    pause: float = 0.0   # if set: the text a word at a time, this many seconds apart
 
     @property
     def _llm_type(self) -> str:
@@ -64,8 +66,14 @@ class ScriptedModel(BaseChatModel):
         self.calls.append(messages)
         message = self.responses.pop(0)
         text = message.content
-        pieces = [text[:len(text) // 2], text[len(text) // 2:]] if text else [""]
+        if self.pause and text:   # a model writing a word at a time
+            words = text.split(" ")
+            pieces = [word + " " for word in words[:-1]] + [words[-1]]
+        else:
+            pieces = [text[:len(text) // 2], text[len(text) // 2:]] if text else [""]
         for i, piece in enumerate(pieces):
+            if i:
+                time.sleep(self.pause)
             last = i == len(pieces) - 1
             calls = [{"name": c["name"], "args": json.dumps(c["args"]), "id": c["id"], "index": n}
                      for n, c in enumerate(message.tool_calls)] if last else []
@@ -158,9 +166,9 @@ def ctx():
     models: dict[str, ScriptedModel] = {}
     state = SimpleNamespace(agents=None, checkpointer=InMemorySaver())
 
-    def script(*responses: AIMessage, agent: str = MAIN_AGENT):
+    def script(*responses: AIMessage, agent: str = MAIN_AGENT, pause: float = 0.0):
         """Sets what `agent`'s model answers next; conversations (the checkpointer) are kept."""
-        models[agent] = ScriptedModel(responses=list(responses), calls=[], tools_shown=[])
+        models[agent] = ScriptedModel(responses=list(responses), calls=[], tools_shown=[], pause=pause)
         state.agents = build_agents(definitions, AgentDeps(
             make_model=lambda d: models.setdefault(d.name, ScriptedModel(responses=[], calls=[], tools_shown=[])),
             checkpointer=state.checkpointer, usage=usage, tools=tools, history=history, title_model=title_model))
