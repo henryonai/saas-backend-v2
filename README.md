@@ -43,6 +43,7 @@ saas-backend-v2/
 │   ├── stripe-setup.py         # Stripe prices, portal and webhook for a stack
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
 │   ├── package-assistant.py    # the assistant's arm64 code zip -> S3, for sam deploy
+│   ├── enable-transaction-search.sh  # once per account: the assistant's traces in CloudWatch
 │   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
 │   ├── replay-outbox.py        # publish saved events again after an outage
 │   └── rename-project.py       # give a new copy of the template its own name
@@ -351,6 +352,9 @@ a new stack has no assistant, and an existing one keeps the code it has):
 sam deploy --config-env dev \
   --parameter-overrides "$(uv run python scripts/package-assistant.py --config-env dev)"
 ```
+
+Once per AWS account, for the assistant's traces:
+`./scripts/enable-transaction-search.sh <region>` (see modules/assistant/README.md).
 
 Outputs: `ApiUrl`, `UserPoolId`, `UserPoolClientId` (for the React app),
 `WebhookUrl` (for the payment provider), `EventBusName`, `AlertsTopicArn`,

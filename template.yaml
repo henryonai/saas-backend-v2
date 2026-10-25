@@ -897,7 +897,7 @@ Resources:
         CodeConfiguration:
           Code: { S3: { Bucket: !Ref AssistantCodeBucket, Prefix: !Ref AssistantCodeKey } }
           Runtime: PYTHON_3_13
-          EntryPoint: [opentelemetry-instrument, main.py]   # traces to CloudWatch (enable Transaction Search once)
+          EntryPoint: [opentelemetry-instrument, main.py]   # traces to CloudWatch (scripts/enable-transaction-search.sh, once per account)
       NetworkConfiguration: { NetworkMode: PUBLIC }
       ProtocolConfiguration: AGUI           # AG-UI events (assistant/schemas.py); AgentCore's own errors are RUN_ERROR events too
       # Only this user pool's ID tokens get in, like the HTTP API: access
@@ -929,6 +929,55 @@ Resources:
         REGION: !Ref AWS::Region
         SANDBOX_ID: !GetAtt AssistantSandbox.CodeInterpreterId
         CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # as long as AssistantMemory keeps the agent's copy
+        # ADOT's LangChain instrumentation logs every model call's messages (the
+        # conversation so far, the answer) to this runtime's log group, and
+        # traces each model call and middleware step. Dev keeps both, the
+        # messages for a week (AssistantLogRetention); prod keeps neither, so a
+        # conversation lives only where the app can delete it.
+        AWS_GENAI_INSTRUMENTATION: !If [IsProd, disabled, enabled]
+
+  # AgentCore creates the runtime's log group itself, with the runtime and no
+  # retention, so CloudFormation can't own it: this sets its retention.
+  AssistantLogRetention:
+    Type: Custom::LogRetention
+    Condition: HasAssistant
+    Properties:
+      ServiceToken: !GetAtt AssistantLogRetentionFunction.Arn
+      LogGroupName: !Sub /aws/bedrock-agentcore/runtimes/${AssistantRuntime.AgentRuntimeId}-DEFAULT
+      RetentionInDays: !If [IsProd, !Ref LogRetentionDays, 7]   # dev's holds the conversations' text
+
+  AssistantLogRetentionFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasAssistant
+    Properties:
+      Handler: index.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [logs:CreateLogGroup, logs:PutRetentionPolicy]
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*
+      InlineCode: |
+        import boto3
+        import cfnresponse
+
+        logs = boto3.client("logs")
+
+
+        def handler(event, context):
+            """Sets the log group's retention, creating the group if it isn't there yet. Leaves it on delete."""
+            name = event["ResourceProperties"]["LogGroupName"]
+            try:
+                if event["RequestType"] != "Delete":
+                    try:
+                        logs.create_log_group(logGroupName=name)
+                    except logs.exceptions.ResourceAlreadyExistsException:
+                        pass
+                    days = int(event["ResourceProperties"]["RetentionInDays"])
+                    logs.put_retention_policy(logGroupName=name, retentionInDays=days)
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, name)
+            except Exception as error:
+                cfnresponse.send(event, context, cfnresponse.FAILED, {}, name, reason=str(error))
 
   # The users' conversations (/assistant/conversations): send a message (saved,
   # with the run that will answer it, before AgentCore runs it), stop an

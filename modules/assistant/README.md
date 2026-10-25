@@ -392,11 +392,22 @@ Once per account and region:
 - **Or Bedrock**: set `AssistantModelId` (or an agent's `model`) to a Bedrock
   id, such as `global.anthropic.claude-sonnet-5-5`, and enable the model in the
   Bedrock console. The model id picks the provider: `vendor/model` is OpenRouter.
-- **Traces**: enable CloudWatch Transaction Search (AgentCore observability
-  guide), then traces of every model and tool call appear in the CloudWatch
-  GenAI observability console (`opentelemetry-instrument` in the entry point).
+- **Traces**: run `./scripts/enable-transaction-search.sh <region> [days]` once
+  per account. It turns on CloudWatch Transaction Search, which X-Ray needs
+  before it takes the runtime's spans (until then it answers each batch with a
+  400, logged every 5 seconds), and keeps spans in `aws/spans` for `days`
+  (default 7). Then the runtime's traces appear in the CloudWatch GenAI
+  observability console (`opentelemetry-instrument` in the entry point).
+- **Messages in logs**: ADOT's LangChain instrumentation logs each model
+  call's messages (the conversation so far, the answer) to the runtime's log
+  group (`otel-rt-logs`; it takes them out of the spans), and traces each
+  model call and middleware step. Dev keeps both, to debug with; prod turns
+  the instrumentation off (`AWS_GENAI_INSTRUMENTATION: disabled` in
+  `template.yaml`), so a conversation is only where the app can delete it,
+  and its traces show the calls to AWS, OpenRouter and the API.
 - **Log retention**: AgentCore creates `/aws/bedrock-agentcore/runtimes/<id>-DEFAULT`
-  without one: set it with `aws logs put-retention-policy`.
+  itself, without one; `AssistantLogRetention` in `template.yaml` sets 7 days
+  in dev (it holds the messages) and `LogRetentionDays` in prod.
 
 Existing sessions keep the code they started with: a new session id gets new
 code. Idle conversations stop their microVM after 15 minutes; the conversation
