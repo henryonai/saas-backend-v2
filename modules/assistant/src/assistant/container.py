@@ -7,7 +7,8 @@ Three entry points use it:
               following messages.
   handler.py  Lambda: the HTTP API for the users' conversations, which also
               takes their messages (and counts them against the plan).
-  purge.py    Lambda: deletes a deleted conversation's checkpoints.
+  purge.py    Lambda: deletes what is left of a deleted or expired
+              conversation: the agents' checkpoints, an expired one's messages.
 
 The two Lambdas get the shared layer, not the agents' dependencies (LangChain,
 the AgentCore SDK, httpx): only get_agents() imports those, when it runs.
@@ -106,3 +107,9 @@ def get_conversation_service() -> ConversationService:
 def get_checkpoint_purge() -> CheckpointPurge:
     settings = PurgeSettings()
     return CheckpointPurge(_table(settings.checkpoint_table), boto3.client("s3"), settings.checkpoint_bucket)
+
+
+@lru_cache
+def get_purged_conversations() -> ConversationRepository:
+    """For the purge worker: what is left of the conversations that expired."""
+    return ConversationRepository(_table(PurgeSettings().assistant_table))

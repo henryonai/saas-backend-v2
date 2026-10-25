@@ -40,6 +40,7 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
 browser ──ID token──▶ HTTP API /assistant/conversations ──▶ handler.py (Lambda): list, open, rename,
                                                               delete, stop an answer
                                                               └─ delete ──SQS──▶ purge.py: the checkpoints
+DynamoDB TTL removes an idle conversation's META ──stream──▶ purge.py: its messages and checkpoints
 ```
 
 ## Files
@@ -68,7 +69,7 @@ src/assistant/
 ├── service.py, repository.py, models.py   usage per workspace; conversations and their history
 ├── api.py, handler.py   Lambda: the HTTP API for the users' conversations (sending a message too)
 ├── agent_names.py       the agents' names without loading them, for that Lambda
-├── purge.py             Lambda: deletes a deleted conversation's checkpoints (SQS)
+├── purge.py             Lambda: what is left of a deleted (SQS) or expired (stream) conversation
 └── container.py         composition root (models from llm.py, the checkpointer, DynamoDB, SQS, httpx)
 ../main.py               what AgentCore starts (root of the zip)
 ```
@@ -185,7 +186,8 @@ the history has what streamed. Each checkpoint holds the agent's whole state,
 gzip-compressed; one over 350 KB goes to `AssistantCheckpointBucket`. Each
 expires `CONVERSATION_DAYS` after it was written (the library sets the
 bucket's lifecycle rule to match), and only the newest one matters, so an
-active conversation never loses its state. The thread id is a hash of user,
+active conversation never loses its state; when the conversation is deleted
+or expires, the purge worker deletes them all. The thread id is a hash of user,
 session and agent (`thread_config()`): the client picks the session id, so
 someone sending another user's session id still gets their own conversation,
 and the table, which knows only threads, needs nothing else.
@@ -350,14 +352,23 @@ token (`handler.py`, a Lambda):
   the first message stays the title. It never replaces a title the user chose.
 - **Stored** in the assistant table, under the user's own keys:
   `TENANT#<t>#USER#<u>#CONV#<threadId>` with `META` and `MSG#<n>` items, and
-  the index `gsi1` for the list (`repository.py`). Every record expires
-  `CONVERSATION_DAYS` after it was written (30 on dev, 90 on prod), like the
-  agents' checkpoints. On a stack
-  that had the assistant before, the deploy that adds `gsi1` finishes before
-  DynamoDB has built it, and DynamoDB refuses to read an index it's still
-  building: the list answers 500 for the first minutes (about 5 on dev,
-  October 2026) while `IndexStatus` is `CREATING`. Chatting, reopening, and
-  the history it writes meanwhile all work; the list then includes it.
+  the index `gsi1` for the list (`repository.py`). On a stack that had the
+  assistant before, the deploy that adds `gsi1` finishes before DynamoDB has
+  built it, and DynamoDB refuses to read an index it's still building: the
+  list answers 500 for the first minutes (about 5 on dev, October 2026) while
+  `IndexStatus` is `CREATING`. Chatting, reopening, and the history it writes
+  meanwhile all work; the list then includes it.
+- **Expiry**: a conversation goes whole, `CONVERSATION_DAYS` after its last
+  message (30 on dev, 90 on prod). Only its `META` has a TTL (`expires_at`,
+  moved on by every message), so a long conversation never loses its oldest
+  messages while the agent still has them. Until TTL removes the `META`
+  (within days), the app treats the conversation as gone, and a message sent
+  to it is refused (404) rather than bringing it back. The removal reaches
+  `purge.py` through the table's stream, filtered to TTL's removals of a
+  `META`, and the worker deletes the messages and the agents' checkpoints. A
+  stream batch that keeps failing goes to the purge dead-letter queue, whose
+  alarm covers both. Messages saved before this change (dev, October 2026)
+  keep their own TTL and expire on their own.
 - **Continuing one** sends the same threadId, so the agent picks up from its
   checkpoints. If its microVM stopped (15 minutes idle), a new one starts:
   the first answer is slower, and the old sandbox's files are gone.
@@ -368,7 +379,10 @@ token (`handler.py`, a Lambda):
   continues where the last try stopped, since the checkpoints, which lead to
   the rest, go last. `checkpoints.py` follows the library's record layout with
   plain boto3 (the Lambda has no LangGraph); a test writes real checkpoints
-  with `DynamoDBSaver` and checks the purge leaves nothing.
+  with `DynamoDBSaver` and checks the purge leaves nothing. Deleted while it
+  answers, the run stops at its next chunk (or after the tool it is in) and
+  writes its last checkpoint then, possibly after the purge ran: so once its
+  answer can't be saved, the run deletes its own thread too (`app.forget`).
 
 ## Deploy
 

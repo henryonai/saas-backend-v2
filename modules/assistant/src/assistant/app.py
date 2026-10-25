@@ -26,7 +26,8 @@ Each request:
   3. the run: the agent answers, with middleware for the token cap and the
      title, as AG-UI events; it ends early if the user pressed Stop
   4. the history gets what streamed, however the run ended, and the
-     conversation's run is removed
+     conversation's run is removed; if the conversation was deleted
+     meanwhile, the agent's checkpoints of it go too
 """
 import asyncio
 import base64
@@ -116,6 +117,7 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
     input_tokens = output_tokens = 0
     stopped = False
     events, transcript, streamed, stop_model = AgUiStream(), Transcript(), Streamed(), StopModel()
+    agent = config = None
     try:
         agent = agents.get(run.agent)
         if agent is None:   # the HTTP API checked it: a deploy removed it since
@@ -154,7 +156,8 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
     finally:
         # What streamed, however the run ended; before RUN_FINISHED, so a
         # client that reloads the conversation then finds all of it.
-        keep_history(history, context, run_id, transcript, log)
+        if keep_history(history, context, run_id, transcript, log) is False and config is not None:
+            forget(agent, config, log)
 
     # One line per message, with tokens: per-tenant cost in CloudWatch Logs Insights.
     # (A subagent's tokens are in the usage table, not in these numbers.)
@@ -259,12 +262,32 @@ def keep_what_the_user_saw(agent, config: dict, streamed: list[BaseMessage], log
 
 
 def keep_history(history: ConversationLog, context: AgentContext, run_id: str, transcript: Transcript,
-                 log: dict) -> None:
-    """Best effort: the user has the answer already, and the agent its checkpoint."""
+                 log: dict) -> bool | None:
+    """
+    Best effort: the user has the answer already, and the agent its
+    checkpoint. False if the conversation was deleted meanwhile; None if
+    saving failed.
+    """
     try:
-        history.record(context, run_id, transcript.messages)
+        return history.record(context, run_id, transcript.messages)
     except Exception:
         logger.exception("Could not save the conversation's history", extra=log)
+        return None
+
+
+def forget(agent, config: dict, log: dict) -> None:
+    """
+    The conversation was deleted while the agent answered. Deleting it queued
+    a purge of the agent's checkpoints, which may well have run before this
+    run wrote its last one (the run stops at its next chunk, or after the
+    tool it is in): so the run deletes its thread itself, once it has written
+    everything. Best effort: the checkpoints expire anyway.
+    """
+    try:
+        agent.checkpointer.delete_thread(config["configurable"]["thread_id"])
+    except Exception:
+        logger.warning("Could not delete the deleted conversation's checkpoints; they expire on their own",
+                       extra=log, exc_info=True)
 
 
 def agent_context(context: RequestContext, thread_id: str) -> AgentContext:

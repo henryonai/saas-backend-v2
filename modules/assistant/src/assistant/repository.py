@@ -8,9 +8,12 @@ Assistant table:
 
 The tenant is part of every key, and the user of every conversation key, so
 one workspace never sees another's usage and one user never sees another's
-conversations. Usage expires (TTL) about 13 months after the month started;
-a conversation's records some days after they were written, like the
-agents' checkpoints of it (container.py).
+conversations. Usage expires (TTL) about 13 months after the month started.
+A conversation expires whole, some days after its last message: only its
+META has a TTL (expires_at, moved on by every message), so a long
+conversation never loses its oldest messages. When TTL removes the META, the
+table's stream has the purge worker delete the messages and the agents'
+checkpoints (purge.py); until then, reads treat the conversation as gone.
 """
 import base64
 import json
@@ -136,6 +139,15 @@ def _conversation_pk(tenant_id: str, user_id: str, thread_id: str) -> str:
     return f"TENANT#{tenant_id}#USER#{user_id}#CONV#{thread_id}"
 
 
+def conversation_of(pk: str) -> tuple[str, str, str]:
+    """(tenant_id, user_id, thread_id) of a conversation's key. Raises ValueError for any other key."""
+    rest, _, thread_id = pk.removeprefix("TENANT#").rpartition("#CONV#")
+    tenant_id, _, user_id = rest.partition("#USER#")
+    if not (pk.startswith("TENANT#") and tenant_id and user_id and thread_id):
+        raise ValueError(f"Not a conversation's key: {pk!r}")
+    return tenant_id, user_id, thread_id
+
+
 def _list_pk(tenant_id: str, user_id: str) -> str:
     return f"TENANT#{tenant_id}#USER#{user_id}#CONVS"
 
@@ -194,8 +206,7 @@ class ConversationRepository:
                 return False
             raise
         if append:
-            self._put_messages(tenant_id, user_id, thread_id, [message], int(result["Attributes"]["message_count"]),
-                               expires_at)
+            self._put_messages(tenant_id, user_id, thread_id, [message], int(result["Attributes"]["message_count"]))
         return True
 
     def add_answer(self, tenant_id: str, user_id: str, thread_id: str, run_id: str, messages: list[dict], *,
@@ -217,8 +228,7 @@ class ConversationRepository:
                     ExpressionAttributeValues={":now": now, ":expires": expires_at, ":n": len(messages)},
                     ReturnValues="UPDATED_NEW",
                 )
-                self._put_messages(tenant_id, user_id, thread_id, messages,
-                                   int(result["Attributes"]["message_count"]), expires_at)
+                self._put_messages(tenant_id, user_id, thread_id, messages, int(result["Attributes"]["message_count"]))
             self.table.update_item(Key=key, UpdateExpression="REMOVE #run", ConditionExpression="#run.run_id = :run",
                                    ExpressionAttributeNames={"#run": "run"},
                                    ExpressionAttributeValues={":run": run_id})
@@ -244,14 +254,16 @@ class ConversationRepository:
                 return False
             raise
 
-    def _put_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], last: int,
-                      expires_at: int) -> None:
-        """Numbers the messages so that the last one is `last` (the conversation's message_count)."""
+    def _put_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], last: int) -> None:
+        """
+        Numbers the messages so that the last one is `last` (the conversation's
+        message_count). No TTL of their own: they go with the conversation.
+        """
         pk = _conversation_pk(tenant_id, user_id, thread_id)
         first = last - len(messages) + 1
         with self.table.batch_writer() as batch:
             for n, message in enumerate(messages, start=first):
-                batch.put_item(Item={"pk": pk, "sk": f"MSG#{n:06d}", "message": message, "expires_at": expires_at})
+                batch.put_item(Item={"pk": pk, "sk": f"MSG#{n:06d}", "message": message})
 
     def set_title(self, tenant_id: str, user_id: str, thread_id: str, title: str, source: TitleSource,
                   only_over: TitleSource | None = None) -> bool:
@@ -278,11 +290,14 @@ class ConversationRepository:
                 return False
             raise
 
-    def get(self, tenant_id: str, user_id: str, thread_id: str) -> Conversation | None:
+    def get(self, tenant_id: str, user_id: str, thread_id: str, *, expired: bool = False) -> Conversation | None:
+        """
+        The conversation, or None. TTL removes an expired one within days, not
+        at once: it is hidden meanwhile, unless `expired`.
+        """
         item = self.table.get_item(Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
                                    ConsistentRead=True).get("Item")
-        # TTL removes expired items within days, not at once: hide them meanwhile.
-        return _conversation(item) if item and item["expires_at"] > time.time() else None
+        return _conversation(item) if item and (expired or item["expires_at"] > time.time()) else None
 
     def messages(self, tenant_id: str, user_id: str, thread_id: str, limit: int) -> list[dict]:
         """The latest `limit` messages, oldest first: all that were written, even a moment ago."""
@@ -293,8 +308,7 @@ class ConversationRepository:
             Limit=limit,
             ConsistentRead=True,
         )
-        now = time.time()
-        return [item["message"] for item in reversed(result["Items"]) if item["expires_at"] > now]
+        return [item["message"] for item in reversed(result["Items"])]
 
     def list(self, tenant_id: str, user_id: str, limit: int,
              cursor: str | None = None) -> tuple[list[Conversation], str | None]:
@@ -316,18 +330,21 @@ class ConversationRepository:
         next_cursor = _cursor(last["pk"].rsplit("#CONV#", 1)[1], last["gsi1sk"]) if last else None
         return [_conversation(item) for item in result["Items"]], next_cursor
 
-    def delete(self, tenant_id: str, user_id: str, thread_id: str) -> None:
-        """Removes the conversation and all its messages."""
+    def delete(self, tenant_id: str, user_id: str, thread_id: str) -> int:
+        """Removes the conversation and all its messages (whatever is left of them). Returns how many records."""
         params = {"KeyConditionExpression": Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id)),
                   "ProjectionExpression": "pk, sk"}
+        deleted = 0
         with self.table.batch_writer() as batch:
             while True:
                 result = self.table.query(**params)
                 for item in result["Items"]:
                     batch.delete_item(Key={"pk": item["pk"], "sk": item["sk"]})
+                deleted += len(result["Items"])
                 if "LastEvaluatedKey" not in result:
                     break
                 params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+        return deleted
 
 
 def _cursor(thread_id: str, updated_at: str) -> str:

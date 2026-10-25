@@ -54,17 +54,24 @@ def check_conversation(pk: str, meta: dict | None, messages: dict[int, dict],
     tenant, user = CONVERSATION.match(pk).group("tenant", "user")
     count = int(meta["message_count"])
     numbers = sorted(messages)
-    # TTL removes each message some days after it was written, oldest first: the
-    # ones left are the newest, numbered up to message_count without a gap.
+    # Messages have no TTL of their own: the conversation expires whole (its
+    # META). Those saved before that change (October 2026) kept one, so the
+    # oldest of an old conversation may be gone; the rest number up to
+    # message_count without a gap.
     if numbers and numbers[-1] != count:
         problems.append(f"message_count is {count} but the newest message is MSG#{numbers[-1]:06d}")
     if numbers and numbers != list(range(numbers[0], numbers[-1] + 1)):
         problems.append(f"gap in the messages: {numbers[0]}..{numbers[-1]} has {len(numbers)}")
+    if numbers and numbers[0] != 1 and all("expires_at" in messages[n] for n in numbers[:1]):
+        notes.append(f"messages 1..{numbers[0] - 1} expired on their own (saved before conversations expired whole)")
+    elif numbers and numbers[0] != 1:
+        problems.append(f"messages 1..{numbers[0] - 1} are missing")
     if meta.get("gsi1pk") != f"TENANT#{tenant}#USER#{user}#CONVS" or meta.get("gsi1sk") != meta["updated_at"]:
         problems.append("not in the user's list as it should be (gsi1pk/gsi1sk)")
     if meta.get("title_source") not in ("message", "model", "user"):
         problems.append(f"unknown title_source {meta.get('title_source')!r}")
-    late = [n for n in numbers if int(messages[n]["expires_at"]) > int(meta["expires_at"])]
+    late = [n for n in numbers
+            if "expires_at" in messages[n] and int(messages[n]["expires_at"]) > int(meta["expires_at"])]
     if late:
         problems.append(f"{len(late)} messages expire after their conversation")
     ordered = [messages[n]["message"] for n in numbers]

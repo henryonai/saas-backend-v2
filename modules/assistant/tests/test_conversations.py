@@ -23,6 +23,7 @@ import boto3
 import pytest
 from ag_ui.core import Message
 from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError
+from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.graph import START, MessagesState, StateGraph
@@ -30,6 +31,7 @@ from langgraph_checkpoint_aws import DynamoDBSaver
 from pydantic import TypeAdapter
 
 import assistant.app
+import assistant.purge
 from assistant.app import Streamed, keep_what_the_user_saw
 from assistant.checkpoints import CheckpointPurge
 from assistant.context import AgentContext, checkpoint_session
@@ -382,9 +384,11 @@ def test_a_message_is_checkpointed_once_when_its_run_ends(ctx, alice):
     assert len(puts) == 1   # durability="exit": not one per step (here 7)
 
 
-def test_deleting_the_conversation_mid_answer_stops_it(ctx, api, alice, monkeypatch):
+def test_deleting_the_conversation_mid_answer_stops_it_and_leaves_no_checkpoint(ctx, api, alice, monkeypatch):
     monkeypatch.setattr(assistant.app, "STOP_CHECK_SECONDS", 0)
     ctx.api.responses["/orders"] = {"items": [], "next_cursor": None}
+    ctx.script(ctx.answer("Hello!"))
+    ctx.chat("Hi", alice)   # an earlier answer: the agent has checkpoints of the conversation
     ctx.script(ctx.tool_call("list_orders", {}), ctx.answer("never sent"))
     while_a_tool_runs(ctx, lambda: api.call("DELETE", f"/assistant/conversations/{THREAD}", alice))
 
@@ -392,6 +396,12 @@ def test_deleting_the_conversation_mid_answer_stops_it(ctx, api, alice, monkeypa
 
     assert events[-1]["result"]["stopped"] is True and len(ctx.model_calls()) == 1
     assert not [i for i in ctx.table.scan()["Items"] if "#CONV" in i["pk"]]
+    # The purge was queued at the delete, before this run wrote its checkpoint:
+    # the run deleted the thread itself, after it.
+    assert api.purges == [[checkpoint_session("t1:alice", THREAD, "assistant")]]
+    config = thread_config(AgentContext(user=user_from_claims(alice), authorization="", session_id=THREAD),
+                           "assistant")
+    assert ctx.state.checkpointer.get_tuple(config) is None
 
 
 # ---------- the HTTP API ----------
@@ -490,6 +500,24 @@ def test_expired_conversations_are_gone_before_ttl_removes_them(ctx, api, alice)
     start(ctx, THREAD, "2026-10-24T08:00:00.000Z", expires_in=-60)
     assert api.call("GET", "/assistant/conversations", alice)[1]["items"] == []
     assert api.call("GET", f"/assistant/conversations/{THREAD}", alice)[0] == 404
+    # Nor does a message bring it back, with its old messages, before TTL removes it.
+    assert ctx.send("Still there?", alice)[0] == 404
+
+
+def test_a_conversation_expires_whole_some_days_after_its_last_message(ctx, alice):
+    ctx.script(ctx.answer("Hello!"))
+    ctx.chat("Hi", alice)
+    first = stored(ctx).expires_at
+    time.sleep(1.1)
+    ctx.script(ctx.answer("Sure."))
+    ctx.chat("And again", alice)
+
+    # Only the conversation has a TTL, moved on by each message: a long
+    # conversation never loses its oldest messages.
+    assert stored(ctx).expires_at > first
+    assert abs(stored(ctx).expires_at - (time.time() + 30 * 86400)) < 60
+    items = [i for i in ctx.table.scan()["Items"] if i["sk"].startswith("MSG#")]
+    assert len(items) == 4 and not [i for i in items if "expires_at" in i]
 
 
 def test_bad_input(api, alice):
@@ -611,6 +639,55 @@ def test_a_failed_purge_is_retried_and_finishes_the_job(checkpoints):
     assert process_batch(message, FakeContext(), CheckpointPurge(flaky, checkpoints.s3, CHECKPOINTS)) == {
         "batchItemFailures": []}
     assert checkpoints.left(mine) == {}
+
+
+TTL_SERVICE = {"type": "Service", "principalId": "dynamodb.amazonaws.com"}
+
+
+def stream(*records: tuple[dict, dict | None]) -> dict:
+    """
+    A batch from the assistant table's stream: each (item, userIdentity), its
+    removal as Lambda gets it (OLD_IMAGE). `userIdentity` is TTL's, or None
+    for a delete by the app.
+    """
+    serialize = TypeSerializer().serialize
+    batch = []
+    for n, (item, identity) in enumerate(records, start=1):
+        image = {key: serialize(value) for key, value in item.items()}
+        record = {"eventID": f"e{n}", "eventName": "REMOVE", "eventVersion": "1.1", "eventSource": "aws:dynamodb",
+                  "awsRegion": "ap-southeast-1",
+                  "eventSourceARN": "arn:aws:dynamodb:ap-southeast-1:1:table/assistant-test/stream/2026",
+                  "dynamodb": {"Keys": {"pk": image["pk"], "sk": image["sk"]}, "OldImage": image,
+                               "SequenceNumber": str(n), "SizeBytes": 100, "StreamViewType": "OLD_IMAGE"}}
+        if identity:
+            record["userIdentity"] = identity
+        batch.append(record)
+    return {"Records": batch}
+
+
+def test_the_purge_deletes_an_expired_conversation_once_ttl_removes_it(ctx, checkpoints, alice, monkeypatch):
+    ctx.script(ctx.answer("Hello!"))
+    ctx.chat("Hi", alice)
+    ctx.script(ctx.answer("Hello Bob!"))
+    ctx.chat("Hi", claims("bob", "t1", "member"))   # another user's conversation, same thread id
+    mine = checkpoint_session("t1:alice", THREAD, "assistant")
+    checkpoints.converse(mine, "Hi")
+    meta = ctx.table.get_item(Key={"pk": f"TENANT#t1#USER#alice#CONV#{THREAD}", "sk": "META"})["Item"]
+    message = ctx.table.get_item(Key={"pk": meta["pk"], "sk": "MSG#000001"})["Item"]
+    ctx.table.delete_item(Key={"pk": meta["pk"], "sk": "META"})   # what TTL did
+    monkeypatch.setattr(assistant.purge, "get_checkpoint_purge", lambda: checkpoints.purge)
+    monkeypatch.setattr(assistant.purge, "get_purged_conversations", lambda: ctx.conversations)
+
+    # Only TTL's removal of a META counts: not the app's delete, nor an old message's own TTL.
+    ignored = stream((meta, None), (message, TTL_SERVICE))
+    assert assistant.purge.handler(ignored, FakeContext()) == {"batchItemFailures": []}
+    assert checkpoints.left(mine) != {} and ctx.conversations.messages("t1", "alice", THREAD, 50)
+
+    assert assistant.purge.handler(stream((meta, TTL_SERVICE)), FakeContext()) == {"batchItemFailures": []}
+
+    assert checkpoints.left(mine) == {}
+    assert not [i for i in ctx.table.scan()["Items"] if i["pk"] == meta["pk"]]
+    assert [m["content"] for m in ctx.conversations.messages("t1", "bob", THREAD, 50)] == ["Hi", "Hello Bob!"]
 
 
 # ---------- the Lambdas stay light ----------

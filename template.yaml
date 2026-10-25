@@ -782,7 +782,11 @@ Resources:
             - { AttributeName: gsi1pk, KeyType: HASH }
             - { AttributeName: gsi1sk, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
-      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # old usage and conversations
+      # Old usage, and conversations CONVERSATION_DAYS after their last message:
+      # only a conversation's META has a TTL. The stream brings its removal to
+      # the purge worker, which deletes the messages and checkpoints (purge.py).
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
+      StreamSpecification: { StreamViewType: OLD_IMAGE }
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
   # Each agent's state in each conversation: LangGraph checkpoints, written
@@ -953,7 +957,7 @@ Resources:
         OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParam
         REGION: !Ref AWS::Region
         SANDBOX_ID: !GetAtt AssistantSandbox.CodeInterpreterId
-        CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # the history's records and the checkpoints alike
+        CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # after its last message, a conversation goes, checkpoints and all
         # ADOT's LangChain instrumentation logs every model call's messages (the
         # conversation so far, the answer) to this runtime's log group, and
         # traces each model call and middleware step. Dev keeps both, the
@@ -1020,7 +1024,7 @@ Resources:
           POWERTOOLS_SERVICE_NAME: assistant
           ASSISTANT_TABLE: !Ref AssistantTable
           PURGE_QUEUE_URL: !Ref AssistantPurgeQueue
-          CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # as the runtime's: a message expires with its answer
+          CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # as the runtime's: each message moves the expiry on
       Policies:
         - Statement:
             - Effect: Allow
@@ -1035,7 +1039,8 @@ Resources:
         OneDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: DELETE } }
 
   # Deleted conversations, for the agents' checkpoints of them: hundreds of
-  # records, too many for the request (assistant/purge.py).
+  # records, too many for the request (assistant/purge.py). Also where the
+  # purge of an expired conversation goes when it keeps failing.
   AssistantPurgeDLQ:
     Type: AWS::SQS::Queue
     Condition: HasAssistant
@@ -1061,19 +1066,21 @@ Resources:
       Environment:
         Variables:
           POWERTOOLS_SERVICE_NAME: assistant
+          ASSISTANT_TABLE: !Ref AssistantTable
           CHECKPOINT_TABLE: !Ref AssistantCheckpointTable
           CHECKPOINT_BUCKET: !Ref AssistantCheckpointBucket
       Policies:
         - Statement:
             - Effect: Allow
               Action: [dynamodb:Query, dynamodb:BatchWriteItem]
-              Resource: !GetAtt AssistantCheckpointTable.Arn
+              Resource: [!GetAtt AssistantCheckpointTable.Arn, !GetAtt AssistantTable.Arn]
             - Effect: Allow
               Action: [s3:ListBucket]
               Resource: !GetAtt AssistantCheckpointBucket.Arn
             - Effect: Allow
               Action: [s3:DeleteObject]
               Resource: !Sub "${AssistantCheckpointBucket.Arn}/*"
+        - SQSSendMessagePolicy: { QueueName: !GetAtt AssistantPurgeDLQ.QueueName }   # a stream batch that kept failing
       Events:
         Queue:
           Type: SQS
@@ -1082,12 +1089,25 @@ Resources:
             BatchSize: 1                # one conversation per run: a retry repeats only that one
             FunctionResponseTypes: [ReportBatchItemFailures]
             ScalingConfig: { MaximumConcurrency: 2 }   # no hurry: a few at a time
+        Expired:                        # TTL removed a conversation's META (repository.py)
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt AssistantTable.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 10
+            FilterCriteria:
+              Filters:
+                - Pattern: '{"eventName": ["REMOVE"], "userIdentity": {"type": ["Service"], "principalId": ["dynamodb.amazonaws.com"]}, "dynamodb": {"Keys": {"sk": {"S": ["META"]}}}}'
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: 5
+            DestinationConfig: { OnFailure: { Destination: !GetAtt AssistantPurgeDLQ.Arn } }
 
   AssistantPurgeDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Condition: HasAssistant
     Properties:
-      AlarmDescription: Deleted assistant conversations still have checkpoints (messages in the purge dead-letter queue)
+      AlarmDescription: Deleted or expired assistant conversations still have data (messages in the purge dead-letter queue)
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt AssistantPurgeDLQ.QueueName }]

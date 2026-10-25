@@ -105,7 +105,10 @@ def active_run(conversation: Conversation, now: datetime | None = None) -> Run |
 
 
 def _expires_at(days: int) -> int:
-    """When a record written now expires: as long as the agents' checkpoints written now (container.py)."""
+    """
+    When a conversation whose last message is now expires, whole (its META's
+    TTL): as long as the agents' checkpoints written now (container.py).
+    """
     return int(time.time()) + days * 24 * 3600
 
 
@@ -136,13 +139,18 @@ class ConversationLog:
         return conversation is None or conversation.run is None or conversation.run.run_id != run_id \
             or conversation.run.cancelled
 
-    def record(self, context: AgentContext, run_id: str, messages: list[dict]) -> None:
-        """After the run (answered, failed, stopped or cut off): the messages it streamed, and that it's over."""
+    def record(self, context: AgentContext, run_id: str, messages: list[dict]) -> bool:
+        """
+        After the run (answered, failed, stopped or cut off): the messages it
+        streamed, and that it's over. False if the conversation was deleted
+        meanwhile: its answer is not kept.
+        """
         saved = self.conversations.add_answer(
             context.user.require_tenant(), context.user.user_id, context.session_id, run_id,
             [_kept(message) for message in messages], now=now_iso(), expires_at=_expires_at(self.days))
         if not saved:
             logger.info("The conversation was deleted while the agent answered; its answer is not kept")
+        return saved
 
     def name(self, context: AgentContext, title: str) -> bool:
         """Sets the model's title, unless the user renamed the conversation meanwhile."""
@@ -199,7 +207,10 @@ class ConversationService:
             raise InvalidRequest("Use a threadId of 33 to 100 letters, digits, '-' or '_' (for example a UUID).")
         if agent not in agent_names():
             raise NotFound(f"No agent named {agent!r}. Agents: {', '.join(sorted(agent_names()))}.")
-        conversation = self.conversations.get(tenant_id, user.user_id, thread_id)
+        conversation = self.conversations.get(tenant_id, user.user_id, thread_id, expired=True)
+        if conversation and conversation.expires_at <= time.time():
+            # Expired, and waiting for TTL to remove it: a message now would bring its old messages back.
+            raise NotFound(NOT_FOUND)
         if conversation and active_run(conversation):
             raise Conflict(STILL_ANSWERING)
         self.usage.start_message(user)
