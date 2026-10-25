@@ -44,6 +44,7 @@ saas-backend-v2/
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
 │   ├── package-assistant.py    # the assistant's arm64 code zip -> S3, for sam deploy
 │   ├── enable-transaction-search.sh  # once per account: the assistant's traces in CloudWatch
+│   ├── check-assistant-data.py # the assistant's table against its data model (read-only)
 │   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
 │   ├── replay-outbox.py        # publish saved events again after an outage
 │   └── rename-project.py       # give a new copy of the template its own name
