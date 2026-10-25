@@ -10,6 +10,7 @@ from shared.events import Event
 from accounts.models import Invitation
 
 USER_INVITED = "UserInvited"
+MEMBER_REMOVED = "MemberRemoved"
 
 
 def user_invited(invitation: Invitation) -> Event:
@@ -20,3 +21,11 @@ def user_invited(invitation: Invitation) -> Event:
         "invited_by": invitation.invited_by,
         "tenant_name": invitation.tenant_name,
     })
+
+
+def member_removed(tenant_id: str, user_id: str, removed_by: str) -> Event:
+    """
+    The member left the workspace (removed_by is themselves) or an owner or
+    admin removed them: the assistant deletes their conversations there.
+    """
+    return Event(MEMBER_REMOVED, tenant_id, {"user_id": user_id, "removed_by": removed_by})

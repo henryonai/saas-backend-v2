@@ -90,6 +90,13 @@ Parameters:
       Network for the assistant's terminal. SANDBOX = no internet (AWS says S3 stays reachable,
       but the sandbox has no AWS role). PUBLIC = internet (pip install, curl), so the model's
       commands could also send data out.
+  AssistantConversationDays:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >-
+      Days the assistant keeps a conversation after its last message. 0 = until its user
+      deletes it or leaves the workspace, as in ChatGPT.
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
@@ -870,17 +877,19 @@ Resources:
             - { AttributeName: gsi1pk, KeyType: HASH }
             - { AttributeName: gsi1sk, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
-      # Old usage, and conversations CONVERSATION_DAYS after their last message:
-      # only a conversation's META has a TTL. The stream brings its removal to
-      # the purge worker, which deletes the messages and checkpoints (purge.py).
+      # Old usage, and, if AssistantConversationDays is set, conversations that
+      # many days after their last message: only a conversation's META has a
+      # TTL. The stream brings its removal to the purge worker, which deletes
+      # the messages and checkpoints (purge.py).
       TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
       StreamSpecification: { StreamViewType: OLD_IMAGE }
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
   # Each agent's state in each conversation: LangGraph checkpoints, written
   # by DynamoDBSaver (langgraph-checkpoint-aws), which names the keys and the
-  # TTL attribute itself. Each one expires CONVERSATION_DAYS after it was
-  # written; an active conversation keeps writing new ones.
+  # TTL attribute itself. Each one expires CHECKPOINT_DAYS (30, settings.py)
+  # after it was written; an active conversation keeps writing new ones, and
+  # an agent whose checkpoints expired starts again from the history.
   AssistantCheckpointTable:
     Type: AWS::DynamoDB::Table
     Condition: HasAssistant
@@ -1045,7 +1054,7 @@ Resources:
         OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParam
         REGION: !Ref AWS::Region
         SANDBOX_ID: !GetAtt AssistantSandbox.CodeInterpreterId
-        CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # after its last message, a conversation goes, checkpoints and all
+        CONVERSATION_DAYS: !Ref AssistantConversationDays   # 0: kept until deleted; else it goes, checkpoints and all
         # ADOT's LangChain instrumentation logs every model call's messages (the
         # conversation so far, the answer) to this runtime's log group, and
         # traces each model call and middleware step. Dev keeps both, the
@@ -1112,7 +1121,7 @@ Resources:
           POWERTOOLS_SERVICE_NAME: assistant
           ASSISTANT_TABLE: !Ref AssistantTable
           PURGE_QUEUE_URL: !Ref AssistantPurgeQueue
-          CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # as the runtime's: each message moves the expiry on
+          CONVERSATION_DAYS: !Ref AssistantConversationDays   # as the runtime's: each message moves the expiry on
       Policies:
         - Statement:
             - Effect: Allow
@@ -1127,8 +1136,9 @@ Resources:
         OneDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: DELETE } }
 
   # Deleted conversations, for the agents' checkpoints of them: hundreds of
-  # records, too many for the request (assistant/purge.py). Also where the
-  # purge of an expired conversation goes when it keeps failing.
+  # records, too many for the request (assistant/purge.py), and members who
+  # left a workspace, for all their conversations there. Also where the purge
+  # of an expired conversation goes when it keeps failing.
   AssistantPurgeDLQ:
     Type: AWS::SQS::Queue
     Condition: HasAssistant
@@ -1161,7 +1171,10 @@ Resources:
         - Statement:
             - Effect: Allow
               Action: [dynamodb:Query, dynamodb:BatchWriteItem]
-              Resource: [!GetAtt AssistantCheckpointTable.Arn, !GetAtt AssistantTable.Arn]
+              Resource:
+                - !GetAtt AssistantCheckpointTable.Arn
+                - !GetAtt AssistantTable.Arn
+                - !Sub "${AssistantTable.Arn}/index/gsi1"   # a removed member's conversations
             - Effect: Allow
               Action: [s3:ListBucket]
               Resource: !GetAtt AssistantCheckpointBucket.Arn
@@ -1191,11 +1204,57 @@ Resources:
             MaximumRetryAttempts: 5
             DestinationConfig: { OnFailure: { Destination: !GetAtt AssistantPurgeDLQ.Arn } }
 
+  # A member who left a workspace, or was removed (accounts' MemberRemoved):
+  # the purge worker deletes their conversations there.
+  AssistantMembersRule:
+    Type: AWS::Events::Rule
+    Condition: HasAssistant
+    Properties:
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source: [saas.app]
+        detail-type: [MemberRemoved]
+      Targets:
+        - Id: AssistantPurgeQueue
+          Arn: !GetAtt AssistantPurgeQueue.Arn
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 3600 }
+          DeadLetterConfig: { Arn: !GetAtt AssistantPurgeDLQ.Arn }
+
+  AssistantPurgeQueuePolicy:            # the HTTP API sends with its role; EventBridge needs this
+    Type: AWS::SQS::QueuePolicy
+    Condition: HasAssistant
+    Properties:
+      Queues: [!Ref AssistantPurgeQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt AssistantPurgeQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt AssistantMembersRule.Arn }
+
+  AssistantPurgeDLQPolicy:              # the rule's undelivered events (DeadLetterConfig above)
+    Type: AWS::SQS::QueuePolicy
+    Condition: HasAssistant
+    Properties:
+      Queues: [!Ref AssistantPurgeDLQ]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt AssistantPurgeDLQ.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt AssistantMembersRule.Arn }
+
   AssistantPurgeDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Condition: HasAssistant
     Properties:
-      AlarmDescription: Deleted or expired assistant conversations still have data (messages in the purge dead-letter queue)
+      AlarmDescription: >-
+        Deleted, expired or removed members' assistant conversations still have data
+        (messages in the purge dead-letter queue)
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt AssistantPurgeDLQ.QueueName }]

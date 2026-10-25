@@ -143,6 +143,7 @@ fields such as `subscription_revision`).
 | Event | Published by | Used by |
 |---|---|---|
 | `UserInvited` | accounts | notifications (invitation email) |
+| `MemberRemoved` | accounts | assistant (deletes the member's conversations in that workspace) |
 | `OrderCreated` | orders | notifications (in-app) |
 | `SubscriptionChanged` (with `revision`) | billing | accounts (plan copy), notifications |
 | `PaymentFailed` | billing | notifications |
@@ -488,7 +489,8 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
   - `OutboxLagAlarm`: events have waited more than 5 minutes to be published.
     The relay keeps retrying; see `outbox-relay` in the app log group.
   - Messages in any dead-letter queue (accounts, notifications, outbox, the
-    assistant's purge). For accounts and notifications these are events the
+    assistant's purge). For accounts, notifications and the purge's
+    `MemberRemoved` these are events the
     worker failed 5 times, or that EventBridge couldn't deliver to the queue
     within an hour (their `ERROR_CODE` message attribute says why): fix the
     cause and move the messages back with SQS "Start DLQ redrive". The outbox

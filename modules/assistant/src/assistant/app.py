@@ -26,7 +26,8 @@ Each request:
      still to be answered (start it, then follow it); else NOT_FOUND
   3. the run: the agent answers, with middleware for the token cap, as AG-UI
      events (a new conversation is titled meanwhile); it ends early if the
-     user pressed Stop
+     user pressed Stop. An agent whose checkpoints of the conversation
+     expired starts again from its side of the history (restored)
   4. the history gets what streamed, however the run ended, and the
      conversation's run is removed; if the conversation was deleted
      meanwhile, the agent's checkpoints of it go too
@@ -52,7 +53,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from shared.auth import user_from_claims
 from shared.errors import AppError, InvalidRequest, NotFound, Unauthorized
 
-from assistant.agui import AgUiStream, Transcript, error_event, internal_error
+from assistant.agui import AgUiStream, Transcript, agent_messages, error_event, internal_error
 from assistant.container import get_agents, get_conversation_log, get_titles
 from assistant.context import SESSION_ID, AgentContext, actor_of
 from assistant.factory import thread_config
@@ -153,8 +154,11 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
             raise NotFound(f"No agent named {run.agent!r}. Agents: {', '.join(sorted(agents))}.")
         stop_requested = stop_check(history, context, run_id)
         config = {**thread_config(context, run.agent), "callbacks": [stop_model]}
+        # The checkpoint as saved (like keep_what_the_user_saw), or None.
+        saved = agent.checkpointer.get_tuple(config)
+        earlier = rewound(saved, run.rewind_to, log) if saved else restored(history, context, run, log)
         # The user's message keeps its AG-UI id: an edit or a retry finds it (rewound).
-        messages = [*rewound(agent, config, run.rewind_to, log), HumanMessage(run.prompt, id=run.message_id)]
+        messages = [*earlier, HumanMessage(run.prompt, id=run.message_id)]
         # Subagents' own output doesn't come through here (see delegation.py), only the calling agent's.
         # durability="exit": one checkpoint when the run ends (stopped, failed or done), not one per step.
         stream = agent.stream({"messages": messages}, config, context=context, stream_mode="messages",
@@ -187,7 +191,7 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
     finally:
         # What streamed, however the run ended; before RUN_FINISHED, so a
         # client that reloads the conversation then finds all of it.
-        if keep_history(history, context, run_id, transcript, log) is False and config is not None:
+        if keep_history(history, context, run, transcript, log) is False and config is not None:
             forget(agent, config, log)
 
     if naming is not None:
@@ -267,24 +271,39 @@ class Streamed:
         return list(self._messages.values())
 
 
-def rewound(agent, config: dict, message_id: str | None, log: dict) -> list[BaseMessage]:
+def rewound(saved, message_id: str | None, log: dict) -> list[BaseMessage]:
     """
     An edited message, or one sent again: the agent's side of the
-    conversation goes back to before that user message, as the history did
-    (ConversationService.send). Read from the checkpoint as saved, like
-    keep_what_the_user_saw. Nothing to undo when the agent never got the
-    message (its run never checkpointed), or it predates the messages' ids
-    (before October 2026).
+    conversation (its checkpoint as `saved`) goes back to before that user
+    message, as the history did (ConversationService.send). Nothing to undo
+    when the agent never got the message (its run never checkpointed), or it
+    predates the messages' ids (before October 2026).
     """
     if message_id is None:
         return []
-    saved = agent.checkpointer.get_tuple(config)
-    messages = saved.checkpoint["channel_values"].get("messages", []) if saved else []
+    messages = saved.checkpoint["channel_values"].get("messages", [])
     at = next((i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and m.id == message_id), None)
     if at is None:
         logger.info("The agent doesn't have the message it answers again; nothing to undo", extra=log)
         return []
     return [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages[:at]]
+
+
+def restored(history: ConversationLog, context: AgentContext, run: Run, log: dict) -> list[BaseMessage]:
+    """
+    The agent has no checkpoint of the conversation: it never answered in it
+    (nothing to restore), its checkpoints expired while the conversation is
+    kept (CHECKPOINT_DAYS without a message), or a run died before writing
+    its first. It starts again from what the history has of its side of the
+    conversation, before this message: the same messages, so it remembers
+    what the user sees. An edit's later messages are gone from the history
+    already.
+    """
+    messages = agent_messages(history.earlier(context, run))
+    if messages:
+        logger.info("Restored the agent's side of the conversation from its history",
+                    extra={**log, "messages": len(messages)})
+    return messages
 
 
 def keep_what_the_user_saw(agent, config: dict, streamed: list[BaseMessage], log: dict) -> None:
@@ -315,7 +334,7 @@ def keep_what_the_user_saw(agent, config: dict, streamed: list[BaseMessage], log
                        exc_info=True)
 
 
-def keep_history(history: ConversationLog, context: AgentContext, run_id: str, transcript: Transcript,
+def keep_history(history: ConversationLog, context: AgentContext, run: Run, transcript: Transcript,
                  log: dict) -> bool | None:
     """
     Best effort: the user has the answer already, and the agent its
@@ -323,7 +342,7 @@ def keep_history(history: ConversationLog, context: AgentContext, run_id: str, t
     saving failed.
     """
     try:
-        return history.record(context, run_id, transcript.messages)
+        return history.record(context, run.run_id, transcript.messages, agent=run.agent)
     except Exception:
         logger.exception("Could not save the conversation's history", extra=log)
         return None

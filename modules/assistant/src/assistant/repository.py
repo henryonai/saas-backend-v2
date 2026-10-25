@@ -4,8 +4,9 @@ Assistant table:
   pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = META              a conversation (models.Conversation),
                                                                  with its run while one answers
   pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = MSG#<000001>      one of its AG-UI messages, in order, up to
-                                                                 META's message_count, with the user's rating
-                                                                 of an answer
+                                                                 META's message_count, with the agent it was
+                                                                 said to or by, and the user's rating of an
+                                                                 answer
   pk = TENANT#<t>                         sk = USER#<u>#HOUR#<YYYY-MM-DDTHH>  messages a user sent that hour (UTC)
   gsi1pk = TENANT#<t>#USER#<u>#CONVS      gsi1sk = <updated_at>  on META only: the user's list, newest first
 
@@ -13,15 +14,18 @@ The tenant is part of every key, and the user of every conversation key, so
 one workspace never sees another's usage and one user never sees another's
 conversations. Usage expires (TTL) about 13 months after the month started,
 a user's hourly count an hour after its hour.
-A conversation expires whole, some days after its last message: only its
-META has a TTL (expires_at, moved on by every message), so a long
-conversation never loses its oldest messages. When TTL removes the META, the
-table's stream has the purge worker delete the messages and the agents'
-checkpoints (purge.py); until then, reads treat the conversation as gone.
+A conversation is kept until its user deletes it, or leaves the workspace
+(purge.py). A stack can have it expire instead (CONVERSATION_DAYS), whole,
+some days after its last message: only its META has a TTL (expires_at, moved
+on by every message), so a long conversation never loses its oldest
+messages. When TTL removes the META, the table's stream has the purge worker
+delete the messages and the agents' checkpoints; until then, reads treat the
+conversation as gone.
 """
 import base64
 import json
 import time
+from collections.abc import Iterator
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
@@ -199,7 +203,7 @@ class ConversationRepository:
         self.table = table
 
     def add_question(self, tenant_id: str, user_id: str, thread_id: str, *, message: dict, run: Run, title: str,
-                     at: int | None, count: int, now: str, expires_at: int, stale_before: str) -> bool:
+                     at: int | None, count: int, now: str, expires_at: int | None, stale_before: str) -> bool:
         """
         The user's message and the run that will answer it: creates the
         conversation the first time (titled `title`), adds the message as
@@ -207,19 +211,20 @@ class ConversationRepository:
         and everything after it (edited, or sent again), and sets the run.
         `count` is the message_count the caller read: False if it changed
         meanwhile, or while an earlier run, started after `stale_before`, is
-        still answering.
+        still answering. `expires_at` None: the conversation is kept.
         """
         position = at if at is not None else count + 1
         names = {"#thread": "thread_id", "#title": "title", "#source": "title_source", "#created": "created_at",
                  "#updated": "updated_at", "#expires": "expires_at", "#agents": "agents", "#run": "run",
                  "#question": "question_id", "#count": "message_count"}
-        values = {":thread": thread_id, ":title": title, ":message": "message", ":now": now, ":expires": expires_at,
+        values = {":thread": thread_id, ":title": title, ":message": "message", ":now": now,
                   ":list": _list_pk(tenant_id, user_id), ":agents": {run.agent}, ":run": run.model_dump(),
                   ":question": message["id"], ":stale": stale_before, ":position": position, ":count": count}
+        expiry, remove = _expiry(expires_at, values)
         update = ("SET #thread = :thread, #title = if_not_exists(#title, :title), "
                   "#source = if_not_exists(#source, :message), #created = if_not_exists(#created, :now), "
-                  "#updated = :now, #expires = :expires, gsi1pk = :list, gsi1sk = :now, #run = :run, "
-                  "#question = :question, #count = :position ADD #agents :agents")
+                  f"#updated = :now{expiry}, gsi1pk = :list, gsi1sk = :now, #run = :run, "
+                  f"#question = :question, #count = :position{remove} ADD #agents :agents")
         condition = ("(attribute_not_exists(#run) OR #run.since < :stale) "
                      "AND (attribute_not_exists(#count) OR #count = :count)")
         try:
@@ -234,7 +239,7 @@ class ConversationRepository:
             if is_condition_failure(e):
                 return False
             raise
-        self._put_messages(tenant_id, user_id, thread_id, [message], position)
+        self._put_messages(tenant_id, user_id, thread_id, [message], position, run.agent)
         # What came after it is gone from the conversation: message_count says
         # so already, and reads stop there, so a delete that fails half way
         # leaves nothing anyone sees, and later messages write over it.
@@ -242,25 +247,29 @@ class ConversationRepository:
         return True
 
     def add_answer(self, tenant_id: str, user_id: str, thread_id: str, run_id: str, messages: list[dict], *,
-                   now: str, expires_at: int) -> bool:
+                   agent: str, now: str, expires_at: int | None) -> bool:
         """
-        After the run: appends what it streamed (maybe nothing), then removes
-        the run, in that order, so whoever finds it answered finds the whole
-        answer. False if the conversation no longer exists (deleted meanwhile).
+        After the run: appends what it streamed (maybe nothing), as `agent`'s,
+        then removes the run, in that order, so whoever finds it answered
+        finds the whole answer. False if the conversation no longer exists
+        (deleted meanwhile).
         """
         key = {"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"}
         try:
             if messages:
+                values = {":now": now, ":n": len(messages)}
+                expiry, remove = _expiry(expires_at, values)
                 result = self.table.update_item(
                     Key=key,
-                    UpdateExpression="SET #updated = :now, #expires = :expires, gsi1sk = :now ADD #count :n",
+                    UpdateExpression=f"SET #updated = :now{expiry}, gsi1sk = :now{remove} ADD #count :n",
                     ConditionExpression="attribute_exists(pk)",
                     ExpressionAttributeNames={"#updated": "updated_at", "#expires": "expires_at",
                                               "#count": "message_count"},
-                    ExpressionAttributeValues={":now": now, ":expires": expires_at, ":n": len(messages)},
+                    ExpressionAttributeValues=values,
                     ReturnValues="UPDATED_NEW",
                 )
-                self._put_messages(tenant_id, user_id, thread_id, messages, int(result["Attributes"]["message_count"]))
+                self._put_messages(tenant_id, user_id, thread_id, messages, int(result["Attributes"]["message_count"]),
+                                   agent)
             self.table.update_item(Key=key, UpdateExpression="REMOVE #run", ConditionExpression="#run.run_id = :run",
                                    ExpressionAttributeNames={"#run": "run"},
                                    ExpressionAttributeValues={":run": run_id})
@@ -286,16 +295,18 @@ class ConversationRepository:
                 return False
             raise
 
-    def _put_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], last: int) -> None:
+    def _put_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], last: int,
+                      agent: str) -> None:
         """
         Numbers the messages so that the last one is `last` (the conversation's
-        message_count). No TTL of their own: they go with the conversation.
+        message_count), each with the agent it was said to or by. No TTL of
+        their own: they go with the conversation.
         """
         pk = _conversation_pk(tenant_id, user_id, thread_id)
         first = last - len(messages) + 1
         with self.table.batch_writer() as batch:
             for n, message in enumerate(messages, start=first):
-                batch.put_item(Item={"pk": pk, "sk": _message_sk(n), "message": message})
+                batch.put_item(Item={"pk": pk, "sk": _message_sk(n), "message": message, "agent": agent})
 
     def _delete_messages(self, tenant_id: str, user_id: str, thread_id: str, positions: range) -> None:
         pk = _conversation_pk(tenant_id, user_id, thread_id)
@@ -376,7 +387,9 @@ class ConversationRepository:
         """
         item = self.table.get_item(Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
                                    ConsistentRead=True).get("Item")
-        return _conversation(item) if item and (expired or item["expires_at"] > time.time()) else None
+        if not item or not expired and "expires_at" in item and item["expires_at"] <= time.time():
+            return None
+        return _conversation(item)
 
     def messages(self, tenant_id: str, user_id: str, thread_id: str, limit: int,
                  last: int | None = None) -> list[dict]:
@@ -404,13 +417,35 @@ class ConversationRepository:
         return [item["message"] for item in items], {item["message"]["id"]: item["rating"] for item in items
                                                       if "rating" in item}
 
+    def all_messages(self, tenant_id: str, user_id: str, thread_id: str,
+                     last: int) -> list[tuple[str | None, dict]]:
+        """
+        Every message up to `last` (the conversation's message_count), oldest
+        first, with the agent it was said to or by (None: saved before
+        messages had one).
+        """
+        if last < 1:
+            return []
+        params = {
+            "KeyConditionExpression": Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id))
+            & Key("sk").between(_message_sk(1), _message_sk(last)),
+            "ConsistentRead": True,
+        }
+        said = []
+        while True:
+            result = self.table.query(**params)
+            said += [(item.get("agent"), item["message"]) for item in result["Items"]]
+            if "LastEvaluatedKey" not in result:
+                return said
+            params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
     def list(self, tenant_id: str, user_id: str, limit: int,
              cursor: str | None = None) -> tuple[list[Conversation], str | None]:
         """Newest first. Returns the conversations and a cursor for the next page (None at the end)."""
         params = {
             "IndexName": "gsi1",
             "KeyConditionExpression": Key("gsi1pk").eq(_list_pk(tenant_id, user_id)),
-            "FilterExpression": Attr("expires_at").gt(int(time.time())),
+            "FilterExpression": Attr("expires_at").not_exists() | Attr("expires_at").gt(int(time.time())),
             "ScanIndexForward": False,
             "Limit": limit,
         }
@@ -423,6 +458,20 @@ class ConversationRepository:
         last = result.get("LastEvaluatedKey")
         next_cursor = _cursor(last["pk"].rsplit("#CONV#", 1)[1], last["gsi1sk"]) if last else None
         return [_conversation(item) for item in result["Items"]], next_cursor
+
+    def last_used_by(self, tenant_id: str, user_id: str, until: str) -> Iterator[Conversation]:
+        """
+        Every conversation of the user's in the workspace, expired or not,
+        whose last message was at or before `until` (an ISO time, as stored).
+        """
+        params = {"IndexName": "gsi1",
+                  "KeyConditionExpression": Key("gsi1pk").eq(_list_pk(tenant_id, user_id)) & Key("gsi1sk").lte(until)}
+        while True:
+            result = self.table.query(**params)
+            yield from (_conversation(item) for item in result["Items"])
+            if "LastEvaluatedKey" not in result:
+                return
+            params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
 
     def delete(self, tenant_id: str, user_id: str, thread_id: str) -> int:
         """Removes the conversation and all its messages (whatever is left of them). Returns how many records."""
@@ -439,6 +488,18 @@ class ConversationRepository:
                     break
                 params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
         return deleted
+
+
+def _expiry(expires_at: int | None, values: dict) -> tuple[str, str]:
+    """
+    The parts of an update that set the conversation's TTL to `expires_at`,
+    or remove it (None: kept until its user deletes it): (", #expires =
+    :expires" for SET, or " REMOVE #expires" to go before ADD).
+    """
+    if expires_at is None:
+        return "", " REMOVE #expires"
+    values[":expires"] = expires_at
+    return ", #expires = :expires", ""
 
 
 def _cursor(thread_id: str, updated_at: str) -> str:

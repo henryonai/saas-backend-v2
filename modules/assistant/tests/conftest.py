@@ -159,7 +159,7 @@ def ctx():
     table = create_table("assistant-test", with_gsi1=True)
     usage = UsageService(usage=UsageRepository(table))
     conversations = ConversationRepository(table)
-    history = ConversationLog(conversations, days=30)
+    history = ConversationLog(conversations, days=0)   # kept until deleted, as template.yaml's default
     api, sandbox = FakeApi(), FakeSandbox()
     title_model = TitleModel(calls=[])
     titles = Titles(title_model, history, usage)
@@ -177,7 +177,7 @@ def ctx():
 
     # The HTTP API (handler.py) with this table, and the AgentCore Runtime app (app.py) with these agents.
     purges: list[list[str]] = []
-    service = ConversationService(conversations, usage=usage, days=30, purge=SimpleNamespace(send=purges.append))
+    service = ConversationService(conversations, usage=usage, days=0, purge=SimpleNamespace(send=purges.append))
     http_app.dependency_overrides[get_conversation_service] = lambda: service
     runs = Runs()
 
@@ -227,7 +227,8 @@ def ctx():
     # One event loop for every request, as uvicorn has: a run outlives the request that started it.
     with TestClient(create_app(lambda: state.agents, lambda: history, lambda: titles, runs)) as runtime:
         yield SimpleNamespace(table=table, usage=usage, api=api, sandbox=sandbox, state=state,
-                              conversations=conversations, history=history, title_model=title_model,
+                              conversations=conversations, history=history, service=service,
+                              title_model=title_model,
                               definitions=definitions, script=script, send=send, post=post, run=run, chat=chat,
                               runs=runs,
                               runtime=runtime, purges=purges, set_usage=set_usage, session=SESSION,

@@ -3,8 +3,9 @@ Conversations: sending a message, which saves it with the run that will
 answer it (the HTTP API), then running it (AgentCore: app.py, runs.py); what
 the agent keeps as it answers (ConversationLog, TitleMiddleware); following a
 run again after a reload; stopping it; the HTTP API that lists, reopens,
-renames and deletes them (handler.py); and the worker that deletes the
-agents' checkpoints of them (purge.py).
+renames and deletes them (handler.py); how long they are kept, and an agent
+that lost its checkpoints; and the worker that deletes the agents'
+checkpoints of them, and a removed member's conversations (purge.py).
 """
 import base64
 import json
@@ -32,6 +33,7 @@ from pydantic import TypeAdapter
 
 import assistant.app
 import assistant.purge
+from assistant.agui import agent_messages
 from assistant.app import Streamed, keep_what_the_user_saw
 from assistant.checkpoints import CheckpointPurge
 from assistant.context import AgentContext, checkpoint_session
@@ -42,6 +44,7 @@ from assistant.models import Run, current_month, iso
 from assistant.purge import process_batch
 from shared.auth import user_from_claims
 from testkit.http import FakeContext, call, claims
+from testkit.logs import captured_logs
 
 THREAD = "11111111-2222-3333-4444-555555555555"   # conftest's SESSION: the threadId is the session
 AGUI_MESSAGE = TypeAdapter(Message)
@@ -368,7 +371,7 @@ def test_an_answer_that_ends_after_a_delete_does_not_bring_the_conversation_back
     ctx.conversations.delete("t1", "alice", THREAD)
 
     for answer in ([{"id": "a1", "role": "assistant", "content": "x"}], []):
-        assert ctx.conversations.add_answer("t1", "alice", THREAD, run.run_id, answer,
+        assert ctx.conversations.add_answer("t1", "alice", THREAD, run.run_id, answer, agent="assistant",
                                             now="2026-10-24T08:00:01.000Z",
                                             expires_at=int(time.time()) + 3600) is False
     assert ctx.table.scan()["Items"] == []
@@ -630,7 +633,7 @@ def test_a_new_message_moves_the_conversation_to_the_top(ctx, api, alice):
     older = start(ctx, thread(1), "2026-10-24T08:01:00.000Z", title="Older")
     start(ctx, thread(2), "2026-10-24T08:02:00.000Z", title="Newer")
     ctx.conversations.add_answer("t1", "alice", thread(1), older.run_id,
-                                 [{"id": "a", "role": "assistant", "content": "x"}],
+                                 [{"id": "a", "role": "assistant", "content": "x"}], agent="assistant",
                                  now="2026-10-24T08:03:00.000Z", expires_at=int(time.time()) + 3600)
 
     assert [c["title"] for c in api.call("GET", "/assistant/conversations", alice)[1]["items"]] == ["Older", "Newer"]
@@ -699,6 +702,7 @@ def test_expired_conversations_are_gone_before_ttl_removes_them(ctx, api, alice)
 
 
 def test_a_conversation_expires_whole_some_days_after_its_last_message(ctx, alice):
+    ctx.history.days = ctx.service.days = 30   # a stack with AssistantConversationDays=30
     ctx.script(ctx.answer("Hello!"))
     ctx.chat("Hi", alice)
     first = stored(ctx).expires_at
@@ -712,6 +716,128 @@ def test_a_conversation_expires_whole_some_days_after_its_last_message(ctx, alic
     assert abs(stored(ctx).expires_at - (time.time() + 30 * 86400)) < 60
     items = [i for i in ctx.table.scan()["Items"] if i["sk"].startswith("MSG#")]
     assert len(items) == 4 and not [i for i in items if "expires_at" in i]
+
+
+# ---------- keeping a conversation, and the agent's side of it ----------
+
+def meta_item(ctx, user_id="alice", thread_id=THREAD) -> dict:
+    return ctx.table.get_item(Key={"pk": f"TENANT#t1#USER#{user_id}#CONV#{thread_id}", "sk": "META"})["Item"]
+
+
+def test_a_conversation_is_kept_until_its_user_deletes_it(ctx, api, alice):
+    ctx.script(ctx.answer("Hello!"))
+    ctx.chat("Hi", alice)
+
+    assert "expires_at" not in meta_item(ctx)   # no TTL: DynamoDB never removes it
+    assert [c["thread_id"] for c in api.call("GET", "/assistant/conversations", alice)[1]["items"]] == [THREAD]
+    assert [m["content"] for m in opened(api, alice)["messages"]] == ["Hi", "Hello!"]
+
+
+def test_a_conversation_that_was_to_expire_is_kept_from_its_next_message(ctx, alice):
+    ctx.history.days = ctx.service.days = 30   # saved while the stack had them expire, as dev's were
+    ctx.script(ctx.answer("Hello!"))
+    ctx.chat("Hi", alice)
+    assert stored(ctx).expires_at is not None
+
+    ctx.history.days = ctx.service.days = 0
+    ctx.script(ctx.answer("Sure."))
+    ctx.chat("And again", alice)
+
+    assert "expires_at" not in meta_item(ctx) and stored(ctx).message_count == 4
+
+
+def expire_checkpoints(ctx, user: dict, agent: str = "assistant", thread_id: str = THREAD) -> None:
+    """What CHECKPOINT_DAYS without a message does: the agent's checkpoints of the conversation are gone."""
+    config = thread_config(AgentContext(user=user_from_claims(user), authorization="", session_id=thread_id), agent)
+    ctx.state.checkpointer.delete_thread(config["configurable"]["thread_id"])
+    assert ctx.state.checkpointer.get_tuple(config) is None
+
+
+def sent(ctx, agent: str = "assistant") -> list[tuple[str, str]]:
+    """What the agent's model got in its first call of the last run, but the system prompt."""
+    return [(m.type, m.text) for m in ctx.model_calls(agent)[0] if m.type != "system"]
+
+
+def test_an_agent_whose_checkpoints_expired_starts_again_from_the_history(ctx, alice):
+    ctx.api.responses["/orders"] = {"items": [], "next_cursor": None}
+    ctx.script(ctx.tool_call("list_orders", {"limit": 5}), ctx.answer("You have no orders."))
+    ctx.chat("What did we order?", alice)
+    expire_checkpoints(ctx, alice)
+
+    ctx.script(ctx.answer("Still none."))
+    with captured_logs(assistant.app.logger) as logs:
+        events = ctx.chat("And now?", alice)
+
+    assert ctx.text(events) == "Still none."
+    model_got = [m for m in ctx.model_calls()[0] if m.type != "system"]
+    assert [m.type for m in model_got] == ["human", "ai", "tool", "ai", "human"]
+    assert [(c["name"], c["args"]) for c in model_got[1].tool_calls] == [("list_orders", {"limit": 5})]
+    assert model_got[2].tool_call_id == model_got[1].tool_calls[0]["id"]
+    assert [m.text for m in model_got if m.type != "tool"] == ["What did we order?", "", "You have no orders.",
+                                                               "And now?"]
+    assert [line["messages"] for line in logs() if line["message"].startswith("Restored")] == [4]
+    # It checkpoints again from there.
+    config = thread_config(AgentContext(user=user_from_claims(alice), authorization="", session_id=THREAD),
+                           "assistant")
+    assert len(ctx.state.checkpointer.get_tuple(config).checkpoint["channel_values"]["messages"]) == 6
+
+
+def test_each_agent_gets_back_only_its_own_side_of_the_conversation(ctx, alice):
+    ctx.script(ctx.answer("Hello from the assistant."))
+    ctx.chat("Hi assistant", alice)
+    ctx.script(ctx.answer("Hello from the analyst."), agent="analyst")
+    ctx.chat("Hi analyst", alice, agent="analyst")
+    expire_checkpoints(ctx, alice)   # the assistant's; the analyst still has its own
+
+    ctx.script(ctx.answer("Hello again."))
+    ctx.chat("Hi again", alice)
+
+    assert sent(ctx) == [("human", "Hi assistant"), ("ai", "Hello from the assistant."), ("human", "Hi again")]
+
+
+def test_messages_saved_before_they_named_their_agent_are_the_main_agents(ctx, alice):
+    ctx.script(ctx.answer("Hello!"))
+    ctx.chat("Hi", alice)
+    for item in ctx.table.scan()["Items"]:
+        if item["sk"].startswith("MSG#"):
+            ctx.table.update_item(Key={"pk": item["pk"], "sk": item["sk"]}, UpdateExpression="REMOVE #agent",
+                                  ExpressionAttributeNames={"#agent": "agent"})   # a reserved word
+    expire_checkpoints(ctx, alice)
+
+    ctx.script(ctx.answer("Hello again!"))
+    ctx.chat("Remember me?", alice)
+
+    assert sent(ctx) == [("human", "Hi"), ("ai", "Hello!"), ("human", "Remember me?")]
+
+
+def test_an_edit_after_the_checkpoints_expired_goes_back_as_the_history_did(ctx, alice):
+    ctx.script(ctx.answer("Paris."))
+    ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice)
+    ctx.script(ctx.answer("Berlin."))
+    ctx.run(ctx.post("And Germany?", alice, message_id="q2"), alice)
+    expire_checkpoints(ctx, alice)
+
+    ctx.script(ctx.answer("Rome."))
+    ctx.run(ctx.post("And Italy?", alice, message_id="q3", replaces="q2"), alice)
+
+    assert sent(ctx) == [("human", "Capital of France?"), ("ai", "Paris."), ("human", "And Italy?")]
+
+
+def test_a_tool_call_cut_off_mid_stream_is_left_out_of_what_the_agent_gets_back():
+    history = [
+        {"id": "u1", "role": "user", "content": "Count them"},
+        {"id": "a1", "role": "assistant", "content": "Let me look.", "toolCalls": [
+            {"id": "c1", "type": "function", "function": {"name": "list_orders", "arguments": "{}"}},
+            {"id": "c2", "type": "function", "function": {"name": "bash", "arguments": '{"command": "wc'}}]},
+        {"id": "t1", "role": "tool", "toolCallId": "c1", "content": "[]"},
+        {"id": "t2", "role": "tool", "toolCallId": "c2", "content": "Interrupted"},
+    ]
+
+    messages = agent_messages(history)
+
+    assert [m.type for m in messages] == ["human", "ai", "tool"]
+    assert messages[1].text == "Let me look." and [c["id"] for c in messages[1].tool_calls] == ["c1"]
+    assert messages[2].tool_call_id == "c1" and messages[0].id == "u1"
 
 
 def test_bad_input(api, alice):
@@ -882,6 +1008,37 @@ def test_the_purge_deletes_an_expired_conversation_once_ttl_removes_it(ctx, chec
     assert checkpoints.left(mine) == {}
     assert not [i for i in ctx.table.scan()["Items"] if i["pk"] == meta["pk"]]
     assert [m["content"] for m in ctx.conversations.messages("t1", "bob", THREAD, 50)] == ["Hi", "Hello Bob!"]
+
+
+def member_removed(tenant_id: str, user_id: str, occurred_at: str) -> dict:
+    """accounts' MemberRemoved as EventBridge puts it on the purge queue."""
+    return {"version": "0", "id": str(uuid4()), "detail-type": "MemberRemoved", "source": "saas.app",
+            "account": "123456789012", "time": "2026-10-24T10:00:00Z", "region": "ap-southeast-1", "resources": [],
+            "detail": {"tenant_id": tenant_id, "event_id": str(uuid4()), "occurred_at": occurred_at,
+                       "user_id": user_id, "removed_by": "owner"}}
+
+
+def test_a_removed_members_conversations_go(ctx, checkpoints):
+    start(ctx, thread(1), "2026-10-24T08:00:00.000Z")
+    start(ctx, thread(2), "2026-10-24T09:00:00.000Z", expires_in=-60)   # expired, TTL hasn't removed it yet
+    start(ctx, thread(3), "2026-10-24T08:00:00.000Z", user_id="bob")    # someone else's
+    start(ctx, thread(4), "2026-10-24T11:00:00.000Z")   # after the removal: invited back, the event came late
+    mine, bobs = checkpoint_session("t1:alice", thread(1), "assistant"), checkpoint_session("t1:bob", thread(3),
+                                                                                           "assistant")
+    checkpoints.converse(mine, "Hi")
+    checkpoints.converse(bobs, "Hi")
+    message = sqs(member_removed("t1", "alice", "2026-10-24T10:00:00.000000+00:00"))
+
+    with captured_logs(assistant.purge.logger) as logs:
+        assert process_batch(message, FakeContext(), checkpoints.purge, ctx.conversations) == {"batchItemFailures": []}
+
+    assert {i["pk"] for i in ctx.table.scan()["Items"] if "#CONV#" in i["pk"]} == {
+        f"TENANT#t1#USER#alice#CONV#{thread(4)}", f"TENANT#t1#USER#bob#CONV#{thread(3)}"}
+    assert checkpoints.left(mine) == {} and checkpoints.left(bobs) != {}
+    assert [line["conversations"] for line in logs() if line["message"].startswith("Purged a removed")] == [2]
+    # Delivered again (at least once): nothing left to do, nothing else goes.
+    assert process_batch(message, FakeContext(), checkpoints.purge, ctx.conversations) == {"batchItemFailures": []}
+    assert len([i for i in ctx.table.scan()["Items"] if "#CONV#" in i["pk"]]) == 4
 
 
 # ---------- the Lambdas stay light ----------

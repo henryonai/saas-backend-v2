@@ -70,7 +70,8 @@ src/assistant/
 ├── service.py, repository.py, models.py   usage per workspace; conversations and their history
 ├── api.py, handler.py   Lambda: the HTTP API for the users' conversations (sending a message too)
 ├── agent_names.py       the agents' names without loading them, for that Lambda
-├── purge.py             Lambda: what is left of a deleted (SQS) or expired (stream) conversation
+├── purge.py             Lambda: what is left of a deleted conversation or a removed member's (SQS), or an
+│                        expired one (stream)
 └── container.py         composition root (models from llm.py, the checkpointer, DynamoDB, SQS, httpx)
 ../main.py               what AgentCore starts (root of the zip)
 ```
@@ -189,10 +190,15 @@ checkpoints once, when it ends (`durability="exit"` in `app.handle`), not
 after every step: a run that dies with its microVM is lost to the agent, but
 the history has what streamed. Each checkpoint holds the agent's whole state,
 gzip-compressed; one over 350 KB goes to `AssistantCheckpointBucket`. Each
-expires `CONVERSATION_DAYS` after it was written (the library sets the
-bucket's lifecycle rule to match), and only the newest one matters, so an
-active conversation never loses its state; when the conversation is deleted
-or expires, the purge worker deletes them all. The thread id is a hash of user,
+expires `CHECKPOINT_DAYS` (30, `settings.py`) after it was written (the
+library sets the bucket's lifecycle rule to match), and only the newest one
+matters, so an active conversation never loses its state. An agent whose
+checkpoints expired while the conversation is kept starts again from the
+history (`app.restored`): its own side of it (each message is saved with the
+agent it was said to or by), turned back into its messages
+(`agui.agent_messages`). So it remembers what the user sees; only a tool call
+cut off mid-stream (Stop) is left out. When the conversation is deleted or
+expires, or its user leaves the workspace, the purge worker deletes them all. The thread id is a hash of user,
 session and agent (`thread_config()`): the client picks the session id, so
 someone sending another user's session id still gets their own conversation,
 and the table, which knows only threads, needs nothing else.
@@ -396,20 +402,26 @@ token (`handler.py`, a Lambda):
   list answers 500 for the first minutes (about 5 on dev, October 2026) while
   `IndexStatus` is `CREATING`. Chatting, reopening, and the history it writes
   meanwhile all work; the list then includes it.
-- **Expiry**: a conversation goes whole, `CONVERSATION_DAYS` after its last
-  message (30 on dev, 90 on prod). Only its `META` has a TTL (`expires_at`,
-  moved on by every message), so a long conversation never loses its oldest
-  messages while the agent still has them. Until TTL removes the `META`
-  (within days), the app treats the conversation as gone, and a message sent
-  to it is refused (404) rather than bringing it back. The removal reaches
-  `purge.py` through the table's stream, filtered to TTL's removals of a
-  `META`, and the worker deletes the messages and the agents' checkpoints. A
-  stream batch that keeps failing goes to the purge dead-letter queue, whose
-  alarm covers both. Messages saved before this change (dev, October 2026)
+- **Kept** until its user deletes it, or leaves the workspace (below), as in
+  ChatGPT: the history is small (35 conversations in about 200 KB on dev,
+  October 2026), and the large part, the agents' checkpoints, expires on its
+  own (above). A stack can set `AssistantConversationDays` (template.yaml)
+  instead: a conversation then goes whole that many days after its last
+  message. Only its `META` has a TTL (`expires_at`, moved on by every
+  message), so a long conversation never loses its oldest messages. Until
+  TTL removes the `META` (within days), the app treats the conversation as
+  gone, and a message sent to it is refused (404) rather than bringing it
+  back. The removal reaches `purge.py` through the table's stream, filtered
+  to TTL's removals of a `META`, and the worker deletes the messages and the
+  agents' checkpoints. A stream batch that keeps failing goes to the purge
+  dead-letter queue, whose alarm covers both. Set back to 0, the setting
+  keeps a conversation that was to expire from its next message on.
+  Messages saved before conversations expired whole (dev, October 2026)
   keep their own TTL and expire on their own.
 - **Continuing one** sends the same threadId, so the agent picks up from its
-  checkpoints. If its microVM stopped (15 minutes idle), a new one starts:
-  the first answer is slower, and the old sandbox's files are gone.
+  checkpoints, or, once they expired, from its side of the history. If its
+  microVM stopped (15 minutes idle), a new one starts: the first answer is
+  slower, and the old sandbox's files are gone.
 - **Deleting** removes the history at once, then `purge.py` (an SQS queue and
   a Lambda, with a dead-letter queue and an alarm) deletes the agents' copy:
   each one's checkpoint thread, hundreds of records for a short conversation,
@@ -421,6 +433,14 @@ token (`handler.py`, a Lambda):
   answers, the run stops at its next chunk (or after the tool it is in) and
   writes its last checkpoint then, possibly after the purge ran: so once its
   answer can't be saved, the run deletes its own thread too (`app.forget`).
+- **A member who leaves** the workspace, or is removed from it, loses their
+  conversations there: accounts saves `MemberRemoved` with the removal (one
+  transaction), EventBridge puts it on the purge queue, and the worker
+  deletes each of their conversations as a delete would, checkpoints first.
+  Only those last used before the removal: someone invited back keeps what
+  they said since, even if the event came late. The member's ID token works
+  until it expires (up to 15 minutes, as in every module): a conversation
+  they use in that time, after the worker ran, is kept.
 
 ## Deploy
 

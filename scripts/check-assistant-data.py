@@ -77,8 +77,9 @@ def check_conversation(pk: str, meta: dict | None, messages: dict[int, dict],
         problems.append("not in the user's list as it should be (gsi1pk/gsi1sk)")
     if meta.get("title_source") not in ("message", "model", "user"):
         problems.append(f"unknown title_source {meta.get('title_source')!r}")
-    late = [n for n in numbers
-            if "expires_at" in messages[n] and int(messages[n]["expires_at"]) > int(meta["expires_at"])]
+    # A conversation without expires_at is kept until its user deletes it (AssistantConversationDays 0).
+    late = [n for n in numbers if "expires_at" in meta
+            and "expires_at" in messages[n] and int(messages[n]["expires_at"]) > int(meta["expires_at"])]
     if late:
         problems.append(f"{len(late)} messages expire after their conversation")
     rated = [messages[n] for n in numbers if "rating" in messages[n]]
@@ -103,7 +104,7 @@ def check_conversation(pk: str, meta: dict | None, messages: dict[int, dict],
         since = datetime.fromisoformat(run["since"].replace("Z", "+00:00"))
         if datetime.now(UTC) - since > RUN_LIMIT:
             problems.append(f"a run left behind since {run['since']} (its answer was never saved)")
-    if int(meta["expires_at"]) < now:
+    if "expires_at" in meta and int(meta["expires_at"]) < now:
         notes.append("expired, waiting for TTL to remove it (the app already hides it)")
     return problems, notes
 

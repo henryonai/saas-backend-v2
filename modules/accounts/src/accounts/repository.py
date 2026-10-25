@@ -136,8 +136,11 @@ class AccountRepository:
                 return False
             raise
 
-    def remove_member(self, tenant_id: str, user_id: str) -> bool:
-        """Removes the member and frees their seat. False if not found (or the owner)."""
+    def remove_member(self, tenant_id: str, user_id: str, event: Event) -> bool:
+        """
+        Removes the member, frees their seat and saves the event, in one
+        transaction. False if not found (or the owner): then no event.
+        """
         try:
             transact(
                 self.table,
@@ -149,6 +152,7 @@ class AccountRepository:
                 }},
                 membership={"Delete": {"Key": _membership_key(user_id)}},
                 seats=_seats(tenant_id, -1),
+                event=outbox_put(event),
             )
             return True
         except ConditionFailed:
