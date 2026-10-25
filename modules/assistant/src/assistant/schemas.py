@@ -35,7 +35,8 @@ from pydantic import BaseModel, Field
 from assistant.agent_names import MAIN_AGENT
 from assistant.models import Conversation, Rating
 
-# The agent endpoint's RUN_ERROR codes, by status, like the HTTP API's errors; the names AgentCore uses for its own where they overlap.
+# The agent endpoint's RUN_ERROR codes, by status, like the HTTP API's errors;
+# the names AgentCore uses for its own where they overlap.
 ERROR_CODES = {
     400: "VALIDATION_ERROR",
     401: "UNAUTHORIZED",
