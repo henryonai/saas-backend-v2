@@ -9,8 +9,8 @@ Assistant table:
 The tenant is part of every key, and the user of every conversation key, so
 one workspace never sees another's usage and one user never sees another's
 conversations. Usage expires (TTL) about 13 months after the month started;
-a conversation's records some days after they were written (the days of
-AgentCore Memory, which holds the agent's own copy).
+a conversation's records some days after they were written, like the
+agents' checkpoints of it (container.py).
 """
 import base64
 import json

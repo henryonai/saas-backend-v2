@@ -105,7 +105,7 @@ def active_run(conversation: Conversation, now: datetime | None = None) -> Run |
 
 
 def _expires_at(days: int) -> int:
-    """When a record written now expires: as long as AgentCore Memory keeps the agent's copy."""
+    """When a record written now expires: as long as the agents' checkpoints written now (container.py)."""
     return int(time.time()) + days * 24 * 3600
 
 
@@ -160,8 +160,8 @@ def _kept(message: dict) -> dict:
 
 
 class PurgeQueue(Protocol):
-    def send(self, actor_id: str, session_ids: list[str]) -> None:
-        """Asks the purge worker to delete these AgentCore Memory sessions' events."""
+    def send(self, threads: list[str]) -> None:
+        """Asks the purge worker to delete these checkpoint threads (purge.py)."""
         ...
 
 
@@ -170,9 +170,8 @@ class SqsPurgeQueue:
         self.client = client   # boto3 "sqs"
         self.queue_url = queue_url
 
-    def send(self, actor_id: str, session_ids: list[str]) -> None:
-        self.client.send_message(QueueUrl=self.queue_url,
-                                 MessageBody=json.dumps({"actor_id": actor_id, "session_ids": session_ids}))
+    def send(self, threads: list[str]) -> None:
+        self.client.send_message(QueueUrl=self.queue_url, MessageBody=json.dumps({"threads": threads}))
 
 
 NOT_FOUND = "No such conversation: it was deleted, or it expired."
@@ -249,15 +248,15 @@ class ConversationService:
 
     def delete(self, user: CurrentUser, thread_id: str) -> None:
         """
-        Gone from the list at once; the agent's own copy in AgentCore Memory
-        (the exchanges and each agent's checkpoints) goes in the background.
-        The purge is queued first: if deleting the history then fails, the
-        user deletes again, and the purge runs again, harmlessly.
+        Gone from the list at once; the agents' own copy (each one's
+        checkpoints) goes in the background. The purge is queued first: if
+        deleting the history then fails, the user deletes again, and the purge
+        runs again, harmlessly.
         """
         conversation = self._get(user, thread_id)
         actor_id = actor_of(user)
-        self.purge.send(actor_id, [thread_id, *(checkpoint_session(actor_id, thread_id, agent)
-                                                for agent in sorted(conversation.agents))])
+        if threads := [checkpoint_session(actor_id, thread_id, agent) for agent in sorted(conversation.agents)]:
+            self.purge.send(threads)
         self.conversations.delete(user.require_tenant(), user.user_id, thread_id)
 
     def _get(self, user: CurrentUser, thread_id: str) -> Conversation:

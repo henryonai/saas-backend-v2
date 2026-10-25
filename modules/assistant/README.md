@@ -3,9 +3,9 @@
 LangChain agents (`create_agent`) that answer signed-in users about their
 workspace, **each defined in a Markdown file** (Claude Code's subagent
 format). They run on **AgentCore Runtime** (one microVM per conversation)
-instead of Lambda, keep conversations and long-term memories in **AgentCore
-Memory**, and use the same Cognito ID token, plan catalog and module rules as
-the rest of the backend.
+instead of Lambda, keep each agent's state in each conversation as LangGraph
+checkpoints in **DynamoDB** (`DynamoDBSaver`), and use the same Cognito ID
+token, plan catalog and module rules as the rest of the backend.
 
 ```
 browser ──ID token──▶ HTTP API POST /assistant/conversations/{thread}/messages ──▶ handler.py (Lambda)
@@ -25,10 +25,10 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
                         ├─ UsageMiddleware         tokens of every model call → DynamoDB, stop at the cap
                         ├─ ConversationMiddleware  repair cut-off tool calls; send recent history only
                         ├─ PlanToolsMiddleware     hide tools the plan doesn't include
-                        ├─ MemoryMiddleware        recall → system prompt; save the exchange
                         ├─ TitleMiddleware         after the first answer, the model titles the conversation
                         ├─ Model/ToolCallLimit, ToolErrorMiddleware (built-in)
-                        ├─ checkpointer      AgentCoreMemorySaver (each agent's side of the conversation)
+                        ├─ checkpointer      DynamoDBSaver (each agent's side of the conversation;
+                        │                                   over 350 KB to S3)
                         ├─ tools ──user's own token──▶ HTTP API (/orders ...)
                         ├─ bash ──InvokeCodeInterpreter──▶ sandbox microVM (one per conversation,
                         │                                   no AWS role, no internet by default)
@@ -39,7 +39,7 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
 
 browser ──ID token──▶ HTTP API /assistant/conversations ──▶ handler.py (Lambda): list, open, rename,
                                                               delete, stop an answer
-                                                              └─ delete ──SQS──▶ purge.py: the Memory events
+                                                              └─ delete ──SQS──▶ purge.py: the checkpoints
 ```
 
 ## Files
@@ -57,19 +57,19 @@ src/assistant/
 │   ├── orders.py        list_orders, get_order (the HTTP API, with the user's token)
 │   ├── usage.py         assistant_usage
 │   └── bash.py          bash (the sandbox)
-├── middleware/          one file per middleware (usage, conversation, plan_tools, memory, title, errors)
+├── middleware/          one file per middleware (usage, conversation, plan_tools, title, errors)
 ├── app.py               AgentCore entry point (the SDK's AGUIApp): auth, the run, stop, history, stream
 ├── runs.py              this microVM's runs: each runs in a worker thread into a log any request reads
 ├── agui.py              the agent's stream → AG-UI events; Transcript: events → AG-UI messages
 ├── context.py           AgentContext: who the agents work for (runtime context, never in a prompt)
 ├── schemas.py           the AG-UI request and error codes: the frontend contract with AgentCore
-├── memory.py            AgentCore Memory adapter: recall() / remember() / forget()
+├── checkpoints.py       deletes a thread's checkpoints, as DynamoDBSaver laid them out (boto3 only)
 ├── sandbox.py           AgentCore Code Interpreter adapter: one sandbox per conversation
 ├── service.py, repository.py, models.py   usage per workspace; conversations and their history
 ├── api.py, handler.py   Lambda: the HTTP API for the users' conversations (sending a message too)
 ├── agent_names.py       the agents' names without loading them, for that Lambda
-├── purge.py             Lambda: deletes a deleted conversation from AgentCore Memory (SQS)
-└── container.py         composition root (models from llm.py, Memory, DynamoDB, SQS, httpx)
+├── purge.py             Lambda: deletes a deleted conversation's checkpoints (SQS)
+└── container.py         composition root (models from llm.py, the checkpointer, DynamoDB, SQS, httpx)
 ../main.py               what AgentCore starts (root of the zip)
 ```
 
@@ -121,8 +121,8 @@ answer comes back as the `task` tool's result. The user sees only the calling
 agent's words (a `TOOL_CALL_START` named `task` marks the hand-off). Two
 differences, both to bound a message's cost: an agent may only call the
 subagents it lists, and a subagent can't delegate further (one level). A
-subagent keeps no checkpoints and no long-term memory, so delegating adds
-model tokens (counted against the same allowance) but no Memory writes.
+subagent keeps no checkpoints, so delegating adds model tokens (counted
+against the same allowance) but no checkpoint writes.
 
 **Talking to an agent directly:** the request's `"agent"` field picks any
 agent (default `assistant`). Each agent keeps its own side of a conversation
@@ -170,22 +170,26 @@ details the main conversation doesn't need: analysis, reports, research.
   model call is sent only the recent history (`MAX_HISTORY_TOKENS`, cut at a
   user message), so a long conversation costs the same per call; the
   checkpoint keeps everything.
-- `MemoryMiddleware.before_agent` searches AgentCore Memory once per message
-  (`/actors/<tenant_id>:<user_id>/`), `wrap_model_call` adds the results to the
-  system prompt (never to the messages, so they don't pile up), and
-  `after_agent` saves the user's words and the final answer as a conversational
-  event. AgentCore extracts facts and preferences from those in the background
-  (strategies in `template.yaml`).
 - Built-in `ModelCallLimitMiddleware` (the agent's `maxTurns`, default 15) and
   `ToolCallLimitMiddleware` (15) bound one run, whatever the model decides; a
   subagent's run has its own. `ToolErrorMiddleware` turns a
   tool's exception into a result the model can explain (details only in the
   logs) instead of failing the message.
 
-The conversation itself is checkpointed by `AgentCoreMemorySaver`. Its thread
-id is a hash of user and session (`thread_config()`): the client picks the
-session id, so someone sending another user's session id still gets their own
-conversation, whatever checkpointer is used.
+The conversation itself is checkpointed by `DynamoDBSaver`
+(langgraph-checkpoint-aws) in its own table, `AssistantCheckpointTable`: the
+library names the keys (`PK`, `SK`) and the TTL attribute (`ttl`), and writes
+several records per step. Each checkpoint holds the agent's whole state,
+gzip-compressed; one over 350 KB goes to `AssistantCheckpointBucket`. Each
+expires `CONVERSATION_DAYS` after it was written (the library sets the
+bucket's lifecycle rule to match), and only the newest one matters, so an
+active conversation never loses its state. The thread id is a hash of user,
+session and agent (`thread_config()`): the client picks the session id, so
+someone sending another user's session id still gets their own conversation,
+and the table, which knows only threads, needs nothing else.
+
+There is no long-term memory across conversations: the agent knows what it
+was told in this conversation, and what the tools return.
 
 **Tools** call the existing HTTP API with the caller's own token. The API
 checks the tenant and the role as it does for the frontend, no module imports
@@ -338,9 +342,8 @@ token (`handler.py`, a Lambda):
 - **Stored** in the assistant table, under the user's own keys:
   `TENANT#<t>#USER#<u>#CONV#<threadId>` with `META` and `MSG#<n>` items, and
   the index `gsi1` for the list (`repository.py`). Every record expires
-  `CONVERSATION_DAYS` after it was written (30 on dev, 90 on prod), as long
-  as AgentCore Memory keeps the agent's copy (`EventExpiryDuration`): a
-  reopened conversation never shows more than the agent remembers. On a stack
+  `CONVERSATION_DAYS` after it was written (30 on dev, 90 on prod), like the
+  agents' checkpoints. On a stack
   that had the assistant before, the deploy that adds `gsi1` finishes before
   DynamoDB has built it, and DynamoDB refuses to read an index it's still
   building: the list answers 500 for the first minutes (about 5 on dev,
@@ -350,12 +353,13 @@ token (`handler.py`, a Lambda):
   checkpoints. If its microVM stopped (15 minutes idle), a new one starts:
   the first answer is slower, and the old sandbox's files are gone.
 - **Deleting** removes the history at once, then `purge.py` (an SQS queue and
-  a Lambda, with a dead-letter queue and an alarm) deletes the agent's copy in
-  AgentCore Memory: the conversation's exchanges and each agent's checkpoints.
-  Memory deletes one event per call (a short conversation already has
-  hundreds), so it runs in the background, and a retry continues where the
-  last try stopped. What the agent learned about the user in general (facts,
-  preferences) is not per conversation and stays.
+  a Lambda, with a dead-letter queue and an alarm) deletes the agents' copy:
+  each one's checkpoint thread, hundreds of records for a short conversation,
+  and any of its checkpoints in S3. It runs in the background, and a retry
+  continues where the last try stopped, since the checkpoints, which lead to
+  the rest, go last. `checkpoints.py` follows the library's record layout with
+  plain boto3 (the Lambda has no LangGraph); a test writes real checkpoints
+  with `DynamoDBSaver` and checks the purge leaves nothing.
 
 ## Deploy
 
@@ -411,15 +415,15 @@ Once per account and region:
 
 Existing sessions keep the code they started with: a new session id gets new
 code. Idle conversations stop their microVM after 15 minutes; the conversation
-continues from Memory in a new one.
+continues from its checkpoints in a new one.
 
 ## Run it locally
 
 ```bash
-uv run pytest modules/assistant                    # everything offline: fake model, Memory and API
+uv run pytest modules/assistant                    # everything offline: fake model, AWS (moto) and API
 ```
 
-Against the dev stack's table and Memory (your AWS credentials; the values in
+Against the dev stack's tables and bucket (your AWS credentials; the values in
 `.env`, see `.env.example`, with `OPENROUTER_API_KEY`), from the repository root:
 
 ```bash
@@ -439,14 +443,11 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   monthly totals the plan limits use.
 - **Messages count when they start**, even if the agent then fails. Tokens are
   counted per model call, as they are spent.
-- **Memory is best effort**: if AgentCore Memory fails, the agent answers
-  without memories and logs a warning. The checkpointer is not: without it
-  there is no conversation, so that fails the message (error event 500).
+- **The checkpointer is required**: without it there is no conversation, so
+  failing to read or write checkpoints fails the message (error event 500).
 - **Removing the assistant** (deploying with empty `AssistantCodeBucket` and
-  `AssistantCodeKey`) keeps its table and Memory, like every table here. To add
-  it back, first delete the retained Memory (`saas_<stage>_assistant`, its name
-  is fixed) or the deploy fails; the table is created new, so usage counts
-  start over.
+  `AssistantCodeKey`) keeps its tables and checkpoint bucket, like every table
+  here. Adding it back creates new ones, so usage counts start over.
 
 ## Why it's built this way (research, October 2026)
 
@@ -468,16 +469,20 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   built-in call limits per message. The code samples from that post use API
   Gateway usage plans in front of a Lambda proxy instead; with the browser calling
   AgentCore directly, the counters do that job.
-- **Memory as middleware.** `langgraph-checkpoint-aws` provides
-  `AgentCoreMemorySaver` (checkpoints as blob events) and `AgentCoreMemoryStore`;
-  AWS's LangChain guide saves messages from a pre-model hook and searches
-  memories to add context. Checkpoint blobs are not used for long-term
-  extraction, only conversational events are, hence `remember()`. Common advice:
-  save the user's original words, not the prompt with memories added.
-- **Isolation.** Pool model: one runtime and one Memory for every workspace,
-  scoped by `actor_id = "<tenant_id>:<user_id>"` from the verified token. AWS's
-  posts use the same composite actor id. IAM doesn't enforce it yet (one
-  execution role): see next steps.
+- **Checkpoints in DynamoDB, not AgentCore Memory.** `langgraph-checkpoint-aws`
+  offers both. Measured on dev with `AgentCoreMemorySaver` (October 2026): the
+  checkpoints were 49 times the size of the chat history (an 11-message
+  conversation, 2.7 MB against 53 KB), one answer made 36 `CreateEvent` calls
+  that added about a second of its 5, and short-term Memory is billed per GB
+  since 6 October. `DynamoDBSaver` writes to a table in the stack, compressed,
+  with a TTL and S3 for large checkpoints (AWS's DynamoDB guide for LangGraph).
+  The long-term memory that came with Memory (facts and preferences recalled
+  before each answer) went with it: those never expired and users couldn't see
+  or delete them (see next steps).
+- **Isolation.** Pool model: one runtime and one checkpoint table for every
+  workspace. Every key includes `"<tenant_id>:<user_id>"` from the verified
+  token: a conversation's keys, and the hash that names a checkpoint thread.
+  IAM doesn't enforce it yet (one execution role): see next steps.
 - **Lessons from people running it.** Keep `/ping` responsive (a blocked ping
   gets the session recycled: the entry point is a generator the SDK runs in a
   worker thread); unbuffered stdout or logs get lost when the microVM stops;
@@ -490,9 +495,13 @@ There is no authorizer locally, so the server trusts any token: never expose it.
 
 ### Next steps (not built yet)
 
-- **IAM-enforced memory isolation**: a token-vending role with tenant session
-  tags (ABAC), as in AWS's pool-model post, so a bug can't read another
-  tenant's memories.
+- **IAM-enforced isolation**: a token-vending role with tenant session tags
+  (ABAC), as in AWS's pool-model post, so a bug can't read another tenant's
+  conversations.
+- **Long-term memory across conversations**, if wanted again: `DynamoDBStore`
+  (semantic search on DynamoDB vector indexes, same package) or AgentCore
+  Memory's strategies, with an expiry and a page where users see and delete
+  what is remembered about them.
 - **Tools that change data**: idempotency keys plus `HumanInTheLoopMiddleware`
   (needs a resume flow in the frontend).
 - **Terminal data in and out**: a tool that writes workspace data straight into
@@ -505,11 +514,10 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   is user-typed data too.
 - **Long conversations**: older messages are dropped from what the model sees,
   not summarized. `SummarizationMiddleware` could keep their gist (its model
-  calls would need to count against the token cap too). In its default format,
-  `AgentCoreMemorySaver` also reads the whole thread on every message, so the
-  frontend should start a new conversation (session id) now and then.
+  calls would need to count against the token cap too). Each checkpoint holds
+  the whole conversation, so a long one writes more at every step.
 - **Conversations**: older messages of a conversation past 200 (open returns
-  the latest 200), search, and keeping history longer than the agent's memory
+  the latest 200), search, and keeping history longer than the checkpoints
   (which would need the agent to rebuild its context from the history).
 
 ### Sources
@@ -518,7 +526,7 @@ There is no authorizer locally, so the server trusts any token: never expose it.
 - [AG-UI on AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-agui.html), [its protocol contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-agui-protocol-contract.html) (errors as `RUN_ERROR`), [AG-UI events](https://docs.ag-ui.com/concepts/events)
 - [Direct code deployment](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-code-deploy.html), [for Python](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-code-deploy-python.html), [supported runtimes](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-code-deploy-supported-runtimes.html)
 - [Inbound JWT authorizer](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/inbound-jwt-authorizer.html), [header allowlist](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-header-allowlist.html), [execution role](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html)
-- [Memory with LangChain/LangGraph](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-integrate-lang.html), [memory organization](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-organization.html), [langchain-aws repository](https://github.com/langchain-ai/langchain-aws)
+- [DynamoDB as a checkpoint store for LangGraph](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ddb-langgraph-checkpoint.html), [AgentCore Memory with LangGraph](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-integrate-lang.html) (what it replaced), [AgentCore pricing](https://aws.amazon.com/bedrock/agentcore/pricing/), [langchain-aws repository](https://github.com/langchain-ai/langchain-aws)
 - [LangChain custom middleware](https://docs.langchain.com/oss/python/langchain/middleware/custom), [runtime context](https://docs.langchain.com/oss/python/langchain/runtime)
 - AWS ML blog: [Building multi-tenant agents with AgentCore](https://aws.amazon.com/blogs/machine-learning/building-multi-tenant-agents-with-amazon-bedrock-agentcore/) (May 2026), [Pool model multi-tenancy with AgentCore](https://aws.amazon.com/blogs/machine-learning/shared-infrastructure-isolated-tenants-pool-model-multi-tenancy-with-amazon-bedrock-agentcore/) (June 2026), [custom domains (CloudFront, CORS)](https://aws.amazon.com/blogs/machine-learning/set-up-custom-domain-names-for-amazon-bedrock-agentcore-runtime-agents/)
 - [Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-regions.html)

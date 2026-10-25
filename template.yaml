@@ -785,24 +785,43 @@ Resources:
       TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # old usage and conversations
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
-  # Conversation checkpoints (short-term) and what the agent learns about each
-  # user (long-term). The namespaces must match assistant/memory.py.
-  AssistantMemory:
-    Type: AWS::BedrockAgentCore::Memory
+  # Each agent's state in each conversation: LangGraph checkpoints, written
+  # by DynamoDBSaver (langgraph-checkpoint-aws), which names the keys and the
+  # TTL attribute itself. Each one expires CONVERSATION_DAYS after it was
+  # written; an active conversation keeps writing new ones.
+  AssistantCheckpointTable:
+    Type: AWS::DynamoDB::Table
     Condition: HasAssistant
-    DeletionPolicy: Retain                # users' conversations outlive the stack, like the tables
+    DeletionPolicy: Retain                # users' conversations outlive the stack, like the other tables
     UpdateReplacePolicy: Retain
     Properties:
-      Name: !Sub saas_${Stage}_assistant
-      Description: Assistant conversations and long-term memories, per user and workspace
-      EventExpiryDuration: !If [IsProd, 90, 30]   # days a conversation is kept; CONVERSATION_DAYS must match
-      MemoryStrategies:
-        - SemanticMemoryStrategy:
-            Name: facts
-            NamespaceTemplates: ["/actors/{actorId}/facts/"]
-        - UserPreferenceMemoryStrategy:
-            Name: preferences
-            NamespaceTemplates: ["/actors/{actorId}/preferences/"]
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  # A checkpoint over 350 KB, which DynamoDB can't hold. DynamoDBSaver adds
+  # the lifecycle rule that expires them, from the same TTL.
+  AssistantCheckpointBucket:
+    Type: AWS::S3::Bucket
+    Condition: HasAssistant
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
 
   # The bash tool's terminal: a separate microVM per conversation, so the
   # model's commands never run next to the agent's credentials. No
@@ -846,14 +865,19 @@ Resources:
                   - arn:aws:bedrock:*::foundation-model/*      # regional models a profile routes to
                   - arn:aws:bedrock:::foundation-model/*       # global cross-Region inference
                   - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
-              - Sid: Memory               # what AgentCoreMemorySaver and assistant/memory.py call
+              - Sid: Checkpoints          # what DynamoDBSaver calls
                 Effect: Allow
-                Action:
-                  - bedrock-agentcore:CreateEvent
-                  - bedrock-agentcore:GetEvent
-                  - bedrock-agentcore:ListEvents
-                  - bedrock-agentcore:RetrieveMemoryRecords
-                Resource: !GetAtt AssistantMemory.MemoryArn
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:Query, dynamodb:BatchGetItem,
+                         dynamodb:BatchWriteItem]
+                Resource: !GetAtt AssistantCheckpointTable.Arn
+              - Sid: LargeCheckpoints     # over 350 KB
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:PutObjectTagging]
+                Resource: !Sub "${AssistantCheckpointBucket.Arn}/*"
+              - Sid: LargeCheckpointsExpiry   # DynamoDBSaver adds the rule that expires them
+                Effect: Allow
+                Action: [s3:GetLifecycleConfiguration, s3:PutLifecycleConfiguration]
+                Resource: !GetAtt AssistantCheckpointBucket.Arn
               - Sid: Table                # usage counters, and each conversation's history (service.ConversationLog)
                 Effect: Allow
                 Action: [dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
@@ -915,20 +939,21 @@ Resources:
       RequestHeaderConfiguration:
         RequestHeaderAllowlist: [Authorization]   # the verified token reaches the code (claims, and the tools' API calls)
       LifecycleConfiguration:
-        IdleRuntimeSessionTimeout: 900    # an idle conversation's microVM stops after 15 minutes; the conversation is in Memory
+        IdleRuntimeSessionTimeout: 900    # an idle conversation's microVM stops after 15 minutes; its checkpoints remain
         MaxLifetime: 28800
       EnvironmentVariables:
         POWERTOOLS_SERVICE_NAME: assistant
         POWERTOOLS_LOG_LEVEL: INFO
         PYTHONUNBUFFERED: "1"             # logs reach CloudWatch even if the microVM stops right after
         ASSISTANT_TABLE: !Ref AssistantTable
-        MEMORY_ID: !GetAtt AssistantMemory.MemoryId
+        CHECKPOINT_TABLE: !Ref AssistantCheckpointTable
+        CHECKPOINT_BUCKET: !Ref AssistantCheckpointBucket
         API_URL: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
         MODEL_ID: !Ref AssistantModelId
         OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParam
         REGION: !Ref AWS::Region
         SANDBOX_ID: !GetAtt AssistantSandbox.CodeInterpreterId
-        CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # as long as AssistantMemory keeps the agent's copy
+        CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # the history's records and the checkpoints alike
         # ADOT's LangChain instrumentation logs every model call's messages (the
         # conversation so far, the answer) to this runtime's log group, and
         # traces each model call and middleware step. Dev keeps both, the
@@ -1009,8 +1034,8 @@ Resources:
         OnePatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: PATCH } }
         OneDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: DELETE } }
 
-  # Deleted conversations, for the agent's copy in AgentCore Memory: Memory
-  # deletes one event per call, too many for the request (assistant/purge.py).
+  # Deleted conversations, for the agents' checkpoints of them: hundreds of
+  # records, too many for the request (assistant/purge.py).
   AssistantPurgeDLQ:
     Type: AWS::SQS::Queue
     Condition: HasAssistant
@@ -1036,12 +1061,19 @@ Resources:
       Environment:
         Variables:
           POWERTOOLS_SERVICE_NAME: assistant
-          MEMORY_ID: !GetAtt AssistantMemory.MemoryId
+          CHECKPOINT_TABLE: !Ref AssistantCheckpointTable
+          CHECKPOINT_BUCKET: !Ref AssistantCheckpointBucket
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [bedrock-agentcore:ListEvents, bedrock-agentcore:DeleteEvent]
-              Resource: !GetAtt AssistantMemory.MemoryArn
+              Action: [dynamodb:Query, dynamodb:BatchWriteItem]
+              Resource: !GetAtt AssistantCheckpointTable.Arn
+            - Effect: Allow
+              Action: [s3:ListBucket]
+              Resource: !GetAtt AssistantCheckpointBucket.Arn
+            - Effect: Allow
+              Action: [s3:DeleteObject]
+              Resource: !Sub "${AssistantCheckpointBucket.Arn}/*"
       Events:
         Queue:
           Type: SQS
@@ -1049,13 +1081,13 @@ Resources:
             Queue: !GetAtt AssistantPurgeQueue.Arn
             BatchSize: 1                # one conversation per run: a retry repeats only that one
             FunctionResponseTypes: [ReportBatchItemFailures]
-            ScalingConfig: { MaximumConcurrency: 2 }   # gentle on Memory's API, which the agent needs too
+            ScalingConfig: { MaximumConcurrency: 2 }   # no hurry: a few at a time
 
   AssistantPurgeDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Condition: HasAssistant
     Properties:
-      AlarmDescription: Deleted assistant conversations are still in AgentCore Memory (messages in the purge dead-letter queue)
+      AlarmDescription: Deleted assistant conversations still have checkpoints (messages in the purge dead-letter queue)
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt AssistantPurgeDLQ.QueueName }]

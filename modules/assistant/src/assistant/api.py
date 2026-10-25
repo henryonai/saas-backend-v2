@@ -119,6 +119,6 @@ def rename_conversation(thread_id: str, body: ConversationRename, user: User, se
 
 @router.delete("/assistant/conversations/<thread_id>")
 def delete_conversation(thread_id: str, user: User, service: Service):
-    """Deletes it and its messages; the agent's own copy in AgentCore Memory goes in the background."""
+    """Deletes it and its messages; the agents' own copy (their checkpoints) goes in the background."""
     service.delete(user, thread_id)
     return Response(status_code=204)

@@ -6,7 +6,7 @@ As in Claude Code, the subagent starts fresh: it gets its own system prompt
 and the instructions the calling agent writes, not the conversation. It works
 for the same user (its tools act as that user, in the same sandbox), counts
 against the same allowance, and returns its final answer as the tool's
-result. It keeps no checkpoints (no Memory cost), and its own words don't
+result. It keeps no checkpoints, and its own words don't
 stream to the user: the calling agent tells the user what it found.
 """
 from langchain.tools import ToolRuntime, tool

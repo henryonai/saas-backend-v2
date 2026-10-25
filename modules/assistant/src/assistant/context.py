@@ -5,22 +5,21 @@ from dataclasses import dataclass
 from shared.auth import CurrentUser
 
 # A conversation's threadId, which is also its AgentCore Runtime session id:
-# Runtime wants 33+ characters; AgentCore Memory allows these, up to 100.
+# Runtime wants 33+ characters; we take these, up to 100.
 SESSION_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{32,99}")
 
 
 def actor_of(user: CurrentUser) -> str:
-    """Whose conversations and memories these are: one user in one workspace."""
+    """Whose conversations these are: one user in one workspace."""
     return f"{user.tenant_id}:{user.user_id}"
 
 
 def checkpoint_session(actor_id: str, session_id: str, agent: str) -> str:
     """
-    The AgentCore Memory session where `agent`'s side of a conversation is
-    checkpointed (factory.thread_config). A hash, because Memory session ids
-    allow only [a-zA-Z0-9_-], up to 100; it includes the user, because the
+    The checkpoint thread where `agent`'s side of a conversation is saved
+    (factory.thread_config). A hash that includes the user, because the
     client picks the session id (someone who sends another user's gets a
-    conversation of their own).
+    conversation of their own), and the checkpoint table knows only threads.
     """
     return _hash(f"{actor_id}/{session_id}/{agent}")
 

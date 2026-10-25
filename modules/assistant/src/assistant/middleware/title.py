@@ -2,12 +2,11 @@ from aws_lambda_powertools import Logger
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.constants import TAG_NOSTREAM
 from langgraph.runtime import Runtime
 
 from assistant.context import AgentContext
-from assistant.middleware.memory import this_exchange
 from assistant.service import TITLE_CHARS, ConversationLog, UsageService
 
 logger = Logger()
@@ -51,6 +50,15 @@ class TitleMiddleware(AgentMiddleware):
                 self.history.name(context, title)
         except Exception:
             logger.warning("Could not title the conversation; its first message stays the title", exc_info=True)
+
+
+def this_exchange(messages: list[BaseMessage]) -> tuple[HumanMessage | None, AIMessage | None]:
+    """The user's latest message and the final answer to it (None until there is one)."""
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            answers = [m for m in messages[i + 1:] if isinstance(m, AIMessage) and m.text]
+            return messages[i], (answers[-1] if answers else None)
+    return None, None
 
 
 def clean_title(text: str) -> str:

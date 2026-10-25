@@ -90,30 +90,6 @@ def test_a_session_id_from_another_user_does_not_reveal_their_conversation(ctx, 
     assert "My secret is 42" not in [m.content for m in ctx.model_calls()[0]]
 
 
-# ---------- memory middleware ----------
-
-def test_recalled_memories_go_in_the_system_prompt_and_the_exchange_is_saved(ctx, alice):
-    ctx.memory.memories["t1:alice"] = ["Prefers short answers", "Works in purchasing"]
-    ctx.script(ctx.answer("Sure."))
-
-    ctx.chat("Help me with orders", alice)
-
-    assert ctx.memory.queries == [("t1:alice", "Help me with orders")]
-    system = ctx.model_calls()[0][0]
-    assert system.type == "system" and "- Prefers short answers" in system.content
-    # Saved: the user's words and the final answer; never the prompt with memories.
-    assert ctx.memory.saved == [{"actor_id": "t1:alice", "session_id": ctx.session,
-                                 "user": "Help me with orders", "assistant": "Sure."}]
-
-
-def test_memories_are_per_user_and_workspace(ctx):
-    ctx.memory.memories["t1:alice"] = ["Alice's preference"]
-    ctx.script(ctx.answer("Hi."))
-    ctx.chat("Hello", claims("alice", "t2", "owner"))  # same person, other workspace
-    assert ctx.memory.queries == [("t2:alice", "Hello")]
-    assert "Alice's preference" not in ctx.model_calls()[0][0].content
-
-
 # ---------- usage: checked when the message is sent, before anything runs ----------
 
 def test_message_limit_refuses_the_message_before_anything_runs(ctx, alice):
@@ -125,7 +101,7 @@ def test_message_limit_refuses_the_message_before_anything_runs(ctx, alice):
     # A status the page reads, not an event in a stream: nothing streams.
     assert status == 402
     assert body == {"message": "Your free plan includes 50 assistant messages a month. Upgrade for more."}
-    assert ctx.model_calls() == [] and ctx.memory.queries == []
+    assert ctx.model_calls() == []
     assert usage_of(ctx).messages == 50
     assert ctx.conversations.get("t1", "alice", ctx.session) is None   # nothing saved
 

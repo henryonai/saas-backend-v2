@@ -315,7 +315,7 @@
       "titleLabel": "Tiêu đề",
       "delete": "Xóa",
       "deleteTitle": "Xóa cuộc trò chuyện này?",
-      "deleteDescription": "“{{title}}” và mọi nội dung trong đó sẽ bị xóa vĩnh viễn. Những gì trợ lý đã biết về bạn nói chung vẫn được giữ lại.",
+      "deleteDescription": "“{{title}}” và mọi nội dung trong đó sẽ bị xóa vĩnh viễn.",
       "goneTitle": "Cuộc trò chuyện này không còn",
       "gone": "Nó đã bị xóa, hoặc đã hết hạn: cuộc trò chuyện chỉ được giữ một thời gian sau tin nhắn cuối."
     },

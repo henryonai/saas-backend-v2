@@ -7,7 +7,7 @@ Three entry points use it:
               following messages.
   handler.py  Lambda: the HTTP API for the users' conversations, which also
               takes their messages (and counts them against the plan).
-  purge.py    Lambda: deletes a deleted conversation from AgentCore Memory.
+  purge.py    Lambda: deletes a deleted conversation's checkpoints.
 
 The two Lambdas get the shared layer, not the agents' dependencies (LangChain,
 the AgentCore SDK, httpx): only get_agents() imports those, when it runs.
@@ -16,7 +16,7 @@ from functools import lru_cache
 
 import boto3
 
-from assistant.memory import AgentCoreMemory
+from assistant.checkpoints import CheckpointPurge
 from assistant.repository import ConversationRepository, UsageRepository
 from assistant.service import ConversationLog, ConversationService, SqsPurgeQueue, UsageService
 from assistant.settings import AssistantSettings, ConversationsApiSettings, PurgeSettings
@@ -49,7 +49,7 @@ def get_agents() -> dict:
     """Every agent in agents/*.md, by name."""
     import httpx
     from langchain_core.language_models import BaseChatModel
-    from langgraph_checkpoint_aws import AgentCoreMemorySaver
+    from langgraph_checkpoint_aws import DynamoDBSaver
 
     from assistant.definitions import AgentDefinition, load_agents
     from assistant.factory import AgentDeps, build_agents
@@ -77,9 +77,16 @@ def get_agents() -> dict:
 
     return build_agents(load_agents(set(tools)), AgentDeps(
         make_model=model_for,
-        checkpointer=AgentCoreMemorySaver(settings.memory_id, region_name=settings.region),
+        # Each checkpoint holds the agent's whole state, so the newest one is
+        # all a conversation needs, and older ones can expire with the history.
+        checkpointer=DynamoDBSaver(
+            table_name=settings.checkpoint_table,
+            region_name=settings.region,
+            ttl_seconds=settings.conversation_days * 24 * 60 * 60,
+            enable_checkpoint_compression=True,
+            s3_offload_config={"bucket_name": settings.checkpoint_bucket},   # over 350 KB
+        ),
         usage=usage,
-        memory=AgentCoreMemory(agentcore, settings.memory_id),
         tools=tools,
         history=get_conversation_log(),
         title_model=make_model(settings.model_id),
@@ -96,5 +103,6 @@ def get_conversation_service() -> ConversationService:
 
 
 @lru_cache
-def get_memory() -> AgentCoreMemory:
-    return AgentCoreMemory(boto3.client("bedrock-agentcore"), PurgeSettings().memory_id)
+def get_checkpoint_purge() -> CheckpointPurge:
+    settings = PurgeSettings()
+    return CheckpointPurge(_table(settings.checkpoint_table), boto3.client("s3"), settings.checkpoint_bucket)

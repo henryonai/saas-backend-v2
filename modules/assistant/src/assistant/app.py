@@ -23,8 +23,8 @@ Each request:
   1. who is calling: the token's claims, checked like every other module does
   2. which run: one this microVM has (follow it), or the conversation's run
      still to be answered (start it, then follow it); else NOT_FOUND
-  3. the run: the agent answers, with middleware for the token cap, memory
-     and the title, as AG-UI events; it ends early if the user pressed Stop
+  3. the run: the agent answers, with middleware for the token cap and the
+     title, as AG-UI events; it ends early if the user pressed Stop
   4. the history gets what streamed, however the run ended, and the
      conversation's run is removed
 """

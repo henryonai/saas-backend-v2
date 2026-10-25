@@ -3,8 +3,8 @@ Builds the real agents from agents/*.md (create_agent, middleware, tools,
 subagents), the real UsageService and conversation services on a fake table,
 the real HTTP API (handler.py) and AgentCore Runtime app (app.py) around
 them, with one scripted model per agent, a fake model for titles, an
-in-memory checkpointer, and fakes for AgentCore Memory, the HTTP API the
-tools call and the sandbox.
+in-memory checkpointer, and fakes for the HTTP API the tools call and the
+sandbox.
 """
 import base64
 import json
@@ -110,23 +110,6 @@ def tool_call(name: str, args: dict, call_id: str = "call-1", input_tokens: int 
                                      "total_tokens": input_tokens + 10})
 
 
-class FakeMemory:
-    """Stands in for AgentCore Memory: returns preset memories and records saved exchanges."""
-
-    def __init__(self):
-        self.memories: dict[str, list[str]] = {}
-        self.queries: list[tuple[str, str]] = []
-        self.saved: list[dict] = []
-
-    def recall(self, actor_id: str, query: str) -> list[str]:
-        self.queries.append((actor_id, query))
-        return self.memories.get(actor_id, [])
-
-    def remember(self, actor_id: str, session_id: str, user_text: str, assistant_text: str) -> None:
-        self.saved.append({"actor_id": actor_id, "session_id": session_id,
-                           "user": user_text, "assistant": assistant_text})
-
-
 class FakeApi:
     """Stands in for the HTTP API: records each call and answers from `responses` by path."""
 
@@ -168,7 +151,7 @@ def ctx():
     usage = UsageService(usage=UsageRepository(table))
     conversations = ConversationRepository(table)
     history = ConversationLog(conversations, days=30)
-    memory, api, sandbox = FakeMemory(), FakeApi(), FakeSandbox()
+    api, sandbox = FakeApi(), FakeSandbox()
     title_model = TitleModel(calls=[])
     tools = make_tools(api, usage, sandbox)
     definitions = load_agents(set(tools))
@@ -180,13 +163,11 @@ def ctx():
         models[agent] = ScriptedModel(responses=list(responses), calls=[], tools_shown=[])
         state.agents = build_agents(definitions, AgentDeps(
             make_model=lambda d: models.setdefault(d.name, ScriptedModel(responses=[], calls=[], tools_shown=[])),
-            checkpointer=state.checkpointer, usage=usage, memory=memory, tools=tools, history=history,
-            title_model=title_model))
+            checkpointer=state.checkpointer, usage=usage, tools=tools, history=history, title_model=title_model))
 
     # The HTTP API (handler.py) with this table, and the AgentCore Runtime app (app.py) with these agents.
-    purges: list[tuple[str, list[str]]] = []
-    service = ConversationService(conversations, usage=usage, days=30,
-                                  purge=SimpleNamespace(send=lambda actor, sessions: purges.append((actor, sessions))))
+    purges: list[list[str]] = []
+    service = ConversationService(conversations, usage=usage, days=30, purge=SimpleNamespace(send=purges.append))
     http_app.dependency_overrides[get_conversation_service] = lambda: service
     runs = Runs()
 
@@ -232,7 +213,7 @@ def ctx():
     script()
     # One event loop for every request, as uvicorn has: a run outlives the request that started it.
     with TestClient(create_app(lambda: state.agents, lambda: history, runs)) as runtime:
-        yield SimpleNamespace(table=table, usage=usage, memory=memory, api=api, sandbox=sandbox, state=state,
+        yield SimpleNamespace(table=table, usage=usage, api=api, sandbox=sandbox, state=state,
                               conversations=conversations, history=history, title_model=title_model,
                               definitions=definitions, script=script, send=send, post=post, run=run, chat=chat,
                               runs=runs,

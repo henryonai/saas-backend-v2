@@ -7,7 +7,8 @@ from langchain_openai import ChatOpenAI
 from assistant.llm import chat_model, is_openrouter_model
 from assistant.settings import AssistantSettings
 
-REQUIRED = {"assistant_table": "assistant-dev", "memory_id": "saas_dev_assistant-abcdefghij",
+REQUIRED = {"assistant_table": "assistant-dev", "checkpoint_table": "checkpoints-dev",
+            "checkpoint_bucket": "checkpoints-dev",
             "api_url": "https://api.example.com", "region": "ap-southeast-1",
             "sandbox_id": "saas_dev_sandbox-abcdefghij"}
 

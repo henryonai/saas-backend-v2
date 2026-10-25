@@ -3,29 +3,36 @@ Conversations: sending a message, which saves it with the run that will
 answer it (the HTTP API), then running it (AgentCore: app.py, runs.py); what
 the agent keeps as it answers (ConversationLog, TitleMiddleware); following a
 run again after a reload; stopping it; the HTTP API that lists, reopens,
-renames and deletes them (handler.py); and the worker that deletes them from
-AgentCore Memory (purge.py).
+renames and deletes them (handler.py); and the worker that deletes the
+agents' checkpoints of them (purge.py).
 """
+import base64
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
+import boto3
 import pytest
 from ag_ui.core import Message
 from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError
 from botocore.exceptions import ClientError
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.graph import START, MessagesState, StateGraph
+from langgraph_checkpoint_aws import DynamoDBSaver
 from pydantic import TypeAdapter
 
 import assistant.app
+from assistant.checkpoints import CheckpointPurge
 from assistant.context import checkpoint_session
 from assistant.handler import handler
-from assistant.memory import AgentCoreMemory
 from assistant.models import Run, current_month, iso
 from assistant.purge import process_batch
 from testkit.http import FakeContext, call, claims
@@ -395,8 +402,8 @@ def test_delete_removes_it_at_once_and_queues_the_agents_copy(ctx, api, alice):
     assert api.call("GET", f"/assistant/conversations/{THREAD}", alice)[0] == 404
     assert api.call("GET", "/assistant/conversations", alice)[1]["items"] == []
     assert not [i for i in ctx.table.scan()["Items"] if "#CONV" in i["pk"]]
-    # The exchange's session and the agent's checkpoints, in the same actor's memory.
-    assert api.purges == [("t1:alice", [THREAD, checkpoint_session("t1:alice", THREAD, "assistant")])]
+    # The agent's checkpoints of it: its thread for this user.
+    assert api.purges == [[checkpoint_session("t1:alice", THREAD, "assistant")]]
 
 
 def test_nobody_reaches_another_users_conversation(ctx, api):
@@ -424,25 +431,47 @@ def test_bad_input(api, alice):
 
 # ---------- the purge worker ----------
 
-class FakeMemoryClient:
-    """AgentCore Memory's data plane, for list_events and delete_event: 100 events a page."""
+CHECKPOINTS = "checkpoints-test"   # the table and the bucket
 
-    def __init__(self, events: dict[tuple[str, str], list[str]]):
-        self.events = events
-        self.fail_on: str | None = None
 
-    def list_events(self, memoryId, actorId, sessionId, includePayloads, maxResults, nextToken=None):
-        ids = self.events.get((actorId, sessionId), [])
-        start = int(nextToken or 0)
-        page = {"events": [{"eventId": i} for i in ids[start:start + maxResults]]}
-        if start + maxResults < len(ids):
-            page["nextToken"] = str(start + maxResults)
-        return page
+@pytest.fixture
+def checkpoints():
+    """
+    The checkpoint table and bucket as template.yaml makes them, written by
+    the runtime's checkpointer (container.py) through a small graph, and the
+    purge worker's CheckpointPurge.
+    """
+    boto3.client("dynamodb").create_table(
+        TableName=CHECKPOINTS, BillingMode="PAY_PER_REQUEST",
+        AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"},
+                              {"AttributeName": "SK", "AttributeType": "S"}],
+        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}])
+    s3 = boto3.client("s3")
+    s3.create_bucket(Bucket=CHECKPOINTS, CreateBucketConfiguration={"LocationConstraint": "ap-southeast-1"})
+    saver = DynamoDBSaver(table_name=CHECKPOINTS, region_name="ap-southeast-1", ttl_seconds=30 * 86400,
+                          enable_checkpoint_compression=True, s3_offload_config={"bucket_name": CHECKPOINTS})
+    builder = StateGraph(MessagesState)
+    builder.add_node("answer", lambda state: {"messages": [AIMessage(f"Answer {len(state['messages'])}")]})
+    builder.add_edge(START, "answer")
+    graph = builder.compile(checkpointer=saver)
+    table = boto3.resource("dynamodb").Table(CHECKPOINTS)
 
-    def delete_event(self, memoryId, actorId, sessionId, eventId):
-        if eventId == self.fail_on:
-            raise ClientError({"Error": {"Code": "ThrottlingException"}}, "DeleteEvent")
-        self.events[(actorId, sessionId)].remove(eventId)
+    def converse(thread: str, *questions: str) -> None:
+        for question in questions:
+            graph.invoke({"messages": [HumanMessage(question)]}, {"configurable": {"thread_id": thread}})
+
+    def left(thread: str) -> dict:
+        """What is still stored for this thread: records by kind, and S3 objects."""
+        kinds = {}
+        for item in table.scan()["Items"]:
+            if thread in item["PK"]:
+                kind = item["PK"].split("_", 1)[0]
+                kinds[kind] = kinds.get(kind, 0) + 1
+        objects = s3.list_objects_v2(Bucket=CHECKPOINTS, Prefix=f"{thread}/").get("KeyCount", 0)
+        return {**kinds, **({"S3": objects} if objects else {})}
+
+    return SimpleNamespace(saver=saver, table=table, s3=s3, converse=converse, left=left,
+                           purge=CheckpointPurge(table, s3, CHECKPOINTS))
 
 
 def sqs(*bodies: dict) -> dict:
@@ -452,31 +481,67 @@ def sqs(*bodies: dict) -> dict:
                         for n, body in enumerate(bodies, start=1)]}
 
 
-def test_the_purge_deletes_every_event_of_the_conversation_and_nothing_else():
-    client = FakeMemoryClient({("t1:alice", THREAD): ["e1", "e2"],
-                               ("t1:alice", "checkpoints"): [f"c{n}" for n in range(250)],   # several pages
-                               ("t1:alice", "another"): ["keep"]})
-    memory = AgentCoreMemory(client, "memory-1")
+# Incompressible, so its checkpoint is over 350 KB even compressed: DynamoDBSaver puts it in S3.
+HUGE = base64.b64encode(os.urandom(450_000)).decode()
 
-    result = process_batch(sqs({"actor_id": "t1:alice", "session_ids": [THREAD, "checkpoints"]}), FakeContext(),
-                           memory)
+
+def test_the_purge_deletes_every_checkpoint_record_of_the_conversation_and_nothing_else(checkpoints):
+    mine = checkpoint_session("t1:alice", THREAD, "assistant")
+    another = checkpoint_session("t1:bob", THREAD, "assistant")
+    checkpoints.converse(mine, "Hi", HUGE, "Thanks")
+    checkpoints.converse(another, "Hello")
+    # Every kind of record DynamoDBSaver writes, so the purge meets them all.
+    assert set(checkpoints.left(mine)) == {"CHECKPOINT", "WRITES", "CHUNK", "S3"}
+    kept = checkpoints.left(another)
+
+    result = process_batch(sqs({"threads": [mine]}), FakeContext(), checkpoints.purge)
 
     assert result == {"batchItemFailures": []}
-    assert client.events == {("t1:alice", THREAD): [], ("t1:alice", "checkpoints"): [],
-                             ("t1:alice", "another"): ["keep"]}
+    assert checkpoints.left(mine) == {}
+    assert checkpoints.left(another) == kept
+    assert checkpoints.saver.get_tuple({"configurable": {"thread_id": another}}) is not None
 
 
-def test_a_failed_purge_is_retried_and_finishes_the_job():
-    client = FakeMemoryClient({("t1:alice", THREAD): ["e1", "e2", "e3"]})
-    client.fail_on = "e2"
-    memory = AgentCoreMemory(client, "memory-1")
-    message = sqs({"actor_id": "t1:alice", "session_ids": [THREAD]})
+class FlakyTable:
+    """The checkpoint table, failing as a throttled DynamoDB does once `deletes` records are deleted."""
+
+    def __init__(self, table, deletes: int):
+        self.table = table
+        self.deletes: int | None = deletes
+
+    def query(self, **params):
+        return self.table.query(**params)
+
+    @contextmanager
+    def batch_writer(self):
+        with self.table.batch_writer() as batch:
+            def delete_item(Key):
+                if self.deletes == 0:
+                    raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "BatchWriteItem")
+                if self.deletes is not None:
+                    self.deletes -= 1
+                batch.delete_item(Key=Key)
+            yield SimpleNamespace(delete_item=delete_item)
+
+
+def test_a_failed_purge_is_retried_and_finishes_the_job(checkpoints):
+    mine = checkpoint_session("t1:alice", THREAD, "assistant")
+    checkpoints.converse(mine, "Hi", "Thanks")
+    stored = checkpoints.left(mine)
+    # Fails as many deletes in as deleting every payload and checkpoint would
+    # take: deleted before the writes, the checkpoints would leave writes
+    # nothing leads to.
+    flaky = FlakyTable(checkpoints.table, deletes=stored["CHUNK"] + stored["CHECKPOINT"])
+    message = sqs({"threads": [mine]})
 
     with pytest.raises(BatchProcessingError):   # the whole batch (its one message) failed: SQS retries it
-        process_batch(message, FakeContext(), memory)
-    client.fail_on = None
-    assert process_batch(message, FakeContext(), memory) == {"batchItemFailures": []}
-    assert client.events[("t1:alice", THREAD)] == []
+        process_batch(message, FakeContext(), CheckpointPurge(flaky, checkpoints.s3, CHECKPOINTS))
+    # The checkpoints go last, so what is left can still be found.
+    assert checkpoints.left(mine)["CHECKPOINT"] > 0
+    flaky.deletes = None
+    assert process_batch(message, FakeContext(), CheckpointPurge(flaky, checkpoints.s3, CHECKPOINTS)) == {
+        "batchItemFailures": []}
+    assert checkpoints.left(mine) == {}
 
 
 # ---------- the Lambdas stay light ----------
