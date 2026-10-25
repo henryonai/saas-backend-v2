@@ -411,10 +411,13 @@ tests and build.
 
 **CD** (`.github/workflows/deploy.yml`) is run by hand for now: on GitHub,
 Actions > deploy > Run workflow, then pick the branch and the environment.
-It runs the CI checks, then `sam deploy` and `web/scripts/deploy.sh` for that
+It runs the CI checks, then `sam deploy` (with the assistant's code zip from
+`scripts/package-assistant.py`, as above) and `web/scripts/deploy.sh` for that
 environment (its `[<env>.deploy]` settings in `samconfig.toml`). Prod deploys
 only from `main`, one deploy per environment runs at a time, and the run's
-summary links the app.
+summary links the app. In an account where `sam deploy` has never run, the
+first run has no bucket for the zip yet: it deploys without the assistant's
+new code and says so, and the next run adds it.
 
 Prod deploys in two runs, so someone reads the changes before they happen:
 

@@ -1,9 +1,10 @@
 name: deploy
 
 # Manual for now: Actions > deploy > Run workflow, then pick the branch and the
-# environment. It runs the CI checks, then deploys the backend (sam deploy) and
-# the web app (web/scripts/deploy.sh) to that environment's stack, with the AWS
-# role in the environment's AWS_ROLE_ARN variable ("CI/CD" in the README).
+# environment. It runs the CI checks, then deploys the backend (sam deploy, with
+# the assistant's code zip from scripts/package-assistant.py) and the web app
+# (web/scripts/deploy.sh) to that environment's stack, with the AWS role in the
+# environment's AWS_ROLE_ARN variable ("CI/CD" in the README).
 #
 # Prod deploys in two runs, so the changes are read before they happen:
 #   1. Run it for prod. It prepares a CloudFormation change set, lists every
@@ -90,21 +91,48 @@ jobs:
         with:
           use-installer: true
 
+      - uses: astral-sh/setup-uv@v10.3.0
+        if: steps.config.outputs.step != 'apply'
+
+      # AgentCore runs the assistant from a zip that sam build doesn't make. Without
+      # its location, sam deploy keeps the code the runtime already has, so the
+      # Lambdas would get this commit and the agent an older one.
+      - name: Package the assistant
+        id: assistant
+        if: steps.config.outputs.step != 'apply'
+        run: |
+          if [[ ! -d modules/assistant ]]; then
+            echo "No modules/assistant: deploying without it."
+            exit 0
+          fi
+          # The zip goes to the bucket sam deploy makes for itself (resolve_s3), which a new
+          # account has only after its first deploy.
+          if ! aws cloudformation describe-stacks --stack-name aws-sam-cli-managed-default > /dev/null 2>&1; then
+            echo "::warning::No SAM bucket in this account yet: this deploy keeps the assistant's current code (none on a new stack). Run deploy again to add it."
+            exit 0
+          fi
+          overrides=$(uv run --locked python scripts/package-assistant.py --config-env "$ENVIRONMENT")
+          echo "overrides=$overrides" >> "$GITHUB_OUTPUT"
+
       - name: Deploy the backend
         if: steps.config.outputs.step == 'deploy'
+        env:
+          OVERRIDES: ${{ steps.assistant.outputs.overrides }}
         # The run itself is the confirmation: samconfig's confirm_changeset is for people at a terminal.
         run: |
           sam build
-          sam deploy --config-env "$ENVIRONMENT" --no-confirm-changeset --no-fail-on-empty-changeset
+          sam deploy --config-env "$ENVIRONMENT" --no-confirm-changeset --no-fail-on-empty-changeset \
+            ${OVERRIDES:+--parameter-overrides "$OVERRIDES"}
 
       - name: Prepare the backend change set
         if: steps.config.outputs.step == 'prepare'
         env:
           STACK: ${{ steps.config.outputs.stack }}
+          OVERRIDES: ${{ steps.assistant.outputs.overrides }}
         run: |
           sam build
           sam deploy --config-env "$ENVIRONMENT" --no-execute-changeset --no-confirm-changeset \
-            --no-fail-on-empty-changeset | tee sam.log
+            --no-fail-on-empty-changeset ${OVERRIDES:+--parameter-overrides "$OVERRIDES"} | tee sam.log
           changeset=$(grep -oE 'arn:aws:cloudformation:[^ ]+:changeSet/[^ ]+' sam.log | tail -n 1 || true)
           python3 scripts/changeset-summary.py "$STACK" $changeset >> "$GITHUB_STEP_SUMMARY"
           # What the apply run needs: which change set, and the commit to publish the web app from.
