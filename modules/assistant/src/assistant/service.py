@@ -64,6 +64,7 @@ class UsageService:
         hour_ends = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         if not self.usage.add_hourly_message(user.require_tenant(), user.user_id, now.strftime("%Y-%m-%dT%H"),
                                              per_hour, expires_at=int(hour_ends.timestamp()) + 3600):
+            logger.info("Hourly message limit reached", extra={"limit": per_hour, "plan": user.plan})
             minutes = max(1, math.ceil((hour_ends - now).total_seconds() / 60))
             raise TooManyRequests(f"You can send the assistant {per_hour} messages an hour. Try again in "
                                   f"{minutes} minute{'s' if minutes != 1 else ''}.")

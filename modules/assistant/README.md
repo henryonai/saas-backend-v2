@@ -508,7 +508,8 @@ There is no authorizer locally, so the server trusts any token: never expose it.
 - **Ratings**: `Answer rated` lines (`rating` up or down, or null when taken
   back), in the HTTP API Lambda's log group, by `tenant_id`, `agents` and
   `session_id`. A thumbs down's conversation is there to read, while it
-  lasts.
+  lasts. A message refused at the hourly limit logs `Hourly message limit
+  reached` there too, with the plan and the limit.
 - **The checkpointer is required**: without it there is no conversation, so
   failing to read or write checkpoints fails the message (error event 500).
 - **Removing the assistant** (deploying with empty `AssistantCodeBucket` and
