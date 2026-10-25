@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from ag_ui.core import (
     BaseEvent,
+    RunErrorEvent,
     TextMessageContentEvent,
     TextMessageEndEvent,
     TextMessageStartEvent,
@@ -30,6 +31,18 @@ from ag_ui.core import (
     ToolCallStartEvent,
 )
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+
+from shared.errors import AppError
+
+from assistant.schemas import ERROR_CODES
+
+
+def error_event(error: AppError) -> RunErrorEvent:
+    return RunErrorEvent(code=ERROR_CODES.get(error.status_code, "VALIDATION_ERROR"), message=error.message)
+
+
+def internal_error() -> RunErrorEvent:
+    return RunErrorEvent(code="INTERNAL_ERROR", message="The assistant could not answer. Please try again.")
 
 
 @dataclass

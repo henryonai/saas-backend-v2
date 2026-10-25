@@ -10,77 +10,30 @@ messages are AG-UI messages, the same objects the client assembled from the
 stream, so the frontend shows a reopened conversation exactly as it showed
 the live one.
 """
-from typing import Annotated, Any
+from typing import Annotated
 
 from aws_lambda_powertools.event_handler import Depends, Response, content_types
 from aws_lambda_powertools.event_handler.api_gateway import Router
 from aws_lambda_powertools.event_handler.openapi.params import Query
-from pydantic import BaseModel, Field
 
 from shared.auth import CurrentUser, get_current_user
 
-from assistant.agent_names import MAIN_AGENT
 from assistant.container import get_conversation_service
-from assistant.models import Conversation, Rating
+from assistant.schemas import (
+    ConversationDetail,
+    ConversationOut,
+    ConversationPage,
+    ConversationRename,
+    MessageIn,
+    MessageRating,
+    RunOut,
+)
 from assistant.service import ConversationService, active_run
 
 router = Router()
 
 User = Annotated[CurrentUser, Depends(get_current_user)]
 Service = Annotated[ConversationService, Depends(get_conversation_service)]
-
-
-# ---------- responses ----------
-
-class ConversationOut(BaseModel):
-    thread_id: str          # the AG-UI threadId: send it (and as the session header) to continue
-    title: str
-    created_at: str
-    updated_at: str         # the last message
-    message_count: int
-
-    @classmethod
-    def of(cls, conversation: Conversation) -> "ConversationOut":
-        return cls.model_validate(conversation.model_dump())
-
-
-class ConversationPage(BaseModel):
-    items: list[ConversationOut]
-    next_cursor: str | None = None  # pass back as ?cursor= to get the next page
-
-
-class ConversationDetail(ConversationOut):
-    # The run still answering the newest message: its answer isn't in
-    # `messages` yet. Send it to AgentCore as the AG-UI runId to follow it.
-    run_id: str | None
-    # AG-UI messages (@ag-ui/client's Message: user, assistant with toolCalls,
-    # tool results), oldest first; the latest 200 of a long conversation.
-    messages: list[dict[str, Any]]
-    # The user's ratings of answers, by the id of the answer's last assistant message.
-    ratings: dict[str, Rating] = {}
-
-
-class RunOut(BaseModel):
-    run_id: str   # send it to AgentCore as the AG-UI runId: the answer streams from there
-
-
-# ---------- requests ----------
-
-class MessageIn(BaseModel):
-    id: str = Field(min_length=1, max_length=100)        # the client's id for it: the history keeps it
-    content: str = Field(min_length=1, max_length=4000)
-    agent: str = Field(default=MAIN_AGENT, max_length=64)   # an agent's `name` (agents/*.md)
-    # An edit: the id of the user's earlier message this one replaces, with
-    # everything after it. (The same id sent again replaces itself: Try again.)
-    replaces: str | None = Field(default=None, min_length=1, max_length=100)
-
-
-class ConversationRename(BaseModel):
-    title: str = Field(min_length=1, max_length=200)   # cut to 80 characters
-
-
-class MessageRating(BaseModel):
-    rating: Rating | None   # thumbs up or down; null takes the rating back
 
 
 # ---------- routes ----------

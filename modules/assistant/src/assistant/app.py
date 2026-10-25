@@ -52,13 +52,12 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from shared.auth import user_from_claims
 from shared.errors import AppError, InvalidRequest, NotFound, Unauthorized
 
-from assistant.agui import AgUiStream, Transcript
+from assistant.agui import AgUiStream, Transcript, error_event, internal_error
 from assistant.container import get_agents, get_conversation_log, get_titles
 from assistant.context import SESSION_ID, AgentContext, actor_of
 from assistant.factory import thread_config
 from assistant.models import Run
 from assistant.runs import RunLog, Runs
-from assistant.schemas import error_event, internal_error
 from assistant.service import ConversationLog
 from assistant.titles import Titles
 

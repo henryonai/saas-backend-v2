@@ -1,7 +1,7 @@
 """
 What the assistant module stores: one usage record per workspace and month,
-and each user's conversations with their messages. What the agent endpoint
-accepts and streams back is in schemas.py; the HTTP API's shapes in api.py.
+and each user's conversations with their messages. What its two endpoints
+(the HTTP API and the agent's) accept and return is in schemas.py.
 """
 from datetime import UTC, datetime
 from typing import Literal

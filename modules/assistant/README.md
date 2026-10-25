@@ -64,7 +64,7 @@ src/assistant/
 ├── runs.py              this microVM's runs: each runs in a worker thread into a log any request reads
 ├── agui.py              the agent's stream → AG-UI events; Transcript: events → AG-UI messages
 ├── context.py           AgentContext: who the agents work for (runtime context, never in a prompt)
-├── schemas.py           the AG-UI request and error codes: the frontend contract with AgentCore
+├── schemas.py           what the HTTP API and the AG-UI endpoint accept and return (no AG-UI import)
 ├── checkpoints.py       deletes a thread's checkpoints, as DynamoDBSaver laid them out (boto3 only)
 ├── sandbox.py           AgentCore Code Interpreter adapter: one sandbox per conversation
 ├── service.py, repository.py, models.py   usage per workspace; conversations and their history

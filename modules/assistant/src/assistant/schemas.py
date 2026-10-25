@@ -1,7 +1,13 @@
 """
-What the agent endpoint accepts and streams back: the AG-UI protocol
-(https://docs.ag-ui.com), its contract with the frontend. Stored data is in
-models.py.
+What the assistant's two endpoints accept and return (their contract with
+the frontend). Stored data is in models.py. This file imports neither AG-UI
+nor LangChain: the HTTP API's Lambda has only the shared layer.
+
+The HTTP API (api.py, a Lambda; also the source of its OpenAPI document):
+the classes below.
+
+The agent endpoint (app.py, on AgentCore) speaks the AG-UI protocol
+(https://docs.ag-ui.com).
 
 Request: AG-UI's RunAgentInput, for its threadId and runId. The threadId is
 the conversation: send it as the X-Amzn-Bedrock-AgentCore-Runtime-Session-Id
@@ -15,18 +21,21 @@ RUN_STARTED timestamp it had; app.resume_after).
 
 Response: AG-UI events as server-sent events (agui.py), from RUN_STARTED (its
 timestamp: when the run started) to RUN_FINISHED, or RUN_ERROR with one of
-the codes below. AgentCore's own errors (a missing or invalid token,
-throttling) are RUN_ERROR events too, with an HTTP status.
+ERROR_CODES (agui.error_event). AgentCore's own errors (a missing or invalid
+token, throttling) are RUN_ERROR events too, with an HTTP status.
 
 AG-UI is the only contract. Anything new the frontend needs goes out as an
 AG-UI event (CUSTOM for what AG-UI has no event for), never in a format of
 our own: the tests check every stream against the order AG-UI clients enforce.
 """
-from ag_ui.core import RunErrorEvent
+from typing import Any
 
-from shared.errors import AppError
+from pydantic import BaseModel, Field
 
-# By status, like the HTTP API's errors; the names AgentCore uses for its own where they overlap.
+from assistant.agent_names import MAIN_AGENT
+from assistant.models import Conversation, Rating
+
+# The agent endpoint's RUN_ERROR codes, by status, like the HTTP API's errors; the names AgentCore uses for its own where they overlap.
 ERROR_CODES = {
     400: "VALIDATION_ERROR",
     401: "UNAUTHORIZED",
@@ -39,9 +48,54 @@ ERROR_CODES = {
 }
 
 
-def error_event(error: AppError) -> RunErrorEvent:
-    return RunErrorEvent(code=ERROR_CODES.get(error.status_code, "VALIDATION_ERROR"), message=error.message)
+# ---------- requests ----------
+
+class MessageIn(BaseModel):
+    id: str = Field(min_length=1, max_length=100)        # the client's id for it: the history keeps it
+    content: str = Field(min_length=1, max_length=4000)
+    agent: str = Field(default=MAIN_AGENT, max_length=64)   # an agent's `name` (agents/*.md)
+    # An edit: the id of the user's earlier message this one replaces, with
+    # everything after it. (The same id sent again replaces itself: Try again.)
+    replaces: str | None = Field(default=None, min_length=1, max_length=100)
 
 
-def internal_error() -> RunErrorEvent:
-    return RunErrorEvent(code="INTERNAL_ERROR", message="The assistant could not answer. Please try again.")
+class ConversationRename(BaseModel):
+    title: str = Field(min_length=1, max_length=200)   # cut to 80 characters
+
+
+class MessageRating(BaseModel):
+    rating: Rating | None   # thumbs up or down; null takes the rating back
+
+
+# ---------- responses ----------
+
+class ConversationOut(BaseModel):
+    thread_id: str          # the AG-UI threadId: send it (and as the session header) to continue
+    title: str
+    created_at: str
+    updated_at: str         # the last message
+    message_count: int
+
+    @classmethod
+    def of(cls, conversation: Conversation) -> "ConversationOut":
+        return cls.model_validate(conversation.model_dump())
+
+
+class ConversationPage(BaseModel):
+    items: list[ConversationOut]
+    next_cursor: str | None = None  # pass back as ?cursor= to get the next page
+
+
+class ConversationDetail(ConversationOut):
+    # The run still answering the newest message: its answer isn't in
+    # `messages` yet. Send it to AgentCore as the AG-UI runId to follow it.
+    run_id: str | None
+    # AG-UI messages (@ag-ui/client's Message: user, assistant with toolCalls,
+    # tool results), oldest first; the latest 200 of a long conversation.
+    messages: list[dict[str, Any]]
+    # The user's ratings of answers, by the id of the answer's last assistant message.
+    ratings: dict[str, Rating] = {}
+
+
+class RunOut(BaseModel):
+    run_id: str   # send it to AgentCore as the AG-UI runId: the answer streams from there
