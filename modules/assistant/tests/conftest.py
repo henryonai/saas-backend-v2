@@ -1,8 +1,8 @@
 """
 Builds the real agents from agents/*.md (create_agent, middleware, tools,
-subagents), the real UsageService and conversation services on a fake table,
-the real HTTP API (handler.py) and AgentCore Runtime app (app.py) around
-them, with one scripted model per agent, a fake model for titles, an
+subagents), the real UsageService, conversation services and titles on a
+fake table, the real HTTP API (handler.py) and AgentCore Runtime app (app.py)
+around them, with one scripted model per agent, a fake model for titles, an
 in-memory checkpointer, and fakes for the HTTP API the tools call and the
 sandbox.
 """
@@ -30,6 +30,7 @@ from assistant.repository import ConversationRepository, UsageRepository
 from assistant.runs import Runs
 from assistant.sandbox import CommandResult
 from assistant.service import ConversationLog, ConversationService, UsageService
+from assistant.titles import Titles
 from assistant.tools import make_tools
 from testkit.aws import create_table
 from testkit.http import call, claims
@@ -83,7 +84,7 @@ class ScriptedModel(BaseChatModel):
 
 class TitleModel(BaseChatModel):
     """
-    The model TitleMiddleware asks for a title: answers `title`, or fails when
+    The model titles.Titles asks for a title: answers `title`, or fails when
     `fail` is set. Reports token usage only when given `tokens`, so other
     tests' token counts are the agent's alone.
     """
@@ -161,6 +162,7 @@ def ctx():
     history = ConversationLog(conversations, days=30)
     api, sandbox = FakeApi(), FakeSandbox()
     title_model = TitleModel(calls=[])
+    titles = Titles(title_model, history, usage)
     tools = make_tools(api, usage, sandbox)
     definitions = load_agents(set(tools))
     models: dict[str, ScriptedModel] = {}
@@ -171,7 +173,7 @@ def ctx():
         models[agent] = ScriptedModel(responses=list(responses), calls=[], tools_shown=[], pause=pause)
         state.agents = build_agents(definitions, AgentDeps(
             make_model=lambda d: models.setdefault(d.name, ScriptedModel(responses=[], calls=[], tools_shown=[])),
-            checkpointer=state.checkpointer, usage=usage, tools=tools, history=history, title_model=title_model))
+            checkpointer=state.checkpointer, usage=usage, tools=tools))
 
     # The HTTP API (handler.py) with this table, and the AgentCore Runtime app (app.py) with these agents.
     purges: list[list[str]] = []
@@ -180,33 +182,36 @@ def ctx():
     runs = Runs()
 
     def send(prompt: str, user: dict | None, thread_id: str = SESSION, agent: str | None = None,
-             message_id: str | None = None) -> tuple[int, dict | None]:
+             message_id: str | None = None, replaces: str | None = None) -> tuple[int, dict | None]:
         """What the page does first: POST /assistant/conversations/{threadId}/messages. (status, body)"""
-        body = {"id": message_id or str(uuid4()), "content": prompt, **({"agent": agent} if agent else {})}
+        body = {"id": message_id or str(uuid4()), "content": prompt, **({"agent": agent} if agent else {}),
+                **({"replaces": replaces} if replaces else {})}
         return call(handler, "POST", f"/assistant/conversations/{thread_id}/messages", user, body=body)
 
     def run(run_id: str, user: dict | None = None, thread_id: str = SESSION, session_id: str | None = SESSION,
-            authorization: str | None = None, messages: list | None = None) -> list[dict]:
+            authorization: str | None = None, messages: list | None = None,
+            resume: dict | None = None) -> list[dict]:
         """
         What the page does next, and again to follow the answer after a
-        reload: sends AgentCore the run. Every event as it went on the wire,
-        after checking their order.
+        reload (or, with `resume`, to read on after its stream broke): sends
+        AgentCore the run. Every event as it went on the wire, after checking
+        their order.
         """
         headers = {"Authorization": authorization if authorization is not None else id_token(user)}
         if session_id:
             headers[SESSION_HEADER] = session_id
         response = runtime.post("/invocations", headers=headers, json={
-            "threadId": thread_id, "runId": run_id, "state": {}, "tools": [], "context": [], "forwardedProps": {},
-            "messages": messages or []})
+            "threadId": thread_id, "runId": run_id, "state": {}, "tools": [], "context": [],
+            "forwardedProps": {"resume": resume} if resume else {}, "messages": messages or []})
         assert response.status_code == 200, response.text
         events = sse_events(response)
-        check_agui_order(events)
+        check_agui_order(events, resumed=resume is not None)
         return events
 
     def post(prompt: str, user: dict, thread_id: str = SESSION, agent: str | None = None,
-             message_id: str | None = None) -> str:
+             message_id: str | None = None, replaces: str | None = None) -> str:
         """send() that must succeed: the run's id."""
-        status, body = send(prompt, user, thread_id, agent, message_id)
+        status, body = send(prompt, user, thread_id, agent, message_id, replaces)
         assert status == 201, body
         return body["run_id"]
 
@@ -220,7 +225,7 @@ def ctx():
 
     script()
     # One event loop for every request, as uvicorn has: a run outlives the request that started it.
-    with TestClient(create_app(lambda: state.agents, lambda: history, runs)) as runtime:
+    with TestClient(create_app(lambda: state.agents, lambda: history, lambda: titles, runs)) as runtime:
         yield SimpleNamespace(table=table, usage=usage, api=api, sandbox=sandbox, state=state,
                               conversations=conversations, history=history, title_model=title_model,
                               definitions=definitions, script=script, send=send, post=post, run=run, chat=chat,
@@ -258,8 +263,11 @@ def error_of(events: list[dict]) -> dict | None:
     return next(({"code": e.get("code"), "message": e["message"]} for e in events if e["type"] == "RUN_ERROR"), None)
 
 
-def check_agui_order(events: list[dict]) -> None:
-    """The order AG-UI clients enforce (@ag-ui/client verifies every stream)."""
+def check_agui_order(events: list[dict], resumed: bool = False) -> None:
+    """
+    The order AG-UI clients enforce (@ag-ui/client verifies every stream).
+    A `resumed` stream may give a result for a tool call that ended before it.
+    """
     types = [e["type"] for e in events]
     assert types[0] == "RUN_STARTED" and types.count("RUN_STARTED") == 1, types
     assert types[-1] in ("RUN_FINISHED", "RUN_ERROR"), types
@@ -285,7 +293,8 @@ def check_agui_order(events: list[dict]) -> None:
                 open_calls.remove(e["toolCallId"])
                 ended.add(e["toolCallId"])
             case "TOOL_CALL_RESULT":
-                assert e["toolCallId"] in ended and e["role"] == "tool", e
+                assert (e["toolCallId"] in ended or resumed and e["toolCallId"] not in open_calls) \
+                    and e["role"] == "tool", e
                 ended.discard(e["toolCallId"])
             case "RUN_FINISHED":
                 assert text is None and not open_calls, e

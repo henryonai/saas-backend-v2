@@ -11,7 +11,10 @@ export interface ToolCallView {
 
 export type Part = { type: 'text'; id: string; text: string } | { type: 'tool'; call: ToolCallView };
 
-export type Turn = { role: 'user'; id: string; text: string } | { role: 'assistant'; id: string; parts: Part[] };
+export type Turn =
+  | { role: 'user'; id: string; text: string }
+  /** `answerId`: its last assistant message, which a rating of the answer goes on */
+  | { role: 'assistant'; id: string; answerId: string; parts: Part[] };
 
 /**
  * The messages as the page shows them. One answer is one turn, however many
@@ -32,8 +35,9 @@ export function toTurns(messages: Message[]): Turn[] {
     } else if (message.role === 'assistant') {
       const last = turns.at(-1);
       const turn: Extract<Turn, { role: 'assistant' }> =
-        last?.role === 'assistant' ? last : { role: 'assistant', id: message.id, parts: [] };
+        last?.role === 'assistant' ? last : { role: 'assistant', id: message.id, answerId: message.id, parts: [] };
       if (turn !== last) turns.push(turn);
+      turn.answerId = message.id;
       if (message.content) turn.parts.push({ type: 'text', id: message.id, text: message.content });
       for (const call of message.toolCalls ?? []) {
         turn.parts.push({

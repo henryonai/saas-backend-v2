@@ -332,6 +332,13 @@
     "stop": "Dừng",
     "thinking": "Đang suy nghĩ…",
     "tokens": "Câu trả lời vừa rồi: {{tokens}} token",
+    "edit": "Sửa tin nhắn",
+    "editLabel": "Tin nhắn của bạn",
+    "editSend": "Gửi",
+    "editCancel": "Hủy",
+    "goodAnswer": "Câu trả lời tốt",
+    "badAnswer": "Câu trả lời chưa tốt",
+    "regenerate": "Tạo lại câu trả lời",
     "errorTitle": "Trợ lý không trả lời được",
     "errors": {
       "internal": "Trợ lý gặp sự cố. Vui lòng thử lại.",

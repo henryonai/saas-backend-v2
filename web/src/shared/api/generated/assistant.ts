@@ -54,6 +54,23 @@ export interface paths {
         patch: operations["rename_conversation_assistant_conversations__thread_id__patch"];
         trace?: never;
     };
+    "/assistant/conversations/{thread_id}/messages/{message_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /assistant/conversations/{thread_id}/messages/{message_id} */
+        patch: operations["rate_answer_assistant_conversations__thread_id__messages__message_id__patch"];
+        trace?: never;
+    };
     "/assistant/conversations": {
         parameters: {
             query?: never;
@@ -93,6 +110,13 @@ export interface components {
             messages: {
                 [key: string]: unknown;
             }[];
+            /**
+             * Ratings
+             * @default {}
+             */
+            ratings: {
+                [key: string]: "up" | "down";
+            };
         };
         /** ConversationOut */
         ConversationOut: {
@@ -135,6 +159,13 @@ export interface components {
              * @default assistant
              */
             agent: string;
+            /** Replaces */
+            replaces?: string | null;
+        };
+        /** MessageRating */
+        MessageRating: {
+            /** Rating */
+            rating: ("up" | "down") | null;
         };
         /** RunOut */
         RunOut: {
@@ -313,6 +344,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rate_answer_assistant_conversations__thread_id__messages__message_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MessageRating"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

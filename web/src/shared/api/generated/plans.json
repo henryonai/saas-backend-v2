@@ -7,6 +7,7 @@
       "max_users": 3,
       "max_orders": 100,
       "assistant_messages_per_month": 50,
+      "assistant_messages_per_user_hour": 20,
       "assistant_tokens_per_month": 500000,
       "assistant_sandbox_sessions_per_month": 0
     },
@@ -16,6 +17,7 @@
       "max_users": 20,
       "max_orders": 10000,
       "assistant_messages_per_month": 2000,
+      "assistant_messages_per_user_hour": 60,
       "assistant_tokens_per_month": 20000000,
       "assistant_sandbox_sessions_per_month": 200
     },
@@ -25,6 +27,7 @@
       "max_users": 200,
       "max_orders": null,
       "assistant_messages_per_month": null,
+      "assistant_messages_per_user_hour": 120,
       "assistant_tokens_per_month": 100000000,
       "assistant_sandbox_sessions_per_month": 2000
     }

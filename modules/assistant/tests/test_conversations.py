@@ -102,7 +102,7 @@ def test_the_run_answers_the_saved_message_then_it_is_over(ctx, api, alice):
 
     events = ctx.run(run_id, alice)
 
-    assert events[0] == {"type": "RUN_STARTED", "threadId": THREAD, "runId": run_id}
+    assert (events[0]["type"], events[0]["threadId"], events[0]["runId"]) == ("RUN_STARTED", THREAD, run_id)
     assert ctx.text(events) == "You have no orders yet."
     conversation = opened(api, alice)
     assert conversation["run_id"] is None
@@ -137,6 +137,124 @@ def test_a_message_the_plan_refuses_keeps_nothing(ctx, alice):
     assert stored(ctx) is None
 
 
+def test_each_user_has_an_hourly_limit_on_messages(ctx, alice):
+    now = datetime.now(UTC)
+    for hour in (now, now + timedelta(hours=1)):   # whichever hour the request lands in
+        ctx.table.put_item(Item={"pk": "TENANT#t1", "sk": f"USER#alice#HOUR#{hour:%Y-%m-%dT%H}", "messages": 20})
+
+    status, body = ctx.send("Hi", alice)
+
+    assert status == 429 and body["message"].startswith("You can send the assistant 20 messages an hour. Try again in")
+    assert ctx.usage.usage.get("t1", current_month()).messages == 0   # the month's allowance isn't touched
+    assert stored(ctx) is None
+    assert ctx.send("Hi", claims("bob", "t1", "member"))[0] == 201   # each user has their own
+    counted = ctx.table.get_item(Key={"pk": "TENANT#t1", "sk": f"USER#bob#HOUR#{datetime.now(UTC):%Y-%m-%dT%H}"})
+    assert counted["Item"]["messages"] == 1 and counted["Item"]["expires_at"] < time.time() + 2 * 3600
+
+
+# ---------- editing a message, asking for an answer again ----------
+
+def history_of(api, user) -> list[tuple[str, str]]:
+    return [(m["role"], m.get("content", "")) for m in opened(api, user)["messages"]]
+
+
+def sent_to_model(ctx, call: int = 0) -> list[tuple[str, str]]:
+    return [(m.type, m.text) for m in ctx.model_calls()[call] if m.type != "system"]
+
+
+def test_editing_a_message_replaces_it_and_everything_after_it(ctx, api, alice):
+    ctx.script(ctx.answer("Paris."))
+    ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice)
+    ctx.script(ctx.answer("Berlin."))
+    ctx.run(ctx.post("And Germany?", alice, message_id="q2"), alice)
+    ctx.script(ctx.answer("Rome."))
+
+    ctx.run(ctx.post("Capital of Italy?", alice, message_id="q3", replaces="q1"), alice)
+
+    assert history_of(api, alice) == [("user", "Capital of Italy?"), ("assistant", "Rome.")]
+    assert stored(ctx).message_count == 2
+    assert len([i for i in ctx.table.scan()["Items"] if i["sk"].startswith("MSG#")]) == 2
+    # The agent went back too: the model was sent the edited message alone.
+    assert sent_to_model(ctx) == [("human", "Capital of Italy?")]
+    ctx.script(ctx.answer("Madrid."))
+    ctx.chat("And Spain?", alice)
+    assert sent_to_model(ctx) == [("human", "Capital of Italy?"), ("ai", "Rome."), ("human", "And Spain?")]
+
+
+def test_asking_for_an_answer_again_replaces_the_old_one(ctx, api, alice):
+    ctx.script(ctx.answer("Paris."))
+    ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice)
+    ctx.script(ctx.answer("It's Paris."))
+
+    ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice)   # the same message again
+
+    assert history_of(api, alice) == [("user", "Capital of France?"), ("assistant", "It's Paris.")]
+    assert sent_to_model(ctx) == [("human", "Capital of France?")]   # not the old answer, not the question twice
+
+
+def test_only_the_users_own_messages_are_edited_one_answer_at_a_time(ctx, api, alice):
+    ctx.script(ctx.answer("Paris."))
+    ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice)
+    answer_id = opened(api, alice)["messages"][1]["id"]
+
+    assert ctx.send("Edited", alice, replaces=answer_id)[0] == 404   # not a message of the user's
+    assert ctx.send("Edited", alice, replaces="no-such-message")[0] == 404
+    assert ctx.send("Edited", claims("bob", "t1", "member"), replaces="q1")[0] == 404
+    ctx.post("And Germany?", alice)
+    assert ctx.send("Edited", alice, replaces="q1")[0] == 409   # while an answer is coming
+    assert history_of(api, alice) == [("user", "Capital of France?"), ("assistant", "Paris."),
+                                      ("user", "And Germany?")]
+
+
+def test_messages_past_the_count_are_not_part_of_the_conversation(ctx, api, alice):
+    ctx.script(ctx.answer("Paris."))
+    ctx.chat("Capital of France?", alice)
+    # What an edit's delete that stopped half way leaves: message_count says it's gone.
+    ctx.table.put_item(Item={"pk": f"TENANT#t1#USER#alice#CONV#{THREAD}", "sk": "MSG#000003",
+                             "message": {"id": "left", "role": "user", "content": "Left behind"}})
+
+    assert history_of(api, alice) == [("user", "Capital of France?"), ("assistant", "Paris.")]
+    assert ctx.send("Edited", alice, replaces="left")[0] == 404
+    ctx.script(ctx.answer("Berlin."))
+    ctx.chat("And Germany?", alice)   # writes over it
+    assert history_of(api, alice)[2:] == [("user", "And Germany?"), ("assistant", "Berlin.")]
+
+
+def test_a_first_message_sent_again_is_titled_again(ctx, alice):
+    ctx.title_model.fail = True
+    ctx.script()   # the model has no answer: the run fails
+    ctx.run(ctx.post("Hi", alice, message_id="m1"), alice)
+    assert stored(ctx).title_source == "message"
+    ctx.title_model.fail = False
+    ctx.script(ctx.answer("Hello!"))
+
+    ctx.run(ctx.post("Hi", alice, message_id="m1"), alice)   # Try again
+
+    assert (stored(ctx).title, stored(ctx).title_source) == ("Test conversation", "model")
+
+
+# ---------- rating an answer ----------
+
+def test_rating_an_answer(ctx, api, alice):
+    ctx.api.responses["/orders"] = {"items": [], "next_cursor": None}
+    ctx.script(ctx.tool_call("list_orders", {}), ctx.answer("No orders yet."))
+    ctx.chat("What did we order?", alice)
+    question, *_, answer = [m["id"] for m in opened(api, alice)["messages"]]   # the answer's last message
+    path = f"/assistant/conversations/{THREAD}/messages/{answer}"
+
+    assert api.call("PATCH", path, alice, body={"rating": "up"})[0] == 204
+    assert opened(api, alice)["ratings"] == {answer: "up"}
+    assert api.call("PATCH", path, alice, body={"rating": "down"})[0] == 204
+    assert opened(api, alice)["ratings"] == {answer: "down"}
+    assert api.call("PATCH", path, alice, body={"rating": None})[0] == 204   # taken back
+    assert opened(api, alice)["ratings"] == {}
+
+    assert api.call("PATCH", f"/assistant/conversations/{THREAD}/messages/{question}", alice,
+                    body={"rating": "up"})[0] == 404   # only answers
+    assert api.call("PATCH", path, claims("bob", "t1", "member"), body={"rating": "up"})[0] == 404
+    assert api.call("PATCH", path, alice, body={"rating": "meh"})[0] == 422
+
+
 # ---------- what the agent keeps ----------
 
 def test_the_history_is_what_the_page_showed_as_agui_messages(ctx, alice):
@@ -158,7 +276,7 @@ def test_the_history_is_what_the_page_showed_as_agui_messages(ctx, alice):
         AGUI_MESSAGE.validate_python(message)   # what @ag-ui/client reads back
 
 
-def test_the_model_titles_the_conversation_once_out_of_the_stream_and_its_tokens_count(ctx, alice):
+def test_the_model_titles_a_new_conversation_from_its_first_message_out_of_the_stream(ctx, alice):
     ctx.title_model.title, ctx.title_model.tokens = '"Last week\'s orders."', (40, 5)
     ctx.script(ctx.answer("You ordered a Book.", input_tokens=100, output_tokens=20))
 
@@ -168,12 +286,29 @@ def test_the_model_titles_the_conversation_once_out_of_the_stream_and_its_tokens
     assert (conversation.title, conversation.title_source) == ("Last week's orders", "model")
     assert "Last week" not in json.dumps(events)   # the title call never reached the user's stream
     [sent] = ctx.title_model.calls
-    assert "What did we order last week?" in sent[-1].content and "You ordered a Book." in sent[-1].content
+    assert sent[-1].content == "What did we order last week?"   # the question: asked while the agent answers
     assert ctx.usage.usage.get("t1", conversation.created_at[:7]).tokens == 120 + 45
 
     ctx.script(ctx.answer("Anything else?"))
     ctx.chat("Thanks", alice)
-    assert len(ctx.title_model.calls) == 1   # only after the first answer
+    assert len(ctx.title_model.calls) == 1   # only the first message
+
+
+def test_the_answer_does_not_wait_for_its_title(ctx, alice, monkeypatch):
+    monkeypatch.setattr(assistant.app, "TITLE_WAIT_SECONDS", 0.2)
+    called, release = threading.Event(), threading.Event()
+    invoke = ctx.title_model.invoke
+    ctx.title_model.__dict__["invoke"] = lambda *a, **kw: (called.set(), release.wait(5), invoke(*a, **kw))[2]
+    ctx.script(ctx.answer("Hello!"))
+
+    started = time.monotonic()
+    events = ctx.chat("Hi", alice)
+
+    assert called.is_set() and events[-1]["type"] == "RUN_FINISHED"   # asked for at the start, still writing
+    assert time.monotonic() - started < 2
+    assert stored(ctx).run is None   # the conversation takes the next message already
+    release.set()
+    wait_until(lambda: stored(ctx).title == "Test conversation")   # it lands when it's done
 
 
 def test_the_first_message_stays_the_title_when_the_model_fails(ctx, alice):
@@ -208,7 +343,7 @@ def test_a_failed_run_keeps_the_question(ctx, alice):
 
     assert ctx.error(events)["code"] == "INTERNAL_ERROR"
     assert [m["content"] for m in ctx.conversations.messages("t1", "alice", THREAD, 50)] == ["Hi"]
-    assert stored(ctx).title == "Hi"
+    assert stored(ctx).title == "Test conversation"   # titled from the question, answered or not
     assert stored(ctx).run is None   # nothing more is coming
 
 
@@ -269,6 +404,63 @@ def test_a_reload_mid_answer_reads_what_was_said_then_the_rest_live(ctx, alice):
         assert second.result(5) == first.result(5)
     assert ctx.text(first.result()) == "No orders yet."
     assert len(ctx.model_calls()) == 2   # one run, read twice
+
+
+def client_messages(events: list[dict]) -> list[dict]:
+    """
+    The messages @ag-ui/client makes of these events, as its reducer does
+    (apply/default.ts): a start for a message or tool call it has already
+    adds to it rather than making another.
+    """
+    messages: list[dict] = []
+
+    def by_id(message_id):
+        return next((m for m in messages if m["id"] == message_id), None)
+
+    for e in events:
+        match e["type"]:
+            case "TEXT_MESSAGE_START" if not by_id(e["messageId"]):
+                messages.append({"id": e["messageId"], "role": e["role"], "content": ""})
+            case "TEXT_MESSAGE_CONTENT":
+                by_id(e["messageId"])["content"] += e["delta"]
+            case "TOOL_CALL_START" if not any(c["id"] == e["toolCallId"] for m in messages
+                                              for c in m.get("toolCalls", [])):
+                parent = by_id(e["parentMessageId"]) or messages.append(
+                    {"id": e["parentMessageId"], "role": "assistant"}) or by_id(e["parentMessageId"])
+                parent.setdefault("toolCalls", []).append({"id": e["toolCallId"], "args": ""})
+            case "TOOL_CALL_ARGS":
+                next(c for m in messages for c in m.get("toolCalls", []) if c["id"] == e["toolCallId"])["args"] \
+                    += e["delta"]
+            case "TOOL_CALL_RESULT":
+                messages.append({"id": e["messageId"], "role": "tool", "content": e["content"]})
+    return messages
+
+
+def test_a_stream_that_broke_reads_on_from_where_it_was(ctx, alice):
+    ctx.api.responses["/orders"] = {"items": [], "next_cursor": None}
+    ctx.script(ctx.tool_call("list_orders", {"limit": 5}), ctx.answer("No orders yet."))
+    run_id = ctx.post("What did we order?", alice)
+    whole = ctx.run(run_id, alice)
+    resume = {"startedAt": whole[0]["timestamp"]}
+
+    # Whatever the page had (one event, mid tool call, mid text...), it reads only the rest.
+    for after in range(1, len(whole)):
+        rest = ctx.run(run_id, alice, resume={**resume, "after": after})
+        assert rest[0] == whole[0] and rest[-1] == whole[-1]
+        assert len(rest) <= len(whole) - after + 2   # RUN_STARTED, and at most one start that was open
+        assert client_messages(whole[:after] + rest) == client_messages(whole), after
+    assert len(ctx.model_calls()) == 2   # answered once
+
+
+def test_a_page_reads_a_run_started_again_from_the_start(ctx, alice):
+    ctx.script(ctx.answer("Hello!"))
+    run_id = ctx.post("Hi", alice)
+    whole = ctx.run(run_id, alice)
+
+    # Another log of the run (a microVM that started it again), or a resume that makes no sense: all of it.
+    for resume in ({"after": 3, "startedAt": whole[0]["timestamp"] - 1}, {"after": -1, "startedAt": 1},
+                   {"after": "3"}, "nonsense"):
+        assert ctx.run(run_id, alice, resume=resume) == whole
 
 
 def test_only_its_user_follows_a_run(ctx, alice):
@@ -407,11 +599,13 @@ def test_deleting_the_conversation_mid_answer_stops_it_and_leaves_no_checkpoint(
 # ---------- the HTTP API ----------
 
 def start(ctx, thread_id: str, now: str, user_id="alice", tenant_id="t1", expires_in=3600, title="Hi") -> Run:
-    """A conversation as sending its first message leaves it: the message, and its run still to answer."""
+    """A conversation as sending a message leaves it: the message, and its run still to answer."""
     run = Run(run_id=str(uuid4()), message_id=str(uuid4()), prompt=title, agent="assistant", since=now)
-    ctx.conversations.add_question(tenant_id, user_id, thread_id, run=run, title=title, append=True,
-                                   message={"id": run.message_id, "role": "user", "content": title}, now=now,
-                                   expires_at=int(time.time()) + expires_in, stale_before="9999")
+    before = ctx.conversations.get(tenant_id, user_id, thread_id, expired=True)
+    assert ctx.conversations.add_question(
+        tenant_id, user_id, thread_id, run=run, title=title, at=None, count=before.message_count if before else 0,
+        message={"id": run.message_id, "role": "user", "content": title}, now=now,
+        expires_at=int(time.time()) + expires_in, stale_before="9999")
     return run
 
 

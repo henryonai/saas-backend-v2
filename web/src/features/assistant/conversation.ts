@@ -1,9 +1,19 @@
-import type { Message, RunFinishedEvent } from '@ag-ui/client';
+import { type BaseEvent, EventType, type Message, type RunFinishedEvent } from '@ag-ui/client';
 import { useStore } from 'zustand';
 import { createStore } from 'zustand/vanilla';
-import type { AssistantConversationDetail } from '@/shared/api/types';
+import type { AssistantConversationDetail, AssistantRating } from '@/shared/api/types';
 import { endSession, getIdToken, refreshSession, sessionStore } from '@/shared/auth/session';
-import { AssistantAgent, cancelRun, getConversation, MAIN_AGENT, postMessage, type RunError, requestError, runError } from './api';
+import {
+  AssistantAgent,
+  cancelRun,
+  getConversation,
+  MAIN_AGENT,
+  postMessage,
+  rateMessage,
+  type RunError,
+  requestError,
+  runError,
+} from './api';
 
 /**
  * The conversation on the Assistant page: the one streaming now, or one
@@ -25,10 +35,12 @@ export interface ConversationState {
   error: RunError | null;
   /** tokens of the last answer, from RUN_FINISHED (a subagent's count against the plan but aren't in it) */
   tokens: number | null;
+  /** the user's thumbs up or down on answers, by the id of each answer's last assistant message */
+  ratings: Record<string, AssistantRating>;
 }
 
 function fresh(): ConversationState {
-  return { threadId: crypto.randomUUID(), messages: [], running: false, error: null, tokens: null };
+  return { threadId: crypto.randomUUID(), messages: [], running: false, error: null, tokens: null, ratings: {} };
 }
 
 export const conversationStore = createStore<ConversationState>()(fresh);
@@ -52,6 +64,12 @@ function currentAgent(): AssistantAgent {
 /** Updates the state, unless the conversation `from` belongs to was replaced meanwhile. */
 function update(from: AssistantAgent, changes: Partial<ConversationState>): void {
   if (conversationStore.getState().threadId === from.threadId) conversationStore.setState(changes);
+}
+
+/** Shows these messages, and has the agent client start from them. */
+function show(target: AssistantAgent, messages: Message[]): void {
+  target.setMessages(messages);
+  update(target, { messages: [...messages] });
 }
 
 /** The run failed because of the token: AgentCore's authorizer, or our own check of its claims. */
@@ -84,16 +102,71 @@ export async function sendMessage(text: string): Promise<void> {
 }
 
 /**
- * Asks again after a failed run: the newest user message goes out again
- * (counted again, not saved twice). A run the page couldn't reach is
- * followed again instead: it may well have answered.
+ * Edits one of the user's messages, as in ChatGPT: it and everything after
+ * it make way for the new text, here and on the server, where the agent goes
+ * back to before it too, and the new message is answered.
+ */
+export async function editMessage(messageId: string, text: string): Promise<void> {
+  const prompt = text.trim();
+  if (!prompt || conversationStore.getState().running) return;
+  const target = currentAgent();
+  const at = target.messages.findIndex((message) => message.id === messageId && message.role === 'user');
+  if (at < 0) return;
+  const id = crypto.randomUUID();
+  show(target, [...target.messages.slice(0, at), { id, role: 'user', content: prompt }]);
+  await ask(target, id, prompt, messageId);
+}
+
+/**
+ * Asks for the last answer again: the newest user message goes out again
+ * (counted again), and on the server it takes its own place, so the old
+ * answer goes, from the history and from what the agent remembers.
+ */
+export async function regenerate(): Promise<void> {
+  if (conversationStore.getState().running) return;
+  const target = currentAgent();
+  const at = lastUserMessage(target.messages);
+  const newest = target.messages[at];
+  if (!newest || typeof newest.content !== 'string') return;
+  show(target, target.messages.slice(0, at + 1));
+  await ask(target, newest.id, newest.content);
+}
+
+/**
+ * Asks again after a failed run, as regenerate() does. A run the page
+ * couldn't reach is followed again instead: it may well have answered.
  */
 export async function retry(): Promise<void> {
   if (conversationStore.getState().running) return;
   const target = currentAgent();
   if (unreached?.agent === target) return follow(target, unreached.runId);
-  const newest = [...target.messages].reverse().find((message) => message.role === 'user');
-  if (newest && typeof newest.content === 'string') await ask(target, newest.id, newest.content);
+  await regenerate();
+}
+
+/**
+ * Thumbs up or down on an answer (`messageId`: its last assistant message),
+ * at once on screen; the same again takes it back. A failed save puts the
+ * old rating back.
+ */
+export async function rateAnswer(messageId: string, rating: AssistantRating): Promise<void> {
+  const { threadId, ratings } = conversationStore.getState();
+  const before = ratings[messageId] ?? null;
+  const after = before === rating ? null : rating;
+  setRating(threadId, messageId, after);
+  try {
+    await rateMessage(threadId, messageId, after);
+  } catch {
+    setRating(threadId, messageId, before);
+  }
+}
+
+function setRating(threadId: string, messageId: string, rating: AssistantRating | null): void {
+  const state = conversationStore.getState();
+  if (state.threadId !== threadId) return;
+  const ratings = { ...state.ratings };
+  if (rating) ratings[messageId] = rating;
+  else delete ratings[messageId];
+  conversationStore.setState({ ratings });
 }
 
 /** Stops the answer: on screen at once, and on the server, which keeps what it wrote. */
@@ -121,7 +194,9 @@ export function openConversation(threadId: string, history: AssistantConversatio
   agent?.abortRun();
   shown = unreached = null;
   agent = new AssistantAgent(threadId, history.messages);
-  conversationStore.setState({ threadId, messages: history.messages, running: false, error: null, tokens: null });
+  conversationStore.setState({
+    threadId, messages: history.messages, running: false, error: null, tokens: null, ratings: { ...history.ratings },
+  });
   if (history.run_id) void follow(agent, history.run_id);
 }
 
@@ -133,11 +208,11 @@ sessionStore.subscribe((state, previous) => {
 });
 
 /** Saves the message with the run that will answer it (the HTTP API), then follows the run. */
-async function ask(target: AssistantAgent, id: string, content: string): Promise<void> {
+async function ask(target: AssistantAgent, id: string, content: string, replaces?: string): Promise<void> {
   update(target, { running: true, error: null, tokens: null });
   let runId: string;
   try {
-    ({ run_id: runId } = await postMessage(target.threadId, { id, content, agent: MAIN_AGENT }));
+    ({ run_id: runId } = await postMessage(target.threadId, { id, content, agent: MAIN_AGENT, ...(replaces && { replaces }) }));
   } catch (error) {
     update(target, { running: false, error: requestError(error) });
     return;
@@ -147,7 +222,8 @@ async function ask(target: AssistantAgent, id: string, content: string): Promise
 
 /**
  * Streams a run into the state: one just sent, or one already going.
- * AgentCore starts it if nobody has, and sends every event from the first.
+ * AgentCore starts it if nobody has, and sends every event from the first;
+ * after a stream that broke, only those this page doesn't have.
  */
 async function follow(target: AssistantAgent, runId: string): Promise<void> {
   const following = { agent: target, runId };
@@ -155,13 +231,14 @@ async function follow(target: AssistantAgent, runId: string): Promise<void> {
   unreached = null;
   const before = [...target.messages]; // what the page showed before any of this run
   update(target, { running: true, error: null, tokens: null });
-  let result = await stream(target, runId);
+  let result = await stream(target, runId, before);
   // Rejected for the token before anything ran: one retry with new tokens, as
   // the HTTP API client does. A failed refresh signs out.
   if (result.error && AUTH_CODES.has(result.error.code) && (await refreshSession())) {
-    result = await stream(target, runId);
+    result = await stream(target, runId, before);
     if (result.error?.code === 'UNAUTHORIZED') await endSession('expired');
   }
+  let position = result.position;
   for (const delay of FOLLOW_DELAYS_MS) {
     if (!result.transient) break;
     await new Promise((resolve) => setTimeout(resolve, delay));
@@ -169,10 +246,10 @@ async function follow(target: AssistantAgent, runId: string): Promise<void> {
       update(target, { running: false }); // stopped, or left, meanwhile
       return;
     }
-    // AgentCore sends the run from the start again: take back what this page drew of it.
-    target.setMessages(before);
-    update(target, { messages: before });
-    result = await stream(target, runId);
+    // Nowhere to read on from: AgentCore sends the run from the start, so take back what this page drew of it.
+    if (!position) show(target, before);
+    result = await stream(target, runId, before, position ?? undefined);
+    position = result.position ?? position;
   }
   if (result.error?.code === 'NOT_FOUND') {
     // It ended before this page asked, and AgentCore has let it go: the history has the answer.
@@ -183,22 +260,48 @@ async function follow(target: AssistantAgent, runId: string): Promise<void> {
   update(target, { running: false, error: result.error });
 }
 
+/**
+ * Where this page is in a run's events: how many it has (`after`), of the
+ * telling that started at `startedAt` (its RUN_STARTED's timestamp). Sent
+ * back as forwardedProps.resume, the server sends only the rest (app.resume_after).
+ */
+interface Position {
+  after: number;
+  startedAt: number;
+}
+
 interface Streamed {
   error: RunError | null;
   /** It failed on the way, not because of the run: AgentCore or the network. Asking again may get it. */
   transient: boolean;
+  /** null: no RUN_STARTED with a timestamp came, so there is nothing to read on from */
+  position: Position | null;
 }
 
-async function stream(target: AssistantAgent, runId: string): Promise<Streamed> {
+async function stream(target: AssistantAgent, runId: string, before: Message[], resume?: Position): Promise<Streamed> {
   const token = await getIdToken();
-  if (!token) return { error: { code: 'UNAUTHORIZED', message: 'Not signed in' }, transient: false };
+  if (!token) return { error: { code: 'UNAUTHORIZED', message: 'Not signed in' }, transient: false, position: null };
   target.authorize(token);
   let error: RunError | null = null;
   let transient = false;
+  const at: { position: Position | null } = { position: null };
+  const drawn = idsOf(target.messages);
   try {
     await target.runAgent(
-      { runId, forwardedProps: { agent: MAIN_AGENT } },
+      { runId, forwardedProps: { agent: MAIN_AGENT, ...(resume && { resume }) } },
       {
+        onRunStartedEvent: ({ event }) => {
+          if (resume && event.timestamp === resume.startedAt) {
+            at.position = { ...resume }; // the server reads on from there
+            return;
+          }
+          at.position = typeof event.timestamp === 'number' ? { after: 1, startedAt: event.timestamp } : null;
+          // Asked to read on, it sent another telling (the run started again elsewhere): from the start.
+          return resume ? { messages: before } : undefined;
+        },
+        onEvent: ({ event }) => {
+          if (at.position && isLogged(event, drawn)) at.position.after += 1;
+        },
         onMessagesChanged: ({ messages }) => update(target, { messages: [...messages] }),
         onRunErrorEvent: ({ event }) => {
           if (event.code === ABORTED) return; // the user stopped it, or left the conversation
@@ -213,14 +316,50 @@ async function stream(target: AssistantAgent, runId: string): Promise<Streamed> 
     const { status } = (thrown ?? {}) as { status?: unknown };
     transient = typeof status !== 'number' || status >= 500 || status === 429;
   }
-  return { error, transient };
+  return { error, transient, position: at.position };
+}
+
+/**
+ * Whether the event is one of the run's own, as the server counts them:
+ * not the stream's opening and end, nor the start of a message or tool
+ * call this page had already, which a stream read on from the middle of it
+ * sends again (runs.reopened).
+ */
+function isLogged(event: BaseEvent, drawn: Set<string>): boolean {
+  switch (event.type) {
+    case EventType.RUN_STARTED:
+    case EventType.RUN_FINISHED:
+    case EventType.RUN_ERROR:
+      return false;
+    case EventType.TEXT_MESSAGE_START:
+      return !drawn.has((event as BaseEvent & { messageId: string }).messageId);
+    case EventType.TOOL_CALL_START:
+      return !drawn.has((event as BaseEvent & { toolCallId: string }).toolCallId);
+    default:
+      return true;
+  }
+}
+
+/** The ids of these messages and of their tool calls. */
+function idsOf(messages: Message[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    ids.add(message.id);
+    if (message.role === 'assistant') for (const call of message.toolCalls ?? []) ids.add(call.id);
+  }
+  return ids;
+}
+
+function lastUserMessage(messages: Message[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return i;
+  return -1;
 }
 
 async function showHistory(target: AssistantAgent): Promise<void> {
   try {
-    const { messages } = await getConversation(target.threadId);
+    const { messages, ratings } = await getConversation(target.threadId);
     target.setMessages(messages);
-    update(target, { messages, running: false, error: null });
+    update(target, { messages, ratings: { ...ratings }, running: false, error: null });
   } catch (error) {
     update(target, { running: false, error: requestError(error) });
   }

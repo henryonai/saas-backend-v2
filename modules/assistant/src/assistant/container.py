@@ -2,7 +2,7 @@
 Composition root: the one place that picks real implementations.
 
 Three entry points use it:
-  app.py      AgentCore Runtime: the agents, usage, the conversation log.
+  app.py      AgentCore Runtime: the agents, usage, the conversation log, titles.
               Built once per Runtime session (a microVM) and reused by its
               following messages.
   handler.py  Lambda: the HTTP API for the users' conversations, which also
@@ -11,7 +11,8 @@ Three entry points use it:
               conversation: the agents' checkpoints, an expired one's messages.
 
 The two Lambdas get the shared layer, not the agents' dependencies (LangChain,
-the AgentCore SDK, httpx): only get_agents() imports those, when it runs.
+the AgentCore SDK, httpx): only get_agents() and get_titles() import those,
+when they run.
 """
 from functools import lru_cache
 
@@ -89,9 +90,17 @@ def get_agents() -> dict:
         ),
         usage=usage,
         tools=tools,
-        history=get_conversation_log(),
-        title_model=make_model(settings.model_id),
     ))
+
+
+@lru_cache
+def get_titles():
+    """Names new conversations with the stack's default model (titles.py)."""
+    from assistant.llm import chat_model
+    from assistant.titles import Titles
+
+    settings = get_settings()
+    return Titles(chat_model(settings.model_id, settings), get_conversation_log(), get_usage_service())
 
 
 @lru_cache

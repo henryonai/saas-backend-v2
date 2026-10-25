@@ -39,3 +39,5 @@ export type AssistantConversationPage = { items: AssistantConversation[]; next_c
 export type AssistantConversationDetail = Omit<Sent<Assistant['schemas']['ConversationDetail']>, 'messages'> & { messages: Message[] };
 /** A sent message's run: AgentCore streams its answer (the AG-UI runId). */
 export type AssistantRun = Sent<Assistant['schemas']['RunOut']>;
+/** The user's thumbs up or down on an answer. */
+export type AssistantRating = NonNullable<Assistant['schemas']['MessageRating']['rating']>;

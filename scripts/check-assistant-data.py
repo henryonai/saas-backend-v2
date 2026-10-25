@@ -2,7 +2,8 @@
 Checks the assistant's table against its data model
 (modules/assistant/src/assistant/repository.py) and prints what doesn't fit:
 each conversation's messages against its META record, the list index, a run
-left behind, tool results without their call, and the usage records.
+left behind, tool results without their call, ratings, and the usage
+records, monthly and hourly.
 
     uv run python scripts/check-assistant-data.py --config-env dev
     uv run python scripts/check-assistant-data.py --config-env dev --tenant <tenant_id>
@@ -25,6 +26,7 @@ from boto3.dynamodb.conditions import Attr
 ROOT = Path(__file__).resolve().parent.parent
 RUN_LIMIT = timedelta(minutes=60)   # service.RUN_LIMIT: an older run no longer blocks the conversation
 CONVERSATION = re.compile(r"^TENANT#(?P<tenant>[^#]+)#USER#(?P<user>[^#]+)#CONV#(?P<thread>.+)$")
+HOURLY = re.compile(r"^USER#[^#]+#HOUR#\d{4}-\d{2}-\d{2}T\d{2}$")   # a user's messages that hour
 
 
 def stack_settings(config_env: str) -> tuple[str, str]:
@@ -53,7 +55,12 @@ def check_conversation(pk: str, meta: dict | None, messages: dict[int, dict],
     problems, notes = [], []
     tenant, user = CONVERSATION.match(pk).group("tenant", "user")
     count = int(meta["message_count"])
-    numbers = sorted(messages)
+    # Past message_count: what an edit's delete left when it stopped half way.
+    # Not part of the conversation (reads stop at the count), and later messages write over it.
+    beyond = [n for n in messages if n > count]
+    if beyond:
+        notes.append(f"{len(beyond)} messages past message_count {count}, left by an edit (not shown)")
+    numbers = sorted(n for n in messages if n <= count)
     # Messages have no TTL of their own: the conversation expires whole (its
     # META). Those saved before that change (October 2026) kept one, so the
     # oldest of an old conversation may be gone; the rest number up to
@@ -74,6 +81,9 @@ def check_conversation(pk: str, meta: dict | None, messages: dict[int, dict],
             if "expires_at" in messages[n] and int(messages[n]["expires_at"]) > int(meta["expires_at"])]
     if late:
         problems.append(f"{len(late)} messages expire after their conversation")
+    rated = [messages[n] for n in numbers if "rating" in messages[n]]
+    if [m for m in rated if m["rating"] not in ("up", "down") or m["message"].get("role") != "assistant"]:
+        problems.append("a rating that isn't up or down on an assistant message")
     ordered = [messages[n]["message"] for n in numbers]
     users = [m for m in ordered if m.get("role") == "user"]
     if users and "question_id" not in meta:
@@ -110,7 +120,7 @@ def main() -> None:
     items = scan(boto3.resource("dynamodb", region_name=region).Table(name), args.tenant)
     now = time.time()
 
-    metas, messages, usage, unknown = {}, defaultdict(dict), [], []
+    metas, messages, usage, hourly, unknown = {}, defaultdict(dict), [], [], []
     for item in items:
         if item["sk"] == "META" and CONVERSATION.match(item["pk"]):
             metas[item["pk"]] = item
@@ -118,6 +128,8 @@ def main() -> None:
             messages[item["pk"]][int(item["sk"][4:])] = item
         elif item["sk"].startswith("USAGE#"):
             usage.append(item)
+        elif HOURLY.match(item["sk"]) and item["pk"].startswith("TENANT#"):
+            hourly.append(item)
         else:
             unknown.append(f"{item['pk']} {item['sk']}")
 
@@ -130,11 +142,18 @@ def main() -> None:
     for item in usage:
         if int(item.get("tokens", 0)) != int(item.get("input_tokens", 0)) + int(item.get("output_tokens", 0)):
             problems.append(f"usage {item['pk']} {item['sk']}: tokens isn't input_tokens + output_tokens")
+    for item in hourly:
+        if "expires_at" not in item:
+            problems.append(f"hourly count {item['pk']} {item['sk']} never expires")
+        elif int(item["expires_at"]) < now:
+            notes.append(f"hourly count {item['pk']} {item['sk']}: expired, waiting for TTL to remove it")
     problems += [f"a record outside the data model: {key}" for key in unknown]
 
     running = sum(1 for meta in metas.values() if meta.get("run"))
+    rated = sum(1 for m in messages.values() for item in m.values() if "rating" in item)
     print(f"{name}: {len(metas)} conversations ({running} answering now), "
-          f"{sum(len(m) for m in messages.values())} messages, {len(usage)} usage records")
+          f"{sum(len(m) for m in messages.values())} messages ({rated} answers rated), {len(usage)} usage records, "
+          f"{len(hourly)} hourly counts")
     for item in sorted(usage, key=lambda i: (i["pk"], i["sk"])):
         print(f"  usage {item['pk'].removeprefix('TENANT#')} {item['sk'].removeprefix('USAGE#')}: "
               f"{item.get('messages', 0)} messages, {item.get('tokens', 0)} tokens, "

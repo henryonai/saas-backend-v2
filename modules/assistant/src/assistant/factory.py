@@ -20,14 +20,8 @@ from langchain_core.tools import BaseTool
 from assistant.context import AgentContext
 from assistant.definitions import AgentDefinition
 from assistant.delegation import make_task_tool
-from assistant.middleware import (
-    ConversationMiddleware,
-    PlanToolsMiddleware,
-    TitleMiddleware,
-    UsageMiddleware,
-    tool_failed,
-)
-from assistant.service import ConversationLog, UsageService
+from assistant.middleware import ConversationMiddleware, PlanToolsMiddleware, UsageMiddleware, tool_failed
+from assistant.service import UsageService
 from assistant.tools import SANDBOX_TOOLS
 
 # Tool calls in one run, whatever the model decides (maxTurns bounds model calls).
@@ -43,8 +37,6 @@ class AgentDeps:
     checkpointer: Any
     usage: UsageService
     tools: dict[str, BaseTool]   # tools.make_tools()
-    history: ConversationLog
-    title_model: BaseChatModel   # names conversations (TitleMiddleware): the stack's default model
 
 
 def build_agents(definitions: dict[str, AgentDefinition], deps: AgentDeps) -> dict[str, Any]:
@@ -69,8 +61,6 @@ def _build(definition: AgentDefinition, deps: AgentDeps, *, top_level: bool, ext
     if top_level:
         middleware.append(ConversationMiddleware(MAX_HISTORY_TOKENS))
     middleware.append(PlanToolsMiddleware(deps.usage, SANDBOX_TOOLS))
-    if top_level:
-        middleware.append(TitleMiddleware(deps.title_model, deps.history, deps.usage))
     middleware += [
         ModelCallLimitMiddleware(run_limit=definition.max_turns, exit_behavior="end"),
         ToolCallLimitMiddleware(run_limit=MAX_TOOL_CALLS_PER_RUN, exit_behavior="continue"),

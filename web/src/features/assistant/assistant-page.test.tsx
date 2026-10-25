@@ -27,11 +27,13 @@ type Ids = { threadId: string; runId: string };
 type Answer = (ids: Ids) => { events: Event[]; status?: number; open?: boolean; drop?: boolean };
 interface Run extends Ids {
   messages: unknown[];
+  forwardedProps: { agent?: string; resume?: { after: number; startedAt: number } };
 }
 interface Sent {
   id: string;
   content: string;
   agent: string;
+  replaces?: string;
 }
 
 /**
@@ -47,13 +49,15 @@ function backend(...answers: Answer[]) {
   const calls: string[] = [];
   const conversations = new Map<string, AssistantConversation>();
   const histories = new Map<string, Message[]>();
+  const ratings = new Map<string, Record<string, string>>();
+  const rated: { threadId: string; messageId: string; rating: string | null }[] = [];
   const running = new Map<string, string>();
   const refusals: { status: number; message: string }[] = [];
 
   function keep(threadId: string, title: string, messages: Message[]) {
     const now = new Date().toISOString();
     conversations.set(threadId, { thread_id: threadId, title, created_at: now, updated_at: now, message_count: messages.length });
-    histories.set(threadId, messages);
+    histories.set(threadId, [...messages]); // a copy: what the tests send changes it
   }
 
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
@@ -82,7 +86,7 @@ function backend(...answers: Answer[]) {
     if (path === '/assistant/conversations') {
       return json({ items: [...conversations.values()].reverse(), next_cursor: null });
     }
-    const [rawId, action] = (path.split('/assistant/conversations/')[1] ?? '').split('/');
+    const [rawId, action, rawMessageId] = (path.split('/assistant/conversations/')[1] ?? '').split('/');
     const id = decodeURIComponent(rawId);
     if (method === 'POST' && action === 'messages') {
       const message: Sent = JSON.parse(String(init?.body));
@@ -91,14 +95,24 @@ function backend(...answers: Answer[]) {
       if (refusal) return json({ message: refusal.message }, refusal.status);
       if (!conversations.has(id)) keep(id, message.content, []);
       const messages = histories.get(id)!;
-      if (messages.at(-1)?.id !== message.id) messages.push({ id: message.id, role: 'user', content: message.content });
+      // An edit, or the same message again: it takes the place of that one and everything after it.
+      const at = messages.findIndex((m) => m.id === (message.replaces ?? message.id));
+      if (at >= 0) messages.splice(at);
+      messages.push({ id: message.id, role: 'user', content: message.content });
       running.set(id, `run-${sent.length}`);
       return json({ run_id: running.get(id) }, 201);
+    }
+    if (method === 'PATCH' && action === 'messages') {
+      const { rating } = JSON.parse(String(init?.body));
+      rated.push({ threadId: id, messageId: decodeURIComponent(rawMessageId), rating });
+      return new Response(null, { status: 204 });
     }
     if (method === 'POST' && action === 'runs') return new Response(null, { status: 204 });
     const conversation = conversations.get(id);
     if (!conversation) return json({ message: 'No such conversation: it was deleted, or it expired.' }, 404);
-    if (method === 'GET') return json({ ...conversation, run_id: running.get(id) ?? null, messages: histories.get(id) });
+    if (method === 'GET') {
+      return json({ ...conversation, run_id: running.get(id) ?? null, messages: histories.get(id), ratings: ratings.get(id) ?? {} });
+    }
     if (method === 'PATCH') {
       conversation.title = JSON.parse(String(init?.body)).title;
       return json(conversation);
@@ -109,7 +123,10 @@ function backend(...answers: Answer[]) {
     }
     return json({ message: 'Not Found' }, 404);
   }));
-  return { runs, sent, calls, conversations, running, keep, refuse: (status: number, message: string) => refusals.push({ status, message }) };
+  return {
+    runs, sent, calls, conversations, histories, running, keep, ratings, rated,
+    refuse: (status: number, message: string) => refusals.push({ status, message }),
+  };
 }
 
 const finished = (...events: Event[]): Answer => (ids) => ({
@@ -265,6 +282,63 @@ describe('chatting', () => {
     expect(server.runs.map((run) => run.runId)).toEqual(['run-1', 'run-1', 'run-1']);
   });
 
+  it('reads on from where it was when the stream drops, as AgentCore still has the run', async () => {
+    const dropped: Answer = (ids) => ({ events: [{ type: 'RUN_STARTED', ...ids, timestamp: 1700 }, ...text('m1', 'Once upon').slice(0, 2)], drop: true });
+    // The rest: RUN_STARTED again, the open message started again, then what the page didn't have.
+    const rest = finished(...text('m1', ' a time.'));
+    const server = backend(dropped, (ids) => {
+      const answer = rest(ids);
+      answer.events[0] = { ...answer.events[0], timestamp: 1700 };
+      return answer;
+    });
+    renderAt('/assistant');
+    await ask('Tell me a story');
+
+    expect(await screen.findByText('Once upon a time.', {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getAllByText(/Once upon/)).toHaveLength(1);
+    expect(server.runs[1].forwardedProps.resume).toEqual({ after: 3, startedAt: 1700 });
+  });
+
+  it('draws the run from the start when AgentCore answers with another telling of it', async () => {
+    const dropped: Answer = (ids) => ({ events: [{ type: 'RUN_STARTED', ...ids, timestamp: 1700 }, ...text('m1', 'Once upon').slice(0, 2)], drop: true });
+    const again = finished(...text('m2', 'Long ago, a story.'));
+    backend(dropped, (ids) => {
+      const answer = again(ids);
+      answer.events[0] = { ...answer.events[0], timestamp: 1900 }; // started again, in another microVM
+      return answer;
+    });
+    renderAt('/assistant');
+    await ask('Tell me a story');
+
+    expect(await screen.findByText('Long ago, a story.', {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.queryByText(/Once upon/)).not.toBeInTheDocument();
+  });
+
+  it('says when the user sent the hourly number of messages, with no Try again', async () => {
+    const server = backend();
+    server.refuse(429, 'You can send the assistant 20 messages an hour. Try again in 12 minutes.');
+    renderAt('/assistant');
+    await ask('Hi');
+
+    expect(await screen.findByText('You can send the assistant 20 messages an hour. Try again in 12 minutes.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(server.runs).toEqual([]);
+  });
+
+  it('asks for the last answer again in its place', async () => {
+    const server = backend(finished(...text('m1', 'Paris.')), finished(...text('m2', "It's Paris.")));
+    renderAt('/assistant');
+    const user = await ask('Capital of France?');
+    await screen.findByText('Paris.');
+
+    await user.click(screen.getByRole('button', { name: 'Regenerate' }));
+
+    expect(await screen.findByText("It's Paris.")).toBeInTheDocument();
+    expect(screen.queryByText('Paris.')).not.toBeInTheDocument();
+    expect(server.sent[1]).toEqual(server.sent[0]); // the same message: on the server it replaces itself
+    expect(screen.getAllByRole('button', { name: 'Edit message' })).toHaveLength(1); // one question on screen
+  });
+
   it('takes back what it drew when the stream drops, and draws the run once from the start', async () => {
     const dropped: Answer = (ids) => ({ events: [{ type: 'RUN_STARTED', ...ids }, ...text('m1', 'Once upon').slice(0, 2)], drop: true });
     backend(dropped, finished(...text('m1', 'Once upon', ' a time.')));
@@ -374,6 +448,47 @@ describe('conversations', () => {
     await user.click((await conversationList()).getByRole('link', { name: /Order check/ }));
 
     expect(await screen.findByText('A newer answer.')).toBeInTheDocument();
+  });
+
+  it('edits a message: it and what came after make way for the new one and its answer', async () => {
+    const server = backend(finished(...text('m5', 'Here are your paid orders.')));
+    server.keep(THREAD, 'Order check', history);
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+    await screen.findByText('You have no orders yet.');
+
+    await user.click(screen.getByRole('button', { name: 'Edit message' }));
+    const editor = screen.getByRole('textbox', { name: 'Your message' });
+    await user.clear(editor);
+    await user.type(editor, 'Which orders are paid?{Enter}');
+
+    expect(await screen.findByText('Here are your paid orders.')).toBeInTheDocument();
+    expect(screen.queryByText('What did we order?')).not.toBeInTheDocument();
+    expect(screen.queryByText('You have no orders yet.')).not.toBeInTheDocument();
+    expect(server.sent).toEqual([expect.objectContaining({ content: 'Which orders are paid?', replaces: 'u1' })]);
+    expect(server.histories.get(THREAD)?.map((m) => m.content)).toEqual(['Which orders are paid?']);
+  });
+
+  it('rates an answer, shows the rating when it opens again, and takes it back', async () => {
+    const server = backend();
+    server.keep(THREAD, 'Order check', history);
+    server.ratings.set(THREAD, { a2: 'down' });
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+    await screen.findByText('You have no orders yet.');
+    expect(screen.getByRole('button', { name: 'Bad answer' })).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(screen.getByRole('button', { name: 'Good answer' }));
+    expect(screen.getByRole('button', { name: 'Good answer' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Bad answer' })).toHaveAttribute('aria-pressed', 'false');
+    await user.click(screen.getByRole('button', { name: 'Good answer' }));
+
+    expect(screen.getByRole('button', { name: 'Good answer' })).toHaveAttribute('aria-pressed', 'false');
+    // On the answer's last message (a2), not the first (a1).
+    await waitFor(() => expect(server.rated).toEqual([
+      { threadId: THREAD, messageId: 'a2', rating: 'up' },
+      { threadId: THREAD, messageId: 'a2', rating: null },
+    ]));
   });
 
   it("says when a conversation isn't there any more", async () => {

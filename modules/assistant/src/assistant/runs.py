@@ -5,7 +5,10 @@ A run goes on whatever happens to the request that started it: it runs in a
 worker thread and writes its AG-UI events to a log, and every request for it,
 the first or one that reattached after a reload, reads that log from the
 start, then follows it live. Its messages keep their ids, so a page that
-reattaches draws the same messages as the one that started it.
+reattaches draws the same messages as the one that started it. A page whose
+stream broke mid-answer reads on from where it was instead (follow(after)),
+as OpenAI's background responses (starting_after) and LangGraph's streams
+(Last-Event-ID) resume.
 
 AgentCore gives each session (a conversation) a microVM of its own and sends
 all of the session's requests there, so a run and all its readers are in this
@@ -17,6 +20,7 @@ import contextvars
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 
+from ag_ui.core import TextMessageEndEvent, TextMessageStartEvent, ToolCallEndEvent, ToolCallStartEvent
 from aws_lambda_powertools import Logger
 
 logger = Logger()
@@ -54,10 +58,22 @@ class RunLog:
         for reader in self._readers:
             reader.put_nowait(_END)
 
-    async def follow(self) -> AsyncIterator:
-        """Every event from the first, then each new one, until the run ends."""
+    @property
+    def started_at(self) -> int | None:
+        """Its RUN_STARTED's timestamp: which log of the run a reader read (a run started again has another)."""
+        return getattr(self.events[0], "timestamp", None) if self.events else None
+
+    async def follow(self, after: int = 0) -> AsyncIterator:
+        """
+        Every event from the first, then each new one, until the run ends.
+        `after`: how many of them the reader has already (its stream broke):
+        then RUN_STARTED, which every AG-UI stream opens with, what was open
+        at that point started again (reopened()), and the events after those.
+        """
         reader: asyncio.Queue = asyncio.Queue()
         backlog, ended = list(self.events), self.ended_at is not None
+        if 0 < after <= len(backlog):
+            backlog = [backlog[0], *reopened(backlog[1:after]), *backlog[after:]]
         self._readers.add(reader)
         try:
             for event in backlog:
@@ -68,6 +84,27 @@ class RunLog:
                 yield event
         finally:
             self._readers.discard(reader)
+
+
+def reopened(events: list) -> list:
+    """
+    The text message and tool calls still open after these events, as their
+    start events, in order. A stream read on from the middle of one starts it
+    again: AG-UI clients check every stream from its own start, and
+    @ag-ui/client applies a start for a message or tool call it has by
+    adding to it, not by making another.
+    """
+    opened: dict[tuple[str, str], object] = {}
+    for event in events:
+        if isinstance(event, TextMessageStartEvent):
+            opened["text", event.message_id] = event
+        elif isinstance(event, TextMessageEndEvent):
+            opened.pop(("text", event.message_id), None)
+        elif isinstance(event, ToolCallStartEvent):
+            opened["tool", event.tool_call_id] = event
+        elif isinstance(event, ToolCallEndEvent):
+            opened.pop(("tool", event.tool_call_id), None)
+    return list(opened.values())
 
 
 class Runs:

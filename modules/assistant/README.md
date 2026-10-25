@@ -25,7 +25,6 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
                         ├─ UsageMiddleware         tokens of every model call → DynamoDB, stop at the cap
                         ├─ ConversationMiddleware  repair cut-off tool calls; send recent history only
                         ├─ PlanToolsMiddleware     hide tools the plan doesn't include
-                        ├─ TitleMiddleware         after the first answer, the model titles the conversation
                         ├─ Model/ToolCallLimit, ToolErrorMiddleware (built-in)
                         ├─ checkpointer      DynamoDBSaver (each agent's side of the conversation;
                         │                                   over 350 KB to S3)
@@ -34,11 +33,12 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
                         │                                   no AWS role, no internet by default)
                         └─ task ──▶ a subagent (fresh context, same user and sandbox, no checkpoints)
                       stops early when the user pressed Stop (asked once a second)
+                      meanwhile, for a new conversation: titles.py, one small call for its title
                    4. ConversationLog.record     the history gets what streamed (AG-UI messages),
                                                  then the conversation's run is removed
 
 browser ──ID token──▶ HTTP API /assistant/conversations ──▶ handler.py (Lambda): list, open, rename,
-                                                              delete, stop an answer
+                                                              delete, stop an answer, rate one
                                                               └─ delete ──SQS──▶ purge.py: the checkpoints
 DynamoDB TTL removes an idle conversation's META ──stream──▶ purge.py: its messages and checkpoints
 ```
@@ -58,7 +58,8 @@ src/assistant/
 │   ├── orders.py        list_orders, get_order (the HTTP API, with the user's token)
 │   ├── usage.py         assistant_usage
 │   └── bash.py          bash (the sandbox)
-├── middleware/          one file per middleware (usage, conversation, plan_tools, title, errors)
+├── middleware/          one file per middleware (usage, conversation, plan_tools, errors)
+├── titles.py            names a new conversation from its first message, while the agent answers
 ├── app.py               AgentCore entry point (the SDK's AGUIApp): auth, the run, stop, history, stream
 ├── runs.py              this microVM's runs: each runs in a worker thread into a log any request reads
 ├── agui.py              the agent's stream → AG-UI events; Transcript: events → AG-UI messages
@@ -144,11 +145,15 @@ details the main conversation doesn't need: analysis, reports, research.
 **Before the agent runs** (cheap, no model call):
 
 1. When the message is sent (the HTTP API, `ConversationService.send`),
-   `UsageService.start_message()` counts it in one conditional DynamoDB
-   update, like orders' plan limit (rule 8): it fails, with 402, when the
-   workspace is out of messages **or** tokens for the month. The plan comes
-   from the token. Limits live in `shared/plans.py`
-   (`assistant_messages_per_month`, `assistant_tokens_per_month`).
+   `UsageService.start_message()` counts it in conditional DynamoDB updates,
+   like orders' plan limit (rule 8). First the user's hour: 429, with when to
+   try again, once they have sent the plan's messages this hour (UTC), so one
+   person can't use up the workspace's month in an afternoon; a fixed window,
+   so at most twice the limit fits in an hour that straddles two. Then the
+   month: 402 when the workspace is out of messages **or** tokens. The plan
+   comes from the token. Limits live in `shared/plans.py`
+   (`assistant_messages_per_user_hour`: Free 20, Pro 60, Business 120;
+   `assistant_messages_per_month`, `assistant_tokens_per_month`).
 2. When AgentCore gets the run (`app.invoke()`), the token's claims become a
    `CurrentUser` with `shared.auth.user_from_claims`, the same rules as every
    HTTP route (ID tokens only, workspace claims all or none). AgentCore
@@ -288,7 +293,7 @@ Assistant page (`web/src/features/assistant/`) is a working client. For a
 custom domain, AWS's pattern is CloudFront in front of the runtime (see
 Sources).
 
-## Conversations (send, follow, stop, list, reopen, rename, delete)
+## Conversations (send, edit, follow, stop, rate, list, reopen, rename, delete)
 
 As in ChatGPT and Claude, the app keeps its own record of each conversation,
 every message as the user saw it, tool calls and results included, separate
@@ -298,10 +303,11 @@ token (`handler.py`, a Lambda):
 
 | Route | |
 |---|---|
-| `POST /assistant/conversations/{threadId}/messages` `{"id", "content", "agent"?}` | send: 201 `{"run_id"}`, 402 at the plan's limit, 409 while an answer is coming |
+| `POST /assistant/conversations/{threadId}/messages` `{"id", "content", "agent"?, "replaces"?}` | send, or edit (`replaces`): 201 `{"run_id"}`, 402 at the plan's limit, 429 at the user's hourly limit, 409 while an answer is coming |
 | `POST /assistant/conversations/{threadId}/runs/{runId}/cancel` | stop the answer (204, even after it ended) |
+| `PATCH /assistant/conversations/{threadId}/messages/{messageId}` `{"rating": "up" \| "down" \| null}` | rate an answer, or take the rating back (204) |
 | `GET /assistant/conversations?limit=20&cursor=` | the caller's conversations, most recently used first |
-| `GET /assistant/conversations/{threadId}` | title, `run_id` while an answer is coming, and the latest 200 messages as AG-UI messages |
+| `GET /assistant/conversations/{threadId}` | title, `run_id` while an answer is coming, the latest 200 messages as AG-UI messages, and `ratings` |
 | `PATCH /assistant/conversations/{threadId}` `{"title"}` | rename (cut to 80 characters) |
 | `DELETE /assistant/conversations/{threadId}` | delete (204) |
 
@@ -310,8 +316,20 @@ token (`handler.py`, a Lambda):
   it), with its run on `META`: `run = {run_id, message_id, prompt, agent,
   since}`. From then on the conversation has it, whatever the page does: a
   reload a moment later finds the message and the run. One answer at a time
-  per conversation (409). Sending the same message id again (Try again)
-  starts a new run without saving the message twice.
+  per conversation (409).
+- **Editing and answering again**, as in ChatGPT and the Vercel chatbot (no
+  branches kept): `replaces` names an earlier message of the user's, and the
+  new one takes its place, with everything after it. The same message id sent
+  again (Try again, Regenerate) replaces itself, so the old answer goes. The
+  history is cut in one conditional update of `META` (`message_count`, which
+  must be what the service read, and no answer coming), then the message is
+  written and what came after it deleted; reads stop at `message_count`, so
+  a delete that fails half way leaves nothing anyone sees. The agent goes
+  back too (`Run.rewind_to`, `app.rewound`): its next run starts from its
+  saved state with that user message and everything after it removed. The
+  user's messages are checkpointed with their AG-UI id, which is how it
+  finds them. Only the agent the message went to goes back; other agents
+  that spoke in the conversation keep their own side of it.
 - **The run** happens in the conversation's AgentCore microVM (`app.py`,
   `runs.py`). The first request for it starts it, reading the prompt from
   `META.run`; it goes on in a worker thread whatever happens to that request,
@@ -346,10 +364,30 @@ token (`handler.py`, a Lambda):
   both are added to its checkpoint.
 - **Reloading**: the page reads the conversation; with a `run_id`, it sends
   AgentCore that run and draws it from the start, then live.
-- **Titles**: `TitleMiddleware` asks the stack's default model for a 2–6 word
-  title after the first answer: one small call (tagged `nostream`, so it never
-  reaches the user's stream), counted against the plan's tokens. If it fails,
-  the first message stays the title. It never replaces a title the user chose.
+- **A stream that breaks** (the network, AgentCore failing a request) is
+  read on from where it was, as OpenAI's background responses
+  (`starting_after`) and LangGraph streams (`Last-Event-ID`) do: the page
+  sends `forwardedProps.resume = {"after": n, "startedAt": t}`, the number
+  of the run's events it has and its `RUN_STARTED` timestamp. The run's log
+  sends `RUN_STARTED`, the start of whatever was open at that point (a text
+  message, tool calls: `runs.reopened`), then the rest. `@ag-ui/client`
+  checks each stream from its own start, and applies a start for a message
+  or tool call it has by adding to it. A `RUN_STARTED` with another
+  timestamp is another telling of the run (a microVM that started it
+  again): the page takes back what it drew and draws that one.
+- **Titles** (`titles.py`): when a conversation's first message runs, the
+  stack's default model is asked for a 2–6 word title from it, beside the
+  run rather than after it, as the Vercel chatbot does, so the answer isn't
+  kept waiting. One small call, counted against the plan's tokens; the run
+  waits at most 3 seconds for it after the answer, so the page's list,
+  read again then, usually has it. If it fails, the first message stays the
+  title; trying the first message again (or editing it) asks again. It never
+  replaces a title the user chose.
+- **Ratings**: thumbs up or down on an answer, on its last assistant message
+  (`rating` on its `MSG#` item); `null` takes it back. Each is logged as
+  `Answer rated`, with the workspace, user, conversation, message, rating and
+  agents, for CloudWatch Logs Insights. Editing a message before the answer
+  deletes the answer and its rating.
 - **Stored** in the assistant table, under the user's own keys:
   `TENANT#<t>#USER#<u>#CONV#<threadId>` with `META` and `MSG#<n>` items, and
   the index `gsi1` for the list (`repository.py`). On a stack that had the
@@ -465,7 +503,12 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   CloudWatch Logs Insights can sum them by `tenant_id`. The usage table has the
   monthly totals the plan limits use.
 - **Messages count when they start**, even if the agent then fails. Tokens are
-  counted per model call, as they are spent.
+  counted per model call, as they are spent. An edit, Try again or
+  Regenerate is a message too.
+- **Ratings**: `Answer rated` lines (`rating` up or down, or null when taken
+  back), in the HTTP API Lambda's log group, by `tenant_id`, `agents` and
+  `session_id`. A thumbs down's conversation is there to read, while it
+  lasts.
 - **The checkpointer is required**: without it there is no conversation, so
   failing to read or write checkpoints fails the message (error event 500).
 - **Removing the assistant** (deploying with empty `AssistantCodeBucket` and
@@ -540,8 +583,11 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   calls would need to count against the token cap too). Each checkpoint holds
   the whole conversation, so a long one writes more with every message.
 - **Conversations**: older messages of a conversation past 200 (open returns
-  the latest 200), search, and keeping history longer than the checkpoints
-  (which would need the agent to rebuild its context from the history).
+  the latest 200), search, and branches (an edit replaces what came after
+  it; ChatGPT keeps both as a tree).
+- **Ratings with a reason**: a comment on a thumbs down, and an evaluation
+  set built from rated answers (AgentCore Evaluations isn't in
+  ap-southeast-1 yet).
 
 ### Sources
 

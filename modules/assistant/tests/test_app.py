@@ -1,5 +1,6 @@
 """The AgentCore Runtime contract for AG-UI: POST /invocations streams AG-UI events as SSE, GET /ping answers."""
 import json
+import time
 from uuid import uuid4
 
 SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
@@ -28,7 +29,10 @@ def test_invocations_stream_agui_events(ctx, alice):
     events = sse_events(response)
     ctx.check_order(events)
     assert ctx.text(events) == "Hello!"   # streamed in pieces, each exactly once
-    assert events[0] == {"type": "RUN_STARTED", "threadId": ctx.session, "runId": run_id}
+    started = events[0]
+    assert {k: started[k] for k in ("type", "threadId", "runId")} == {"type": "RUN_STARTED", "threadId": ctx.session,
+                                                                     "runId": run_id}
+    assert abs(started["timestamp"] - time.time() * 1000) < 60_000   # when the run started: which log of it
     assert events[-1]["type"] == "RUN_FINISHED" and events[-1]["runId"] == run_id
 
 

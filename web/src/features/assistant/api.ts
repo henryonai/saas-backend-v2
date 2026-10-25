@@ -1,6 +1,12 @@
 import { HttpAgent, type Message, type RunAgentInput } from '@ag-ui/client';
 import { ApiError, api } from '@/shared/api/client';
-import type { AssistantConversation, AssistantConversationDetail, AssistantConversationPage, AssistantRun } from '@/shared/api/types';
+import type {
+  AssistantConversation,
+  AssistantConversationDetail,
+  AssistantConversationPage,
+  AssistantRating,
+  AssistantRun,
+} from '@/shared/api/types';
 import { config } from '@/shared/config';
 
 /**
@@ -82,19 +88,37 @@ function codeOf(status: number): string {
   return STATUS_CODES[status] ?? (status >= 500 ? 'INTERNAL_ERROR' : 'VALIDATION_ERROR');
 }
 
+/**
+ * The user sent the plan's messages for this hour: the HTTP API's 429, whose
+ * message says when to try again. (AgentCore's own throttling is
+ * RATE_LIMIT_EXCEEDED, and worth a retry.)
+ */
+export const HOURLY_LIMIT = 'HOURLY_LIMIT_REACHED';
+
 /** A failed HTTP API call as a run's error, so the page shows it the same way (402: the upgrade notice). */
 export function requestError(error: unknown): RunError {
-  if (error instanceof ApiError) return { code: codeOf(error.status), message: error.message };
+  if (error instanceof ApiError) return { code: error.status === 429 ? HOURLY_LIMIT : codeOf(error.status), message: error.message };
   return { code: 'NETWORK_ERROR', message: String(error) };
 }
 
 /**
  * Sends the user's message: the server saves it (creating the conversation
  * the first time) with the run that will answer it, and counts it against
- * the plan. 402 at the plan's limit; 409 while the previous answer is coming.
+ * the plan. `replaces`: an earlier message of the user's that this one takes
+ * the place of, with everything after it (an edit); the same id sent again
+ * replaces itself (Try again). 402 at the plan's limit; 429 at the user's
+ * hourly limit; 409 while the previous answer is coming.
  */
-export function postMessage(threadId: string, message: { id: string; content: string; agent: string }) {
+export function postMessage(threadId: string, message: { id: string; content: string; agent: string; replaces?: string }) {
   return api<AssistantRun>(`/assistant/conversations/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: message });
+}
+
+/** Thumbs up or down on an answer (`messageId`: its last assistant message); null takes the rating back. */
+export function rateMessage(threadId: string, messageId: string, rating: AssistantRating | null) {
+  return api<void>(`/assistant/conversations/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}`, {
+    method: 'PATCH',
+    body: { rating },
+  });
 }
 
 /** Stops the answer on the server, which keeps what it wrote. Fine after the end too. */

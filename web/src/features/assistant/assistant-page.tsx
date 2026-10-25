@@ -15,7 +15,18 @@ import { Composer } from './components/composer';
 import { ConversationList } from './components/conversation-list';
 import { RunErrorNotice } from './components/run-error';
 import { AssistantTurn, UserTurn } from './components/turn';
-import { conversationStore, newConversation, openConversation, retry, sendMessage, stopAnswer, useConversation } from './conversation';
+import {
+  conversationStore,
+  editMessage,
+  newConversation,
+  openConversation,
+  rateAnswer,
+  regenerate,
+  retry,
+  sendMessage,
+  stopAnswer,
+  useConversation,
+} from './conversation';
 import { refreshConversations, showNewConversation, useConversationHistory } from './hooks';
 import { toTurns } from './transcript';
 
@@ -158,7 +169,7 @@ function OpenConversation({ threadId }: { threadId: string }) {
 function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, text: string) => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { messages, running, error, tokens } = useConversation();
+  const { messages, running, error, tokens, ratings } = useConversation();
   const turns = useMemo(() => toTurns(messages), [messages]);
   const last = turns.at(-1);
   const lastPart = last?.role === 'assistant' ? last.parts.at(-1) : undefined;
@@ -179,6 +190,16 @@ function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, 
     follow();
     void sendMessage(text);
     if (before.length === 0) onFirstMessage?.(threadId, text.trim());
+  }
+
+  function edit(messageId: string, text: string) {
+    follow();
+    void editMessage(messageId, text);
+  }
+
+  function answerAgain() {
+    follow();
+    void regenerate();
   }
 
   return (
@@ -204,9 +225,18 @@ function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, 
         ) : (
           turns.map((turn, index) =>
             turn.role === 'user' ? (
-              <UserTurn key={turn.id} text={turn.text} />
+              <UserTurn key={turn.id} text={turn.text} onEdit={running ? undefined : (text) => edit(turn.id, text)} />
             ) : (
-              <AssistantTurn key={turn.id} turn={turn} active={running && index === turns.length - 1} thinking={thinking && index === turns.length - 1} />
+              <AssistantTurn
+                key={turn.id}
+                turn={turn}
+                active={running && index === turns.length - 1}
+                thinking={thinking && index === turns.length - 1}
+                rating={ratings[turn.answerId]}
+                onRate={(rating) => void rateAnswer(turn.answerId, rating)}
+                // The last answer; after a failed run, the error's Try again does the same.
+                onRegenerate={!running && !error && index === turns.length - 1 ? answerAgain : undefined}
+              />
             ),
           )
         )}

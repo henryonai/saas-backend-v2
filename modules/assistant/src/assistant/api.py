@@ -5,7 +5,7 @@ a Lambda behind API Gateway like the other modules.
 Sending a message starts here, as in ChatGPT: POST .../messages saves it with
 the run that will answer it, and the page then has AgentCore Runtime run it,
 streaming the answer over AG-UI (app.py). The other routes list, reopen,
-rename and delete what was said, and stop an answer. A conversation's
+rename and delete what was said, stop an answer, and rate one. A conversation's
 messages are AG-UI messages, the same objects the client assembled from the
 stream, so the frontend shows a reopened conversation exactly as it showed
 the live one.
@@ -21,7 +21,7 @@ from shared.auth import CurrentUser, get_current_user
 
 from assistant.agent_names import MAIN_AGENT
 from assistant.container import get_conversation_service
-from assistant.models import Conversation
+from assistant.models import Conversation, Rating
 from assistant.service import ConversationService, active_run
 
 router = Router()
@@ -56,6 +56,8 @@ class ConversationDetail(ConversationOut):
     # AG-UI messages (@ag-ui/client's Message: user, assistant with toolCalls,
     # tool results), oldest first; the latest 200 of a long conversation.
     messages: list[dict[str, Any]]
+    # The user's ratings of answers, by the id of the answer's last assistant message.
+    ratings: dict[str, Rating] = {}
 
 
 class RunOut(BaseModel):
@@ -68,10 +70,17 @@ class MessageIn(BaseModel):
     id: str = Field(min_length=1, max_length=100)        # the client's id for it: the history keeps it
     content: str = Field(min_length=1, max_length=4000)
     agent: str = Field(default=MAIN_AGENT, max_length=64)   # an agent's `name` (agents/*.md)
+    # An edit: the id of the user's earlier message this one replaces, with
+    # everything after it. (The same id sent again replaces itself: Try again.)
+    replaces: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class ConversationRename(BaseModel):
     title: str = Field(min_length=1, max_length=200)   # cut to 80 characters
+
+
+class MessageRating(BaseModel):
+    rating: Rating | None   # thumbs up or down; null takes the rating back
 
 
 # ---------- routes ----------
@@ -80,10 +89,12 @@ class ConversationRename(BaseModel):
 def send_message(thread_id: str, body: MessageIn, user: User, service: Service) -> Response[RunOut]:
     """
     Saves the user's message in the conversation (created the first time,
-    with the client's threadId) and the run that will answer it. 402 at the
-    plan's limit; 409 while the conversation's previous answer is coming.
+    with the client's threadId) and the run that will answer it. With
+    `replaces`, it takes the place of that earlier message of the user's and
+    everything after it (an edit). 402 at the plan's limit; 429 at the user's
+    hourly limit; 409 while the conversation's previous answer is coming.
     """
-    run = service.send(user, thread_id, body.id, body.content, body.agent)
+    run = service.send(user, thread_id, body.id, body.content, body.agent, replaces=body.replaces)
     return Response(status_code=201, content_type=content_types.APPLICATION_JSON,
                     body=RunOut(run_id=run.run_id).model_dump(mode="json"))
 
@@ -106,10 +117,17 @@ def list_conversations(user: User, service: Service,
 
 @router.get("/assistant/conversations/<thread_id>")
 def get_conversation(thread_id: str, user: User, service: Service) -> ConversationDetail:
-    conversation, messages = service.get(user, thread_id)
+    conversation, messages, ratings = service.get(user, thread_id)
     run = active_run(conversation)
     return ConversationDetail(**ConversationOut.of(conversation).model_dump(), run_id=run and run.run_id,
-                              messages=messages)
+                              messages=messages, ratings=ratings)
+
+
+@router.patch("/assistant/conversations/<thread_id>/messages/<message_id>")
+def rate_answer(thread_id: str, message_id: str, body: MessageRating, user: User, service: Service):
+    """Rates an answer (`message_id`: its last assistant message), or takes the rating back. 204."""
+    service.rate(user, thread_id, message_id, body.rating)
+    return Response(status_code=204)
 
 
 @router.patch("/assistant/conversations/<thread_id>")

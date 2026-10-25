@@ -1,4 +1,5 @@
 import json
+import math
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -7,17 +8,18 @@ from uuid import uuid4
 from aws_lambda_powertools import Logger
 
 from shared.auth import CurrentUser
-from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached
+from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached, TooManyRequests
 from shared.plans import get_limit
 
 from assistant.agent_names import agent_names
 from assistant.context import SESSION_ID, AgentContext, actor_of, checkpoint_session
-from assistant.models import Conversation, Run, Usage, current_month, iso, now_iso
+from assistant.models import Conversation, Rating, Run, Usage, current_month, iso, now_iso
 from assistant.repository import ConversationRepository, InvalidCursor, UsageLimitReached, UsageRepository
 
 logger = Logger()
 
 MESSAGES = "assistant_messages_per_month"
+MESSAGES_PER_HOUR = "assistant_messages_per_user_hour"
 TOKENS = "assistant_tokens_per_month"
 SANDBOX_SESSIONS = "assistant_sandbox_sessions_per_month"
 
@@ -31,10 +33,15 @@ class UsageService:
     def start_message(self, user: CurrentUser) -> Usage:
         """
         Call before running the agent: counts the message, or raises
-        PlanLimitReached (402) when the workspace has no messages or tokens
-        left this month. The plan comes from the login token, like in orders.
+        TooManyRequests (429) when the user has sent the plan's messages for
+        this hour, or PlanLimitReached (402) when the workspace has no
+        messages or tokens left this month. The hour comes first: one user
+        can't use up the workspace's month in an afternoon, and a message it
+        refuses doesn't count against the month. The plan comes from the
+        login token, like in orders.
         """
         tenant_id = user.require_tenant()
+        self._start_hourly_message(user)
         max_messages, max_tokens = get_limit(user.plan, MESSAGES), get_limit(user.plan, TOKENS)
         try:
             return self.usage.add_message(tenant_id, current_month(), max_messages, max_tokens)
@@ -44,6 +51,22 @@ class UsageService:
                                        "a month. Upgrade for more.")
             raise PlanLimitReached(f"Your workspace has used this month's assistant allowance on the "
                                    f"{user.plan} plan. Upgrade for more.")
+
+    def _start_hourly_message(self, user: CurrentUser) -> None:
+        """
+        A fixed window, the calendar hour in UTC, as one counter per user and
+        hour: at most twice the limit can fit in an hour that straddles two.
+        """
+        per_hour = get_limit(user.plan, MESSAGES_PER_HOUR)
+        if per_hour is None:
+            return
+        now = datetime.now(UTC)
+        hour_ends = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        if not self.usage.add_hourly_message(user.require_tenant(), user.user_id, now.strftime("%Y-%m-%dT%H"),
+                                             per_hour, expires_at=int(hour_ends.timestamp()) + 3600):
+            minutes = max(1, math.ceil((hour_ends - now).total_seconds() / 60))
+            raise TooManyRequests(f"You can send the assistant {per_hour} messages an hour. Try again in "
+                                  f"{minutes} minute{'s' if minutes != 1 else ''}.")
 
     def within_token_cap(self, user: CurrentUser) -> bool:
         """Whether the workspace has tokens left this month (checked before a subagent starts)."""
@@ -187,7 +210,10 @@ STILL_ANSWERING = "The assistant is still answering in this conversation: wait f
 
 
 class ConversationService:
-    """The user's conversations, for the HTTP API: send a message, stop its answer, list, open, rename, delete."""
+    """
+    The user's conversations, for the HTTP API: send a message (or edit one),
+    stop its answer, rate it, list, open, rename, delete.
+    """
 
     def __init__(self, conversations: ConversationRepository, purge: PurgeQueue, usage: UsageService, days: int):
         self.conversations = conversations
@@ -195,12 +221,20 @@ class ConversationService:
         self.usage = usage
         self.days = days
 
-    def send(self, user: CurrentUser, thread_id: str, message_id: str, content: str, agent: str) -> Run:
+    def send(self, user: CurrentUser, thread_id: str, message_id: str, content: str, agent: str,
+             replaces: str | None = None) -> Run:
         """
         Saves the user's message, and the run that will answer it, before
         anything runs: the conversation has them from now on, whatever the
-        page does next. Counts the message against the plan (402); one answer
-        at a time per conversation (409). The page then has AgentCore run it.
+        page does next. Counts the message against the plan (402, or 429 at
+        the user's hourly limit); one answer at a time per conversation
+        (409). The page then has AgentCore run it.
+
+        The message is the newest, or it takes the place of an earlier
+        message of the user's and everything after it, as in ChatGPT and the
+        Vercel chatbot: `replaces` names the message edited, and the same
+        message sent again (Try again, or the answer asked for again) replaces
+        itself. The agent goes back to before it too (Run.rewind_to).
         """
         tenant_id = user.require_tenant()
         if not SESSION_ID.fullmatch(thread_id):
@@ -213,13 +247,24 @@ class ConversationService:
             raise NotFound(NOT_FOUND)
         if conversation and active_run(conversation):
             raise Conflict(STILL_ANSWERING)
+        if replaces is None and conversation and conversation.question_id == message_id:
+            replaces = message_id
+        position = None
+        if replaces is not None:
+            found = conversation and self.conversations.find_message(
+                tenant_id, user.user_id, thread_id, replaces, last=conversation.message_count)
+            if not found or found[1] != "user":
+                raise NotFound("No such message of yours in this conversation.")
+            position = found[0]
         self.usage.start_message(user)
         now = datetime.now(UTC)
-        run = Run(run_id=str(uuid4()), message_id=message_id, prompt=content, agent=agent, since=iso(now))
+        first = conversation is None or (position == 1 and conversation.title_source == "message")
+        run = Run(run_id=str(uuid4()), message_id=message_id, prompt=content, agent=agent, since=iso(now),
+                  first=first, rewind_to=replaces)
         saved = self.conversations.add_question(
             tenant_id, user.user_id, thread_id, run=run, title=first_message_title(content),
-            message={"id": message_id, "role": "user", "content": content},
-            append=conversation is None or conversation.question_id != message_id,   # else: Try again
+            message={"id": message_id, "role": "user", "content": content}, at=position,
+            count=conversation.message_count if conversation else 0,
             now=run.since, expires_at=_expires_at(self.days), stale_before=iso(now - RUN_LIMIT))
         if not saved:
             raise Conflict(STILL_ANSWERING)   # sent from another tab a moment ago
@@ -241,11 +286,27 @@ class ConversationService:
         except InvalidCursor:
             raise InvalidRequest("Pass the next_cursor of the previous page as ?cursor=.")
 
-    def get(self, user: CurrentUser, thread_id: str) -> tuple[Conversation, list[dict]]:
-        """The conversation and its latest messages (AG-UI messages, oldest first)."""
+    def get(self, user: CurrentUser, thread_id: str) -> tuple[Conversation, list[dict], dict[str, Rating]]:
+        """The conversation, its latest messages (AG-UI messages, oldest first) and the user's ratings of them."""
         conversation = self._get(user, thread_id)
-        return conversation, self.conversations.messages(user.require_tenant(), user.user_id, thread_id,
-                                                         MESSAGES_SHOWN)
+        messages, ratings = self.conversations.history(user.require_tenant(), user.user_id, thread_id,
+                                                       MESSAGES_SHOWN, last=conversation.message_count)
+        return conversation, messages, ratings
+
+    def rate(self, user: CurrentUser, thread_id: str, message_id: str, rating: Rating | None) -> None:
+        """
+        Thumbs up or down on an answer (its last assistant message), or None
+        to take it back. Logged too, for Logs Insights: which answers users
+        like, by agent and workspace.
+        """
+        conversation = self._get(user, thread_id)
+        found = self.conversations.find_message(user.require_tenant(), user.user_id, thread_id, message_id,
+                                                last=conversation.message_count)
+        if not found or found[1] != "assistant" or not self.conversations.rate(
+                user.require_tenant(), user.user_id, thread_id, found[0], rating):
+            raise NotFound("No such answer in this conversation.")
+        logger.info("Answer rated", extra={"session_id": thread_id, "message_id": message_id, "rating": rating,
+                                           "agents": sorted(conversation.agents)})
 
     def rename(self, user: CurrentUser, thread_id: str, title: str) -> Conversation:
         title = " ".join(title.split())

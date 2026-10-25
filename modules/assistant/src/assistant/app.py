@@ -18,13 +18,15 @@ A message is sent in two steps, as in ChatGPT:
 
 A run goes on whatever happens to the request that started it: it writes to
 a log in this microVM (runs.py), which the response reads. A page reloaded
-mid-answer sends the same run again and reads it from the start, then live.
+mid-answer sends the same run again and reads it from the start, then live;
+one whose stream broke reads on from where it was (resume_after).
 Each request:
   1. who is calling: the token's claims, checked like every other module does
   2. which run: one this microVM has (follow it), or the conversation's run
      still to be answered (start it, then follow it); else NOT_FOUND
-  3. the run: the agent answers, with middleware for the token cap and the
-     title, as AG-UI events; it ends early if the user pressed Stop
+  3. the run: the agent answers, with middleware for the token cap, as AG-UI
+     events (a new conversation is titled meanwhile); it ends early if the
+     user pressed Stop
   4. the history gets what streamed, however the run ended, and the
      conversation's run is removed; if the conversation was deleted
      meanwhile, the agent's checkpoints of it go too
@@ -35,6 +37,7 @@ import json
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
+from concurrent.futures import wait
 from contextlib import closing
 
 from ag_ui.core import BaseEvent, RunAgentInput, RunFinishedEvent, RunStartedEvent, TokenUsage
@@ -43,28 +46,33 @@ from bedrock_agentcore import RequestContext
 from bedrock_agentcore.runtime.ag_ui import AGUIApp
 from bedrock_agentcore.runtime.models import PingStatus
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from shared.auth import user_from_claims
 from shared.errors import AppError, InvalidRequest, NotFound, Unauthorized
 
 from assistant.agui import AgUiStream, Transcript
-from assistant.container import get_agents, get_conversation_log
+from assistant.container import get_agents, get_conversation_log, get_titles
 from assistant.context import SESSION_ID, AgentContext, actor_of
 from assistant.factory import thread_config
 from assistant.models import Run
-from assistant.runs import Runs
+from assistant.runs import RunLog, Runs
 from assistant.schemas import error_event, internal_error
 from assistant.service import ConversationLog
+from assistant.titles import Titles
 
 logger = Logger()
 
 NO_RUN = "No such run in this conversation: it ended (read the conversation), or its message was never sent."
 STOP_CHECK_SECONDS = 1.0   # how often a run asks whether the user pressed Stop
+# After the answer, at most this long for the title written meanwhile (usually
+# done by then): the page reads the list again when the run finishes.
+TITLE_WAIT_SECONDS = 3.0
 
 
 def create_app(get_agents: Callable[[], dict], get_log: Callable[[], ConversationLog],
-               runs: Runs | None = None) -> AGUIApp:
+               get_titles: Callable[[], Titles], runs: Runs | None = None) -> AGUIApp:
     app = AGUIApp()
     runs = runs if runs is not None else Runs()
 
@@ -96,8 +104,9 @@ def create_app(get_agents: Callable[[], dict], get_log: Callable[[], Conversatio
                     yield RunStartedEvent(thread_id=thread_id, run_id=run_id)
                     yield error_event(NotFound(NO_RUN))
                     return
-                log = runs.start(run_id, owner, lambda: handle(caller, pending, get_agents(), get_log()))
-        async for event in log.follow():
+                log = runs.start(run_id, owner,
+                                 lambda: handle(caller, pending, get_agents(), get_log(), get_titles()))
+        async for event in log.follow(resume_after(run_input.forwarded_props, log)):
             yield event
 
     @app.ping
@@ -108,10 +117,31 @@ def create_app(get_agents: Callable[[], dict], get_log: Callable[[], Conversatio
     return app
 
 
-def handle(context: AgentContext, run: Run, agents: dict, history: ConversationLog) -> Iterator[BaseEvent]:
+def resume_after(forwarded_props, log: RunLog) -> int:
+    """
+    How many of the run's events the page has already, when its stream broke
+    mid-answer: forwardedProps.resume = {"after": n, "startedAt": its
+    RUN_STARTED's timestamp}. Only if that is this log (a run started again,
+    in another microVM, said other things): else 0, from the start, and the
+    page sees a RUN_STARTED it didn't have and takes back what it drew.
+    """
+    resume = forwarded_props.get("resume") if isinstance(forwarded_props, dict) else None
+    if not isinstance(resume, dict):
+        return 0
+    after, started_at = resume.get("after"), resume.get("startedAt")
+    if type(after) is not int or after < 0 or started_at is None or started_at != log.started_at:
+        return 0
+    return after
+
+
+def handle(context: AgentContext, run: Run, agents: dict, history: ConversationLog,
+           titles: Titles) -> Iterator[BaseEvent]:
     """One run, start to finish, as AG-UI events. Its history is kept however it ends."""
     thread_id, run_id = context.session_id, run.run_id
-    yield RunStartedEvent(thread_id=thread_id, run_id=run_id)
+    # Its timestamp tells this log of the run from another (resume_after).
+    yield RunStartedEvent(thread_id=thread_id, run_id=run_id, timestamp=time.time_ns() // 1_000_000)
+    # A new conversation is titled while the agent answers, not after it.
+    naming = titles.start(context, run.prompt) if run.first else None
     log = {"tenant_id": context.user.tenant_id, "user_id": context.user.user_id, "session_id": thread_id,
            "run_id": run_id, "agent": run.agent}
     input_tokens = output_tokens = 0
@@ -124,10 +154,12 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
             raise NotFound(f"No agent named {run.agent!r}. Agents: {', '.join(sorted(agents))}.")
         stop_requested = stop_check(history, context, run_id)
         config = {**thread_config(context, run.agent), "callbacks": [stop_model]}
+        # The user's message keeps its AG-UI id: an edit or a retry finds it (rewound).
+        messages = [*rewound(agent, config, run.rewind_to, log), HumanMessage(run.prompt, id=run.message_id)]
         # Subagents' own output doesn't come through here (see delegation.py), only the calling agent's.
         # durability="exit": one checkpoint when the run ends (stopped, failed or done), not one per step.
-        stream = agent.stream({"messages": [HumanMessage(run.prompt)]}, config, context=context,
-                              stream_mode="messages", durability="exit")
+        stream = agent.stream({"messages": messages}, config, context=context, stream_mode="messages",
+                              durability="exit")
         with closing(stream):
             for message, _ in stream:
                 streamed.add(message)
@@ -158,6 +190,9 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
         # client that reloads the conversation then finds all of it.
         if keep_history(history, context, run_id, transcript, log) is False and config is not None:
             forget(agent, config, log)
+
+    if naming is not None:
+        wait([naming], timeout=TITLE_WAIT_SECONDS)   # the conversation takes new messages meanwhile
 
     # One line per message, with tokens: per-tenant cost in CloudWatch Logs Insights.
     # (A subagent's tokens are in the usage table, not in these numbers.)
@@ -231,6 +266,26 @@ class Streamed:
     @property
     def messages(self) -> list[BaseMessage]:
         return list(self._messages.values())
+
+
+def rewound(agent, config: dict, message_id: str | None, log: dict) -> list[BaseMessage]:
+    """
+    An edited message, or one sent again: the agent's side of the
+    conversation goes back to before that user message, as the history did
+    (ConversationService.send). Read from the checkpoint as saved, like
+    keep_what_the_user_saw. Nothing to undo when the agent never got the
+    message (its run never checkpointed), or it predates the messages' ids
+    (before October 2026).
+    """
+    if message_id is None:
+        return []
+    saved = agent.checkpointer.get_tuple(config)
+    messages = saved.checkpoint["channel_values"].get("messages", []) if saved else []
+    at = next((i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and m.id == message_id), None)
+    if at is None:
+        logger.info("The agent doesn't have the message it answers again; nothing to undo", extra=log)
+        return []
+    return [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages[:at]]
 
 
 def keep_what_the_user_saw(agent, config: dict, streamed: list[BaseMessage], log: dict) -> None:
@@ -325,4 +380,4 @@ def claims_from_bearer(authorization: str) -> dict:
     return claims
 
 
-app = create_app(get_agents, get_conversation_log)
+app = create_app(get_agents, get_conversation_log, get_titles)

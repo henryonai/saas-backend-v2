@@ -37,6 +37,9 @@ class Usage(BaseModel):
 # title, which never replaces one the user chose.
 TitleSource = Literal["message", "model", "user"]
 
+# The user's rating of an answer (thumbs up or down), on its message.
+Rating = Literal["up", "down"]
+
 
 class Run(BaseModel):
     """
@@ -50,6 +53,10 @@ class Run(BaseModel):
     agent: str
     since: str
     cancelled: bool = False    # the user pressed Stop
+    first: bool = False        # the conversation's first message: the runtime titles it meanwhile (titles.py)
+    # An edited (or answered again) message: the agent's side of the
+    # conversation goes back to before this user message, as the history did.
+    rewind_to: str | None = None
 
 
 class Conversation(BaseModel):

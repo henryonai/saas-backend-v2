@@ -9,11 +9,14 @@ header too. The runId is the run the HTTP API gave the message when it saved
 it (POST /assistant/conversations/{threadId}/messages): the message and its
 agent are read from there. The client's messages, state, tools and context
 are ignored: otherwise a client could put words in the assistant's mouth.
+forwardedProps.resume = {"after": n, "startedAt": t} reads on after the
+first n events of the run, for a client whose stream broke (t: the
+RUN_STARTED timestamp it had; app.resume_after).
 
-Response: AG-UI events as server-sent events (agui.py), from RUN_STARTED to
-RUN_FINISHED, or RUN_ERROR with one of the codes below. AgentCore's own errors
-(a missing or invalid token, throttling) are RUN_ERROR events too, with an
-HTTP status.
+Response: AG-UI events as server-sent events (agui.py), from RUN_STARTED (its
+timestamp: when the run started) to RUN_FINISHED, or RUN_ERROR with one of
+the codes below. AgentCore's own errors (a missing or invalid token,
+throttling) are RUN_ERROR events too, with an HTTP status.
 
 AG-UI is the only contract. Anything new the frontend needs goes out as an
 AG-UI event (CUSTOM for what AG-UI has no event for), never in a format of

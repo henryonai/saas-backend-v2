@@ -3,12 +3,16 @@ Assistant table:
   pk = TENANT#<t>                         sk = USAGE#<YYYY-MM>   the workspace's usage that month
   pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = META              a conversation (models.Conversation),
                                                                  with its run while one answers
-  pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = MSG#<000001>      one of its AG-UI messages, in order
+  pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = MSG#<000001>      one of its AG-UI messages, in order, up to
+                                                                 META's message_count, with the user's rating
+                                                                 of an answer
+  pk = TENANT#<t>                         sk = USER#<u>#HOUR#<YYYY-MM-DDTHH>  messages a user sent that hour (UTC)
   gsi1pk = TENANT#<t>#USER#<u>#CONVS      gsi1sk = <updated_at>  on META only: the user's list, newest first
 
 The tenant is part of every key, and the user of every conversation key, so
 one workspace never sees another's usage and one user never sees another's
-conversations. Usage expires (TTL) about 13 months after the month started.
+conversations. Usage expires (TTL) about 13 months after the month started,
+a user's hourly count an hour after its hour.
 A conversation expires whole, some days after its last message: only its
 META has a TTL (expires_at, moved on by every message), so a long
 conversation never loses its oldest messages. When TTL removes the META, the
@@ -24,7 +28,7 @@ from botocore.exceptions import ClientError
 
 from shared.dynamo import is_condition_failure
 
-from assistant.models import Conversation, Run, TitleSource, Usage
+from assistant.models import Conversation, Rating, Run, TitleSource, Usage
 
 USAGE_TTL_SECONDS = 400 * 24 * 60 * 60
 
@@ -134,6 +138,26 @@ class UsageRepository:
         item = self.table.get_item(Key=_key(tenant_id, month), ConsistentRead=True).get("Item")
         return _usage(item) if item else Usage(tenant_id=tenant_id, month=month)
 
+    def add_hourly_message(self, tenant_id: str, user_id: str, hour: str, max_messages: int, expires_at: int) -> bool:
+        """
+        Counts one message the user sent this hour (UTC, e.g. "2026-10-25T09"),
+        but only under max_messages: one conditional update, like the monthly
+        count. False at the limit.
+        """
+        try:
+            self.table.update_item(
+                Key={"pk": f"TENANT#{tenant_id}", "sk": f"USER#{user_id}#HOUR#{hour}"},
+                UpdateExpression="ADD #messages :one SET #expires = if_not_exists(#expires, :expires)",
+                ConditionExpression="attribute_not_exists(#messages) OR #messages < :max",
+                ExpressionAttributeNames={"#messages": "messages", "#expires": "expires_at"},
+                ExpressionAttributeValues={":one": 1, ":max": max_messages, ":expires": expires_at},
+            )
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+        return True
+
 
 def _conversation_pk(tenant_id: str, user_id: str, thread_id: str) -> str:
     return f"TENANT#{tenant_id}#USER#{user_id}#CONV#{thread_id}"
@@ -150,6 +174,10 @@ def conversation_of(pk: str) -> tuple[str, str, str]:
 
 def _list_pk(tenant_id: str, user_id: str) -> str:
     return f"TENANT#{tenant_id}#USER#{user_id}#CONVS"
+
+
+def _message_sk(position: int) -> str:
+    return f"MSG#{position:06d}"
 
 
 def _conversation(item: dict) -> Conversation:
@@ -171,42 +199,46 @@ class ConversationRepository:
         self.table = table
 
     def add_question(self, tenant_id: str, user_id: str, thread_id: str, *, message: dict, run: Run, title: str,
-                     append: bool, now: str, expires_at: int, stale_before: str) -> bool:
+                     at: int | None, count: int, now: str, expires_at: int, stale_before: str) -> bool:
         """
         The user's message and the run that will answer it: creates the
-        conversation the first time (titled `title`), adds the message unless
-        it is the newest already (`append` False: sent again after a failed
-        run), and sets the run. False while an earlier run, started after
-        `stale_before`, is still answering.
+        conversation the first time (titled `title`), adds the message as
+        the newest, or puts it `at` a position in place of the message there
+        and everything after it (edited, or sent again), and sets the run.
+        `count` is the message_count the caller read: False if it changed
+        meanwhile, or while an earlier run, started after `stale_before`, is
+        still answering.
         """
+        position = at if at is not None else count + 1
         names = {"#thread": "thread_id", "#title": "title", "#source": "title_source", "#created": "created_at",
                  "#updated": "updated_at", "#expires": "expires_at", "#agents": "agents", "#run": "run",
-                 "#question": "question_id"}
+                 "#question": "question_id", "#count": "message_count"}
         values = {":thread": thread_id, ":title": title, ":message": "message", ":now": now, ":expires": expires_at,
                   ":list": _list_pk(tenant_id, user_id), ":agents": {run.agent}, ":run": run.model_dump(),
-                  ":question": message["id"], ":stale": stale_before}
+                  ":question": message["id"], ":stale": stale_before, ":position": position, ":count": count}
         update = ("SET #thread = :thread, #title = if_not_exists(#title, :title), "
                   "#source = if_not_exists(#source, :message), #created = if_not_exists(#created, :now), "
                   "#updated = :now, #expires = :expires, gsi1pk = :list, gsi1sk = :now, #run = :run, "
-                  "#question = :question ADD #agents :agents")
-        if append:
-            update += ", #count :one"
-            names["#count"], values[":one"] = "message_count", 1
+                  "#question = :question, #count = :position ADD #agents :agents")
+        condition = ("(attribute_not_exists(#run) OR #run.since < :stale) "
+                     "AND (attribute_not_exists(#count) OR #count = :count)")
         try:
-            result = self.table.update_item(
+            self.table.update_item(
                 Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
                 UpdateExpression=update,
-                ConditionExpression="attribute_not_exists(#run) OR #run.since < :stale",
+                ConditionExpression=condition,
                 ExpressionAttributeNames=names,
                 ExpressionAttributeValues=values,
-                ReturnValues="UPDATED_NEW",
             )
         except ClientError as e:
             if is_condition_failure(e):
                 return False
             raise
-        if append:
-            self._put_messages(tenant_id, user_id, thread_id, [message], int(result["Attributes"]["message_count"]))
+        self._put_messages(tenant_id, user_id, thread_id, [message], position)
+        # What came after it is gone from the conversation: message_count says
+        # so already, and reads stop there, so a delete that fails half way
+        # leaves nothing anyone sees, and later messages write over it.
+        self._delete_messages(tenant_id, user_id, thread_id, range(position + 1, count + 1))
         return True
 
     def add_answer(self, tenant_id: str, user_id: str, thread_id: str, run_id: str, messages: list[dict], *,
@@ -263,7 +295,54 @@ class ConversationRepository:
         first = last - len(messages) + 1
         with self.table.batch_writer() as batch:
             for n, message in enumerate(messages, start=first):
-                batch.put_item(Item={"pk": pk, "sk": f"MSG#{n:06d}", "message": message})
+                batch.put_item(Item={"pk": pk, "sk": _message_sk(n), "message": message})
+
+    def _delete_messages(self, tenant_id: str, user_id: str, thread_id: str, positions: range) -> None:
+        pk = _conversation_pk(tenant_id, user_id, thread_id)
+        with self.table.batch_writer() as batch:
+            for n in positions:
+                batch.delete_item(Key={"pk": pk, "sk": _message_sk(n)})
+
+    def find_message(self, tenant_id: str, user_id: str, thread_id: str, message_id: str,
+                     last: int) -> tuple[int, str] | None:
+        """
+        Where the message with this (AG-UI) id is, and its role: (position,
+        role), or None. Looks from the newest back, since messages edited or
+        rated are mostly recent; `last` is the conversation's message_count.
+        """
+        if last < 1:
+            return None
+        params = {
+            "KeyConditionExpression": Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id))
+            & Key("sk").between(_message_sk(1), _message_sk(last)),
+            "ProjectionExpression": "sk, #m.#id, #m.#role",
+            "ExpressionAttributeNames": {"#m": "message", "#id": "id", "#role": "role"},
+            "ScanIndexForward": False,
+            "ConsistentRead": True,
+        }
+        while True:
+            result = self.table.query(**params)
+            for item in result["Items"]:
+                if item["message"].get("id") == message_id:
+                    return int(item["sk"].removeprefix("MSG#")), item["message"].get("role")
+            if "LastEvaluatedKey" not in result:
+                return None
+            params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
+    def rate(self, tenant_id: str, user_id: str, thread_id: str, position: int, rating: Rating | None) -> bool:
+        """Sets (or, with None, clears) the user's rating of the message at `position`. False if it's gone."""
+        key = {"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": _message_sk(position)}
+        params = {"UpdateExpression": "REMOVE #rating", "ExpressionAttributeNames": {"#rating": "rating"}}
+        if rating is not None:
+            params = {"UpdateExpression": "SET #rating = :rating", "ExpressionAttributeNames": {"#rating": "rating"},
+                      "ExpressionAttributeValues": {":rating": rating}}
+        try:
+            self.table.update_item(Key=key, ConditionExpression="attribute_exists(pk)", **params)
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+        return True
 
     def set_title(self, tenant_id: str, user_id: str, thread_id: str, title: str, source: TitleSource,
                   only_over: TitleSource | None = None) -> bool:
@@ -299,16 +378,31 @@ class ConversationRepository:
                                    ConsistentRead=True).get("Item")
         return _conversation(item) if item and (expired or item["expires_at"] > time.time()) else None
 
-    def messages(self, tenant_id: str, user_id: str, thread_id: str, limit: int) -> list[dict]:
+    def messages(self, tenant_id: str, user_id: str, thread_id: str, limit: int,
+                 last: int | None = None) -> list[dict]:
         """The latest `limit` messages, oldest first: all that were written, even a moment ago."""
+        return self.history(tenant_id, user_id, thread_id, limit, last)[0]
+
+    def history(self, tenant_id: str, user_id: str, thread_id: str, limit: int,
+                last: int | None = None) -> tuple[list[dict], dict[str, Rating]]:
+        """
+        The latest `limit` messages, oldest first, and the user's ratings of
+        them by message id. `last`: the conversation's message_count, past
+        which nothing belongs to it any more (add_question).
+        """
+        if last is not None and last < 1:
+            return [], {}
+        newest = Key("sk").between(_message_sk(1), _message_sk(last)) if last is not None \
+            else Key("sk").begins_with("MSG#")
         result = self.table.query(
-            KeyConditionExpression=Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id))
-            & Key("sk").begins_with("MSG#"),
+            KeyConditionExpression=Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id)) & newest,
             ScanIndexForward=False,
             Limit=limit,
             ConsistentRead=True,
         )
-        return [item["message"] for item in reversed(result["Items"])]
+        items = list(reversed(result["Items"]))
+        return [item["message"] for item in items], {item["message"]["id"]: item["rating"] for item in items
+                                                      if "rating" in item}
 
     def list(self, tenant_id: str, user_id: str, limit: int,
              cursor: str | None = None) -> tuple[list[Conversation], str | None]:
