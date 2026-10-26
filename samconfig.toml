@@ -15,6 +15,7 @@ stack_name = "saas-dev"
 capabilities = "CAPABILITY_IAM"
 resolve_s3 = true
 confirm_changeset = false
+tags = "project=saas stage=dev"   # on every resource, for Cost Explorer (activate them in Billing)
 parameter_overrides = [
   "Stage=dev",
   "PaymentProvider=stripe",           # test mode; scripts/stripe-setup.py sets Stripe up
@@ -35,6 +36,7 @@ stack_name = "saas-prod"
 capabilities = "CAPABILITY_IAM"
 resolve_s3 = true
 confirm_changeset = true   # at a terminal: review the changes first (CD prepares, then applies)
+tags = "project=saas stage=prod"
 parameter_overrides = [
   "Stage=prod",
   "PaymentProvider=stripe",           # test mode until the live key replaces the test key in SSM
@@ -47,6 +49,7 @@ parameter_overrides = [
   # With your own domain verified in SES, add EmailSender=no-reply@<domain> and
   # SesIdentity=<domain>. Until then app emails (invitations too) are only logged,
   # and Cognito sends sign-up codes itself (about 50 a day).
-  "AlertEmail=henryhoang.tech@gmail.com",  # confirm the subscription email after the first deploy
+  'AlertEmail=""',                    # your address, for alarms and budget alerts (confirm the email after the first deploy)
+  "AccountBudgetUsd=100",             # the whole account's monthly budget in USD (dev shares it); 0 = none
   "LogRetentionDays=90",
 ]

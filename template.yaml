@@ -56,7 +56,15 @@ Parameters:
   AlertEmail:
     Type: String
     Default: ""
-    Description: Email that receives alarms (failed events, dead-letter queues). Empty = no subscription.
+    Description: Email that receives alarms (failed events, dead-letter queues) and budget alerts. Empty = no subscription.
+  AccountBudgetUsd:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >-
+      Monthly budget for the whole AWS account, in USD: AlertsTopic gets an alert at 80% of it
+      and when the month's forecast passes it. 0 = no budget. Dev and prod share an account by
+      default, so set it in one of them.
   LogRetentionDays:
     Type: Number
     Default: 30
@@ -102,6 +110,7 @@ Conditions:
   IsProd: !Equals [!Ref Stage, prod]
   UseSes: !And [!Not [!Equals [!Ref EmailSender, ""]], !Not [!Equals [!Ref SesIdentity, ""]]]
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  HasBudget: !Not [!Equals [!Ref AccountBudgetUsd, "0"]]
   HasAppUrl: !Not [!Equals [!Ref AppUrl, ""]]
   HasCorsOrigin: !Not [!Equals [!Ref CorsOrigin, ""]]
   HasAssistant: !And [!Not [!Equals [!Ref AssistantCodeBucket, ""]], !Not [!Equals [!Ref AssistantCodeKey, ""]]]
@@ -288,6 +297,50 @@ Resources:
       TopicArn: !Ref AlertsTopic
       Protocol: email
       Endpoint: !Ref AlertEmail
+
+  # Who may publish alerts: this account's alarms, and AWS Budgets (AccountBudget).
+  # A topic policy replaces the topic's default one, so the alarms need their own statement.
+  AlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref AlertsTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Alarms
+            Effect: Allow
+            Principal: { Service: cloudwatch.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref AlertsTopic
+            Condition:
+              StringEquals: { aws:SourceAccount: !Ref AWS::AccountId }
+              ArnLike: { aws:SourceArn: !Sub "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*" }
+          - Sid: Budgets
+            Effect: Allow
+            Principal: { Service: budgets.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref AlertsTopic
+            Condition:
+              StringEquals: { aws:SourceAccount: !Ref AWS::AccountId }
+              ArnLike: { aws:SourceArn: !Sub "arn:aws:budgets::${AWS::AccountId}:*" }
+
+  # The whole account's spending, not only this stack's: Bedrock models included,
+  # OpenRouter not (it bills you directly; give its key a credit limit there).
+  AccountBudget:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudget
+    DependsOn: AlertsTopicPolicy          # Budgets checks that it may publish to the topic
+    Properties:
+      Budget:
+        BudgetName: !Sub ${AWS::StackName}-account
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref AccountBudgetUsd, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: SNS, Address: !Ref AlertsTopic }]
+        - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: SNS, Address: !Ref AlertsTopic }]
 
   OutboxDLQAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -507,6 +560,9 @@ Resources:
             Queue: !GetAtt AccountsQueue.Arn
             BatchSize: 10
             FunctionResponseTypes: [ReportBatchItemFailures]
+            # A backlog (or a DLQ redrive) waits in the queue instead of taking the
+            # account's Lambda concurrency from the API and the login trigger.
+            ScalingConfig: { MaximumConcurrency: 5 }
 
   AccountsDLQAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -676,6 +732,7 @@ Resources:
             Queue: !GetAtt NotificationsQueue.Arn
             BatchSize: 10
             FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 5 }   # as AccountsSubscriptionsFunction
 
   NotificationsDLQAlarm:
     Type: AWS::CloudWatch::Alarm
