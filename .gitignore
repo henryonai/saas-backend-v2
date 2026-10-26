@@ -7,15 +7,6 @@ build/
 .DS_Store
 docs/openapi/
 
-# Ruflo local secrets and runtime data
+# Local env overrides
 .env.local
 .env.*.local
-.claude-flow/data/
-.claude-flow/logs/
-.claude-flow/sessions/
-
-# Ruflo runtime data (local to this machine)
-.swarm/
-ruvector.db
-.claude-flow/metrics/
-.claude-flow/policy/
