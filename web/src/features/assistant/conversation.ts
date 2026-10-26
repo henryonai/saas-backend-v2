@@ -57,7 +57,7 @@ let unreached: { agent: AssistantAgent; runId: string } | null = null;
 
 function currentAgent(): AssistantAgent {
   const { threadId } = conversationStore.getState();
-  if (agent?.threadId !== threadId) agent = new AssistantAgent(threadId);
+  if (agent?.threadId !== threadId) agent = new AssistantAgent(threadId, [], sessionStore.getState().user?.tenantId ?? null);
   return agent;
 }
 
@@ -193,7 +193,7 @@ export function newConversation(): void {
 export function openConversation(threadId: string, history: AssistantConversationDetail): void {
   agent?.abortRun();
   shown = unreached = null;
-  agent = new AssistantAgent(threadId, history.messages);
+  agent = new AssistantAgent(threadId, history.messages, sessionStore.getState().user?.tenantId ?? null);
   conversationStore.setState({
     threadId, messages: history.messages, running: false, error: null, tokens: null, ratings: { ...history.ratings },
   });
@@ -290,8 +290,8 @@ async function stream(target: AssistantAgent, runId: string, before: Message[], 
     await target.runAgent(
       {
         runId,
-        // tenantId: the workspace this tab works in (AgentCore passes on no custom headers)
-        forwardedProps: { agent: MAIN_AGENT, tenantId: sessionStore.getState().user?.tenantId, ...(resume && { resume }) },
+        // tenantId: the conversation's workspace (AgentCore passes on no custom headers)
+        forwardedProps: { agent: MAIN_AGENT, tenantId: target.tenantId, ...(resume && { resume }) },
       },
       {
         onRunStartedEvent: ({ event }) => {

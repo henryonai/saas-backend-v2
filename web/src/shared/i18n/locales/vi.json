@@ -64,7 +64,8 @@
     "create": "Tạo workspace",
     "createDescription": "Bạn sẽ là chủ sở hữu, và vẫn giữ các workspace khác. Mỗi tab trình duyệt có thể làm việc trong một workspace khác nhau.",
     "invitations": "Lời mời ({{count}})",
-    "invitationsDescription": "Tham gia một workspace không làm bạn rời các workspace đang có. Chỉ chấp nhận lời mời từ người bạn biết."
+    "invitationsDescription": "Tham gia một workspace không làm bạn rời các workspace đang có. Chỉ chấp nhận lời mời từ người bạn biết.",
+    "openFailed": "Không mở được workspace đó. Hãy tải lại trang rồi chọn nó trong danh sách workspace."
   },
   "auth": {
     "backToSignIn": "Quay lại đăng nhập",

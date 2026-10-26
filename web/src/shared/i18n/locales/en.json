@@ -64,7 +64,8 @@
     "create": "Create workspace",
     "createDescription": "You become its owner, and keep your other workspaces. Each browser tab can work in a different one.",
     "invitations": "Invitations ({{count}})",
-    "invitationsDescription": "Joining a workspace keeps the ones you're in. Only accept invitations from people you know."
+    "invitationsDescription": "Joining a workspace keeps the ones you're in. Only accept invitations from people you know.",
+    "openFailed": "Couldn't open that workspace. Reload the page, then choose it from the switcher."
   },
   "auth": {
     "backToSignIn": "Back to sign in",

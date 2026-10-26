@@ -44,11 +44,19 @@ def workspaces_of(user_pk: str) -> list[str]:
     return [item["tenant_id"] for item in result["Items"]]
 
 
+def stored_count(user_pk: str) -> int | None:
+    item = table.get_item(Key={"pk": user_pk, "sk": "WORKSPACES"}, ConsistentRead=True).get("Item")
+    return int(item["count"]) if item else None
+
+
 changed = 0
 for item in old_memberships():
     user_pk, tenant_id = item["pk"], item["tenant_id"]
     has_new = tenant_id in workspaces_of(user_pk)
-    if args.step == "copy" and not has_new:
+    if args.step == "copy":
+        # Also repairs a run that stopped between the two writes: the count must match the items.
+        if has_new and stored_count(user_pk) == len(workspaces_of(user_pk)):
+            continue
         print(f"{user_pk}: WORKSPACE#{tenant_id}")
         if not args.dry_run:
             table.put_item(Item={"pk": user_pk, "sk": f"WORKSPACE#{tenant_id}", "tenant_id": tenant_id})

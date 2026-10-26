@@ -50,7 +50,8 @@ function InvitationRow({ invitation, onJoined }: { invitation: Invitation; onJoi
       const tenant = await accept.mutateAsync(invitation.tenant_id);
       toast.success(t('welcome.invitations.accepted', { workspace: tenant.name }));
       onJoined?.();
-      await goTo(tenant.tenant_id);
+      // Joined either way (the invitation is used up): only opening it can fail, so say that.
+      if (!(await goTo(tenant.tenant_id))) toast.error(t('workspaces.openFailed'));
     } catch (error) {
       toastError(error, t);
     }
