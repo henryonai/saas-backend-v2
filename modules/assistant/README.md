@@ -61,6 +61,7 @@ src/assistant/
 ├── middleware/          one file per middleware (usage, conversation, plan_tools, errors)
 ├── titles.py            names a new conversation from its first message, while the agent answers
 ├── app.py               AgentCore entry point (the SDK's AGUIApp): auth, the run, stop, history, stream
+├── stop.py              Stop ends the run's model call, and estimates what the call cost
 ├── runs.py              this microVM's runs: each runs in a worker thread into a log any request reads
 ├── agui.py              the agent's stream → AG-UI events; Transcript: events → AG-UI messages
 ├── context.py           AgentContext: who the agents work for (runtime context, never in a prompt)
@@ -166,6 +167,8 @@ details the main conversation doesn't need: analysis, reports, research.
 - `UsageMiddleware.wrap_model_call` adds each model call's `usage_metadata` to
   the month's tokens, read from the model's response itself (it is the outermost
   wrapper; `after_model` would see whatever other middleware appended first).
+  A call the user stopped has no `usage_metadata`, so it adds `StopModel`'s
+  estimate instead (see Stop below).
   When the cap is reached, `before_model` ends the run with a short message
   (`jump_to: "end"`) *before* the next model call, so the history stays valid
   for the next turn (every tool call already has its result).
@@ -357,7 +360,11 @@ token (`handler.py`, a Lambda):
   long tool call (a sandbox command, a subagent) finishes first. The model's
   call ends too (`StopModel` raises from its next token): closing the stream
   waits for the step that is running, so a long answer would otherwise go on
-  being written, and billed, to its end, with the conversation busy. The agent
+  being written, and billed, to its end, with the conversation busy. A
+  stopped call never gets the model's token counts (they come with its last
+  chunk), so `StopModel` estimates them, about 4 characters a token, from
+  what the call was sent and what it wrote. They count against the plan and
+  appear in the `Assistant answered` log line (`stop.py`). The agent
   keeps what the user saw, too (`keep_what_the_user_saw`): closing the stream
   mid-step leaves a tool's result that just came back as a pending write,
   which the next message's run drops, and the answer's text so far nowhere, so

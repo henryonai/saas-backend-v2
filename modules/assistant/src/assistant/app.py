@@ -34,7 +34,6 @@ Each request:
 import asyncio
 import base64
 import json
-import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import wait
@@ -45,7 +44,6 @@ from aws_lambda_powertools import Logger
 from bedrock_agentcore import RequestContext
 from bedrock_agentcore.runtime.ag_ui import AGUIApp
 from bedrock_agentcore.runtime.models import PingStatus
-from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
@@ -59,6 +57,7 @@ from assistant.factory import thread_config
 from assistant.models import Run
 from assistant.runs import RunLog, Runs
 from assistant.service import ConversationLog
+from assistant.stop import StopModel
 from assistant.titles import Titles
 
 logger = Logger()
@@ -193,6 +192,9 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
     if naming is not None:
         wait([naming], timeout=TITLE_WAIT_SECONDS)   # the conversation takes new messages meanwhile
 
+    # A model call the user stopped has no usage_metadata: StopModel estimated its tokens.
+    input_tokens += stop_model.input_tokens
+    output_tokens += stop_model.output_tokens
     # One line per message, with tokens: per-tenant cost in CloudWatch Logs Insights.
     # (A subagent's tokens are in the usage table, not in these numbers.)
     logger.info("Assistant answered", extra={**log, "input_tokens": input_tokens, "output_tokens": output_tokens,
@@ -222,27 +224,6 @@ def stop_check(history: ConversationLog, context: AgentContext, run_id: str) -> 
             return False
 
     return stop_requested
-
-
-class Stopped(Exception):
-    """The user pressed Stop: ends the model call the run is in."""
-
-
-class StopModel(BaseCallbackHandler):
-    """
-    Ends a model call once the run stops. Closing the stream waits for the
-    step that is running, and a model streaming a long answer would go on to
-    its end: tokens nobody reads, and the conversation busy (409) meanwhile.
-    Raised from its next token, the error ends the model's stream.
-    """
-    raise_error = True
-
-    def __init__(self):
-        self.stopping = threading.Event()
-
-    def on_llm_new_token(self, token: str, **kwargs) -> None:
-        if self.stopping.is_set():
-            raise Stopped()
 
 
 class Streamed:
