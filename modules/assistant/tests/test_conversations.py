@@ -258,6 +258,21 @@ def test_an_answer_asked_for_again_that_never_came_leaves_the_old_one(ctx, api, 
     assert conversation["versions"] == {} and conversation["run_id"] is None
 
 
+def test_after_an_answer_asked_for_again_never_came_the_agent_goes_on_from_what_the_user_sees(ctx, api, alice):
+    france_and_germany(ctx, alice)
+    ctx.script()   # Berlin asked for again: the run fails before it says anything
+
+    assert ctx.error(ctx.run(ctx.post("And Germany?", alice, message_id="q2", replaces="q2"), alice))["code"] \
+        == "INTERNAL_ERROR"
+    ctx.script(ctx.answer("Madrid."))
+    ctx.chat("And Spain?", alice)
+
+    # Whatever the failed run checkpointed (the question, rewound to), the agent has what is shown: Berlin, once.
+    assert sent_to_model(ctx) == [("human", "Capital of France?"), ("ai", "Paris."), ("human", "And Germany?"),
+                                  ("ai", "Berlin."), ("human", "And Spain?")]
+    assert history_of(api, alice) == [*FRANCE_AND_GERMANY, ("user", "And Spain?"), ("assistant", "Madrid.")]
+
+
 def test_showing_a_version_takes_one_the_conversation_has(ctx, api, alice):
     france_and_germany(ctx, alice)
     ctx.script(ctx.answer("Rome."))
