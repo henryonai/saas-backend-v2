@@ -17,11 +17,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import boto3
 import pytest
+import yaml
 from ag_ui.core import Message
 from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError
 from boto3.dynamodb.types import TypeSerializer
@@ -821,6 +823,55 @@ def test_an_edit_after_the_checkpoints_expired_goes_back_as_the_history_did(ctx,
     ctx.run(ctx.post("And Italy?", alice, message_id="q3", replaces="q2"), alice)
 
     assert sent(ctx) == [("human", "Capital of France?"), ("ai", "Paris."), ("human", "And Italy?")]
+
+
+def runtime_role_allows(resource: str) -> set[str]:
+    """The actions template.yaml's AssistantRuntimeRole allows on `resource` (e.g. "!GetAtt AssistantTable.Arn")."""
+    class Template(yaml.SafeLoader):
+        pass
+
+    # CloudFormation's tags, as their text: "!GetAtt AssistantTable.Arn".
+    Template.add_multi_constructor("!", lambda loader, tag, node:
+                                   f"!{tag} {node.value}" if isinstance(node, yaml.ScalarNode) else None)
+    template = yaml.load((Path(__file__).resolve().parents[3] / "template.yaml").read_text(), Template)
+    role = template["Resources"]["AssistantRuntimeRole"]["Properties"]
+    statements = [s for policy in role["Policies"] for s in policy["PolicyDocument"]["Statement"]]
+    return {action for s in statements if resource in (s["Resource"] if isinstance(s["Resource"], list)
+                                                       else [s["Resource"]]) for action in s["Action"]}
+
+
+def test_the_runtime_role_allows_every_call_the_runtime_makes_to_the_assistant_table(ctx, alice):
+    """
+    moto checks no permissions, so a call the role doesn't allow fails only on
+    AWS: every answer in a new conversation did, on dev, when restoring
+    started reading the history with Query.
+    """
+    calls, recording = set(), threading.Event()
+
+    def record(model, **_) -> None:   # returning anything else would answer the call instead of AWS
+        if recording.is_set():
+            calls.add(f"dynamodb:{model.name}")
+
+    ctx.table.meta.client.meta.events.register("before-call.dynamodb", record)
+
+    def runtime(run_id: str) -> None:
+        """Only what the runtime does: not the HTTP API's own calls (post)."""
+        recording.set()
+        try:
+            ctx.run(run_id, alice)
+        finally:
+            recording.clear()
+
+    ctx.script(ctx.answer("Hello!"))
+    runtime(ctx.post("Hi", alice))                  # a new conversation, titled meanwhile
+    ctx.script(ctx.answer("Hi again."))
+    runtime(ctx.post("Still there?", alice))
+    expire_checkpoints(ctx, alice)
+    ctx.script(ctx.answer("Yes."))
+    runtime(ctx.post("And now?", alice))            # rebuilt from the history
+
+    assert {"dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:BatchWriteItem"} <= calls
+    assert calls <= runtime_role_allows("!GetAtt AssistantTable.Arn")
 
 
 def test_a_tool_call_cut_off_mid_stream_is_left_out_of_what_the_agent_gets_back():

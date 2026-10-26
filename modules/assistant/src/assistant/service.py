@@ -178,7 +178,7 @@ class ConversationLog:
         """
         tenant_id, user_id = context.user.require_tenant(), context.user.user_id
         conversation = self.conversations.get(tenant_id, user_id, context.session_id, expired=True)
-        if conversation is None:
+        if conversation is None or conversation.message_count <= 1:   # the run's message is its first
             return []
         said = self.conversations.all_messages(tenant_id, user_id, context.session_id,
                                                last=conversation.message_count)

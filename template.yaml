@@ -979,9 +979,11 @@ Resources:
                 Effect: Allow
                 Action: [s3:GetLifecycleConfiguration, s3:PutLifecycleConfiguration]
                 Resource: !GetAtt AssistantCheckpointBucket.Arn
-              - Sid: Table                # usage counters, and each conversation's history (service.ConversationLog)
+              # Usage counters, and each conversation's history (service.ConversationLog);
+              # Query reads it back for an agent whose checkpoints expired (app.restored).
+              - Sid: Table
                 Effect: Allow
-                Action: [dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
+                Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
                 Resource: !GetAtt AssistantTable.Arn
               - Sid: Sandbox                # assistant/sandbox.py
                 Effect: Allow
