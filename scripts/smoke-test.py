@@ -10,7 +10,8 @@ users and calls every endpoint, printing PASS/FAIL per check:
   webhooks, out-of-order and repeated webhooks, payment failed, cancel),
   events between modules (outbox -> EventBridge -> accounts and notifications
   workers), invitations (send, cancel, accept, decline), roles and who may do
-  what, leaving and removing members, tenant isolation and plan limits.
+  what, leaving and removing members, tenant isolation, users in several
+  workspaces (X-Tenant-Id) and plan limits.
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
@@ -98,13 +99,16 @@ class Person:
                               UserAttributes=[{"Name": "email", "Value": self.email},
                                               {"Name": "email_verified", "Value": "true"}])
         idp.admin_set_user_password(UserPoolId=POOL, Username=self.email, Password=self.password, Permanent=True)
+        self.workspace: str | None = None   # the one they work in, sent as X-Tenant-Id (as a browser tab does)
         self.sign_in()
         self.id = self.claims["sub"]
 
     def sign_in(self) -> "Person":
-        """New tokens; the pre-token trigger puts the current workspace, role and plan in them."""
+        """New tokens; the pre-token trigger lists every workspace in them, with the role and plan."""
         self.cognito = Cognito(POOL, CLIENT, user_pool_region=region, username=self.email)
         self.cognito.authenticate(password=self.password)
+        if self.workspace not in self.workspaces:   # left or removed: work in another, as the app does
+            self.workspace = next(iter(self.workspaces), None)
         return self
 
     @property
@@ -116,6 +120,11 @@ class Person:
         payload = self.token.split(".")[1]
         return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 
+    @property
+    def workspaces(self) -> dict:
+        """What the token lists: {tenant_id: {"role": ..., "plan": ...}}."""
+        return json.loads(self.claims.get("workspaces") or "{}")
+
     def refresh_works(self) -> bool:
         try:
             self.cognito.renew_access_token()
@@ -123,8 +132,11 @@ class Person:
         except ClientError:
             return False
 
-    def __call__(self, method: str, path: str, **kw) -> requests.Response:
-        return call(method, path, self.token, **kw)
+    def __call__(self, method: str, path: str, tenant=..., **kw) -> requests.Response:
+        """As this person, in `tenant` (X-Tenant-Id): by default the workspace they work in; None sends none."""
+        tenant = self.workspace if tenant is ... else tenant
+        headers = {**kw.pop("headers", {}), **({"X-Tenant-Id": tenant} if tenant else {})}
+        return call(method, path, self.token, headers=headers, **kw)
 
 
 def ssm_value(name: str) -> str:
@@ -184,13 +196,12 @@ r = owner("POST", "/tenants", json={"name": "Smoke Co"})
 check("POST /tenants", r.status_code == 201, show(r))
 tenant_id = r.json().get("tenant_id")
 owner.sign_in()
-c = owner.claims
-check("new token has workspace claims",
-      (c.get("tenant_id"), c.get("role"), c.get("plan")) == (tenant_id, "owner", "free"),
-      {k: c.get(k) for k in ("tenant_id", "role", "plan")})
+check("new token lists the workspace", owner.workspaces == {tenant_id: {"role": "owner", "plan": "free"}},
+      owner.workspaces)
 r = owner("GET", "/tenants/me")
 check("GET /tenants/me", r.ok and r.json()["plan"] == "free" and r.json()["seats_used"] == 1, show(r))
-check("second workspace -> 409", owner("POST", "/tenants", json={"name": "Again"}).status_code == 409)
+r = owner("GET", "/tenants", tenant=None)
+check("GET /tenants (no X-Tenant-Id needed)", r.ok and [w["tenant_id"] for w in r.json()] == [tenant_id], show(r))
 check("invalid name -> 422", carol("POST", "/tenants", json={"name": ""}).status_code == 422)
 
 print("Orders")
@@ -274,7 +285,7 @@ started = time.time()
 tenant = wait_for(lambda: (t := owner("GET", "/tenants/me").json()).get("plan") == "pro" and t)
 check("accounts worker set the workspace plan to pro", bool(tenant),
       f"{time.time() - started:.0f}s" if tenant else "timed out")
-check("new token says plan=pro", owner.sign_in().claims.get("plan") == "pro", owner.claims.get("plan"))
+check("new token says plan=pro", owner.sign_in().workspaces[tenant_id]["plan"] == "pro", owner.workspaces)
 expected = ["Order created", "Order created", "Plan changed to pro"]
 got = wait_for(lambda: (t := titles(owner)) == expected and t)
 check("notifications worker: 2 orders + plan change", got == expected, titles(owner))
@@ -303,10 +314,13 @@ r = owner("GET", "/users/invitations")
 check("GET /users/invitations (bob, carol)",
       r.ok and sorted(i["email"] for i in r.json()) == sorted([bob.email, carol.email]), show(r))
 
-print("Another workspace: isolation, decline")
+print("Another workspace: isolation, several workspaces, decline")
 r = carol("POST", "/tenants", json={"name": "Other Co"})
 check("carol creates her own workspace", r.status_code == 201, show(r))
+other_id = r.json().get("tenant_id")
 carol.sign_in()
+check("naming a workspace her token doesn't list -> 401",
+      carol("GET", "/orders", tenant=tenant_id).status_code == 401)
 check("carol can't read Smoke Co's order -> 404", carol("GET", f"/orders/{order1}").status_code == 404)
 check("carol can't change Smoke Co's order -> 404",
       carol("PATCH", f"/orders/{order2}/status", json={"status": "cancelled"}).status_code == 404)
@@ -318,7 +332,19 @@ r = carol("GET", "/invitations")
 check("GET /invitations (carol sees Smoke Co's invitation)",
       r.ok and [i["tenant_id"] for i in r.json()] == [tenant_id], show(r))
 r = carol("POST", f"/invitations/{tenant_id}/accept")
-check("accepting while in another workspace -> 409", r.status_code == 409, show(r))
+check("carol joins Smoke Co too, keeping Other Co", r.ok, show(r))
+carol.sign_in()
+check("carol's new token lists both workspaces", set(carol.workspaces) == {tenant_id, other_id}, carol.workspaces)
+r = carol("GET", "/orders", tenant=tenant_id)
+check("in Smoke Co (X-Tenant-Id) carol sees its orders", r.ok and len(r.json()["items"]) == 2, show(r))
+r = carol("GET", "/orders", tenant=other_id)
+check("in Other Co she still sees none", r.ok and r.json()["items"] == [], show(r))
+check("two workspaces, none named -> 403", carol("GET", "/orders", tenant=None).status_code == 403)
+r = carol("DELETE", f"/users/{carol.id}", tenant=tenant_id)
+check("carol leaves Smoke Co", r.status_code == 204, show(r))
+check("leaving kept carol signed in", carol.refresh_works())
+check("carol's new token lists only Other Co", list(carol.sign_in().workspaces) == [other_id], carol.workspaces)
+check("re-invite carol", owner("POST", "/users/invite", json={"email": carol.email}).status_code == 201)
 r = carol("POST", f"/invitations/{tenant_id}/decline")
 check("POST /invitations/{tenant_id}/decline", r.status_code == 204, show(r))
 check("declining again -> 404", carol("POST", f"/invitations/{tenant_id}/decline").status_code == 404)
@@ -330,9 +356,8 @@ r = bob("GET", "/invitations")
 check("bob sees his invitation", r.ok and [i["tenant_name"] for i in r.json()] == ["Smoke Co"], show(r))
 r = bob("POST", f"/invitations/{tenant_id}/accept")
 check("POST /invitations/{tenant_id}/accept", r.ok and r.json()["tenant_id"] == tenant_id, show(r))
-c = bob.sign_in().claims
 check("bob's new token: member of Smoke Co on pro",
-      (c.get("tenant_id"), c.get("role"), c.get("plan")) == (tenant_id, "member", "pro"))
+      bob.sign_in().workspaces == {tenant_id: {"role": "member", "plan": "pro"}}, bob.workspaces)
 r = bob("GET", "/orders", params={"limit": 50})
 check("bob sees the workspace's orders", r.ok and len(r.json()["items"]) == 2, show(r))
 check("bob (member) can create an order",
@@ -355,7 +380,7 @@ check("owner's role can't be changed -> 403",
       owner("PATCH", f"/users/{owner.id}/role", json={"role": "admin"}).status_code == 403)
 check("role 'owner' can't be given -> 422",
       owner("PATCH", f"/users/{bob.id}/role", json={"role": "owner"}).status_code == 422)
-check("bob's new token says admin", bob.sign_in().claims.get("role") == "admin")
+check("bob's new token says admin", bob.sign_in().workspaces[tenant_id]["role"] == "admin")
 r = bob("POST", "/users/invite", json={"email": ghost})
 check("bob (admin) can invite", r.status_code == 201, show(r))
 r = bob("DELETE", f"/users/invitations/{quote(ghost, safe='')}")
@@ -366,7 +391,8 @@ r = owner("PATCH", f"/users/{bob.id}/role", json={"role": "member"})
 check("PATCH /users/{id}/role (bob -> member)", r.ok and r.json()["role"] == "member", show(r))
 old_token = bob.token  # issued while bob was admin
 check("bob's older admin token can't invite (role is checked in the DB) -> 403",
-      call("POST", "/users/invite", old_token, json={"email": ghost}).status_code == 403)
+      call("POST", "/users/invite", old_token, headers={"X-Tenant-Id": tenant_id},
+           json={"email": ghost}).status_code == 403)
 
 print("Leaving and removing")
 check("owner can't leave -> 403", owner("DELETE", f"/users/{owner.id}").status_code == 403)
@@ -374,7 +400,8 @@ bob.sign_in()
 r = bob("DELETE", f"/users/{bob.id}")
 check("DELETE /users/{own id} (bob leaves)", r.status_code == 204, show(r))
 check("bob's old token is refused by accounts -> 403", bob("GET", "/users").status_code == 403)
-check("bob's new token has no workspace", "tenant_id" not in bob.sign_in().claims)
+check("leaving kept bob signed in", bob.refresh_works())
+check("bob's new token has no workspace", bob.sign_in().workspaces == {}, bob.workspaces)
 r = owner("GET", "/users")
 check("owner sees only themself", r.ok and [m["user_id"] for m in r.json()] == [owner.id], show(r))
 check("re-invite bob", owner("POST", "/users/invite", json={"email": bob.email}).status_code == 201)

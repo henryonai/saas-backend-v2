@@ -6,7 +6,7 @@ import { routeTree } from './routeTree.gen';
 import type { SessionUser } from './shared/auth/claims';
 import { sessionStore } from './shared/auth/session';
 import { TooltipProvider } from './shared/components/ui/tooltip';
-import { json, OWNER } from './test/render';
+import { json, NEWCOMER, OWNER } from './test/render';
 
 vi.mock('./shared/auth/session', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./shared/auth/session')>()),
@@ -95,7 +95,7 @@ describe('route guards', () => {
   });
 
   it('sends a user without a workspace to the welcome page, with their invitations', async () => {
-    const router = renderAt('/orders', { ...OWNER, tenantId: null, role: null, plan: null });
+    const router = renderAt('/orders', NEWCOMER);
     expect(await screen.findByText('“Bean Co”')).toBeInTheDocument();
     expect(router.state.location.pathname).toBe('/welcome');
   });

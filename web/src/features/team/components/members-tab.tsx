@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import type { Member } from '@/shared/api/types';
 import { canManageMembers, type Role } from '@/shared/auth/claims';
-import { endSession, useUser } from '@/shared/auth/session';
+import { refreshSession, useUser } from '@/shared/auth/session';
 import { ConfirmDialog } from '@/shared/components/confirm-dialog';
 import { ErrorState, LoadingRows } from '@/shared/components/query-state';
 import { Badge } from '@/shared/components/ui/badge';
@@ -125,7 +125,10 @@ function MemberRow({ member }: { member: Member }) {
   );
 }
 
-/** Anyone but the owner can leave. Leaving revokes the session, so the user signs in again. */
+/**
+ * Anyone but the owner can leave. They stay signed in: a new token drops this
+ * workspace, and the tab moves to another of theirs, or to the welcome page.
+ */
 function LeaveWorkspace() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -140,8 +143,9 @@ function LeaveWorkspace() {
       toastError(error, t);
       throw error;
     }
-    await endSession('left');
-    await navigate({ to: '/sign-in' });
+    toast.success(t('team.left'));
+    const user = await refreshSession();
+    if (user) await navigate({ to: user.tenantId ? '/' : '/welcome' });
   }
 
   return (

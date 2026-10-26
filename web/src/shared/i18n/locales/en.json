@@ -58,6 +58,15 @@
     "team": "Team",
     "toggleSidebar": "Toggle sidebar"
   },
+  "workspaces": {
+    "title": "Workspaces",
+    "switch": "Switch workspace",
+    "create": "Create workspace",
+    "createDescription": "You become its owner, and keep your other workspaces. Each browser tab can work in a different one.",
+    "invitations": "Invitations ({{count}})",
+    "invitationsDescription": "Joining a workspace keeps the ones you're in. Only accept invitations from people you know.",
+    "openFailed": "Couldn't open that workspace. Reload the page, then choose it from the switcher."
+  },
   "auth": {
     "backToSignIn": "Back to sign in",
     "code": "Code",
@@ -103,8 +112,7 @@
       "done": "Password changed. Sign in with your new password."
     },
     "signedOut": {
-      "expired": "Your session ended. Sign in again to continue.",
-      "left": "You left the workspace. Sign in again to create or join another one."
+      "expired": "Your session ended. Sign in again to continue."
     },
     "errors": {
       "emailTaken": "An account with this email already exists. Sign in instead.",
@@ -223,7 +231,8 @@
     "removed": "{{email}} was removed.",
     "leave": "Leave workspace",
     "leaveTitle": "Leave this workspace?",
-    "leaveDescription": "You lose access right away and are signed out. To come back, someone has to invite you again.",
+    "leaveDescription": "You lose access to it right away and stay signed in to your other workspaces. To come back, someone has to invite you again.",
+    "left": "You left the workspace",
     "invite": {
       "open": "Invite",
       "title": "Invite someone",

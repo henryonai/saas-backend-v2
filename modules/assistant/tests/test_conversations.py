@@ -47,7 +47,7 @@ from assistant.middleware import INTERRUPTED
 from assistant.models import Run, current_month, iso
 from assistant.purge import process_batch
 from shared.auth import user_from_claims
-from testkit.http import FakeContext, call, claims
+from testkit.http import FakeContext, call, claims, only_workspace
 from testkit.logs import captured_logs
 
 THREAD = "11111111-2222-3333-4444-555555555555"   # conftest's SESSION: the threadId is the session
@@ -75,9 +75,9 @@ def while_a_tool_runs(ctx, action) -> None:
     """Does `action` in the middle of the agent's list_orders call (in the HTTP API the tool calls)."""
     get = ctx.api.get
 
-    def get_meanwhile(authorization, path, params=None):
+    def get_meanwhile(authorization, tenant_id, path, params=None):
         action()
-        return get(authorization, path, params)
+        return get(authorization, tenant_id, path, params)
 
     ctx.api.get = get_meanwhile
 
@@ -579,8 +579,8 @@ def test_after_a_stop_the_agent_keeps_what_the_user_saw(ctx, alice):
     # Stop closes the stream mid-step. LangGraph had saved the tool call, but not
     # the result that streamed right after (as on dev), nor the answer's text so far.
     agent = ctx.state.agents["assistant"]
-    config = thread_config(AgentContext(user=user_from_claims(alice), authorization="", session_id=ctx.session),
-                           "assistant")
+    user = user_from_claims(alice, only_workspace(alice))
+    config = thread_config(AgentContext(user=user, authorization="", session_id=ctx.session), "assistant")
     call = {"name": "list_orders", "args": {}, "id": "call-1", "type": "tool_call"}
     agent.update_state(config, {"messages": [HumanMessage("What did we order?"),
                                              AIMessage("", id="ai-1", tool_calls=[call])]}, as_node="model")
@@ -629,8 +629,8 @@ def test_deleting_the_conversation_mid_answer_stops_it_and_leaves_no_checkpoint(
     # The purge was queued at the delete, before this run wrote its checkpoint:
     # the run deleted the thread itself, after it.
     assert api.purges == [[checkpoint_session("t1:alice", THREAD, "assistant")]]
-    config = thread_config(AgentContext(user=user_from_claims(alice), authorization="", session_id=THREAD),
-                           "assistant")
+    user = user_from_claims(alice, only_workspace(alice))
+    config = thread_config(AgentContext(user=user, authorization="", session_id=THREAD), "assistant")
     assert ctx.state.checkpointer.get_tuple(config) is None
 
 
@@ -783,7 +783,8 @@ def test_a_conversation_that_was_to_expire_is_kept_from_its_next_message(ctx, al
 
 def expire_checkpoints(ctx, user: dict, agent: str = "assistant", thread_id: str = THREAD) -> None:
     """What CHECKPOINT_DAYS without a message does: the agent's checkpoints of the conversation are gone."""
-    config = thread_config(AgentContext(user=user_from_claims(user), authorization="", session_id=thread_id), agent)
+    caller = AgentContext(user=user_from_claims(user, only_workspace(user)), authorization="", session_id=thread_id)
+    config = thread_config(caller, agent)
     ctx.state.checkpointer.delete_thread(config["configurable"]["thread_id"])
     assert ctx.state.checkpointer.get_tuple(config) is None
 
@@ -812,8 +813,8 @@ def test_an_agent_whose_checkpoints_expired_starts_again_from_the_history(ctx, a
                                                                "And now?"]
     assert [line["messages"] for line in logs() if line["message"].startswith("Restored")] == [4]
     # It checkpoints again from there.
-    config = thread_config(AgentContext(user=user_from_claims(alice), authorization="", session_id=THREAD),
-                           "assistant")
+    user = user_from_claims(alice, only_workspace(alice))
+    config = thread_config(AgentContext(user=user, authorization="", session_id=THREAD), "assistant")
     assert len(ctx.state.checkpointer.get_tuple(config).checkpoint["channel_values"]["messages"]) == 6
 
 

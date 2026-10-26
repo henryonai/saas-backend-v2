@@ -32,11 +32,16 @@ export interface RunError {
  * The AG-UI client for one conversation. The threadId is the conversation and
  * the AgentCore session, so it also goes in the session header. `messages`:
  * the history of a conversation that is reopened. Each run is one the HTTP
- * API created (`runAgent({ runId })`).
+ * API created (`runAgent({ runId })`). `tenantId`: the workspace the
+ * conversation belongs to, which its runs name (`forwardedProps.tenantId`)
+ * even if the tab switches workspace meanwhile.
  */
 export class AssistantAgent extends HttpAgent {
-  constructor(threadId: string, messages: Message[] = []) {
+  readonly tenantId: string | null;
+
+  constructor(threadId: string, messages: Message[] = [], tenantId: string | null = null) {
     super({ url: config.assistantUrl, threadId, initialMessages: messages });
+    this.tenantId = tenantId;
   }
 
   /** Before each run: a current ID token (AgentCore's authorizer checks it, as API Gateway does). */

@@ -101,14 +101,20 @@ API outside React (the billing page's wait for the new plan) calls `api.ts`.
 | Notifications (and the bell, every 45 s) | `GET /notifications`, `POST /notifications/{id}/read` |
 | Assistant | sending: `POST /assistant/conversations/{thread_id}/messages`, then the answer from AgentCore's `/invocations` (`AssistantUrl`), AG-UI over SSE; Stop: `POST /assistant/conversations/{thread_id}/runs/{run_id}/cancel`; the list: `GET /assistant/conversations`, `GET`, `PATCH` and `DELETE /assistant/conversations/{thread_id}` |
 
-- **The session is the ID token.** Its claims say who the user is and their
-  workspace, role and plan (all three or none). The routes use them to send
-  the user to sign-in, to the welcome page, or into the app. After anything
-  that changes them (creating or joining a workspace, an upgrade) the app gets
-  new tokens, so the login trigger writes the new claims.
+- **The session is the ID token.** Its claims say who the user is and every
+  workspace they belong to, with their role and its plan. The routes use them
+  to send the user to sign-in, to the welcome page, or into the app. After
+  anything that changes them (creating, joining or leaving a workspace, an
+  upgrade) the app gets new tokens, so the login trigger writes the new claims.
+- **Each tab works in one workspace.** The switcher in the sidebar changes it
+  for that tab only (`sessionStorage`; a new tab starts in the last one used),
+  creates workspaces and accepts invitations. Every API call sends it as
+  `X-Tenant-Id`, and the assistant's runs as `forwardedProps.tenantId`.
+  Switching clears the query cache, so nothing from one workspace shows in
+  another.
 - **401** gets one retry with new tokens. If that fails, or the session was
-  revoked (the backend revokes it when someone is removed, demoted or leaves),
-  the user is signed out and the sign-in page says why.
+  revoked (the backend revokes it when someone is removed or their role
+  changes), the user is signed out and the sign-in page says why.
 - **402** shows the backend's message with "See plans" for the owner, and
   "ask the owner" for everyone else. Other errors show the backend's message
   (in English); network and server errors are translated.

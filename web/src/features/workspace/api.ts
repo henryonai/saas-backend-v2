@@ -1,12 +1,17 @@
 import { api } from '@/shared/api/client';
-import type { Invitation, Tenant, TenantCreate } from '@/shared/api/types';
+import type { Invitation, Tenant, TenantCreate, WorkspaceSummary } from '@/shared/api/types';
 
-/** The caller's workspace. */
+/** The workspace this tab works in. */
 export function getTenant(signal?: AbortSignal) {
   return api<Tenant>('/tenants/me', { signal });
 }
 
-/** Creates the workspace and makes the caller its owner. The token must be refreshed after. */
+/** Every workspace the signed-in user belongs to, by name. */
+export function listWorkspaces(signal?: AbortSignal) {
+  return api<WorkspaceSummary[]>('/tenants', { signal });
+}
+
+/** Creates a workspace and makes the caller its owner. The token must be refreshed after. */
 export function createTenant(body: TenantCreate) {
   return api<Tenant>('/tenants', { method: 'POST', body });
 }

@@ -93,7 +93,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** GET /tenants */
+        get: operations["list_my_workspaces_tenants_get"];
         put?: never;
         /** POST /tenants */
         post: operations["create_tenant_tenants_post"];
@@ -287,6 +288,23 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * WorkspaceOut
+         * @description One of the caller's workspaces, with their role there (for a workspace switcher).
+         */
+        WorkspaceOut: {
+            /** Tenant Id */
+            tenant_id: string;
+            /** Name */
+            name: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "owner" | "admin" | "member";
+            /** Plan */
+            plan: string;
+        };
         /** ResponseValidationError */
         ResponseValidationError: {
             /** Detail */
@@ -447,6 +465,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_my_workspaces_tenants_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceOut"][];
                 };
             };
             /** @description Validation Error */

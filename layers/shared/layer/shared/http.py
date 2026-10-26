@@ -14,6 +14,7 @@ from aws_lambda_powertools.event_handler import APIGatewayHttpResolver, Response
 from aws_lambda_powertools.event_handler.depends import DependencyResolutionError
 from aws_lambda_powertools.logging import correlation_paths
 
+from shared.auth import TENANT_HEADER
 from shared.errors import AppError
 
 logger = Logger()
@@ -46,13 +47,15 @@ def create_app(*routers, title: str) -> APIGatewayHttpResolver:
 def create_handler(app: APIGatewayHttpResolver):
     """
     The Lambda entry point: adds the request id (correlation_id, the access
-    log's requestId), tenant and user to every log line, then routes.
+    log's requestId), the requested workspace (X-Tenant-Id) and the user to
+    every log line, then routes.
     """
 
     @logger.inject_lambda_context(correlation_id_path=correlation_paths.API_GATEWAY_HTTP)
     def handler(event: dict, context) -> dict:
         claims = event.get("requestContext", {}).get("authorizer", {}).get("jwt", {}).get("claims", {})
-        logger.append_keys(tenant_id=claims.get("tenant_id"), user_id=claims.get("sub"))
+        tenant_id = (event.get("headers") or {}).get(TENANT_HEADER)
+        logger.append_keys(tenant_id=tenant_id, user_id=claims.get("sub"))
         try:
             return app.resolve(event, context)
         except Exception:

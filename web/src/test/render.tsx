@@ -11,10 +11,14 @@ export const OWNER: SessionUser = {
   userId: 'user-1',
   email: 'owner@example.com',
   emailVerified: true,
+  workspaces: [{ tenantId: 'tenant-1', role: 'owner', plan: 'free' }],
   tenantId: 'tenant-1',
   role: 'owner',
   plan: 'free',
 };
+
+/** Signed up, but in no workspace yet. */
+export const NEWCOMER: SessionUser = { ...OWNER, workspaces: [], tenantId: null, role: null, plan: null };
 
 /** Renders inside the app's providers (a router, a fresh query cache), signed in as `user`. */
 export async function renderWithApp(ui: ReactNode, { user = OWNER }: { user?: SessionUser | null } = {}) {

@@ -21,7 +21,8 @@ a log in this microVM (runs.py), which the response reads. A page reloaded
 mid-answer sends the same run again and reads it from the start, then live;
 one whose stream broke reads on from where it was (resume_after).
 Each request:
-  1. who is calling: the token's claims, checked like every other module does
+  1. who is calling, and in which workspace: the token's claims and
+     forwardedProps.tenantId, checked like every other module does
   2. which run: one this microVM has (follow it), or the conversation's run
      still to be answered (start it, then follow it); else NOT_FOUND
   3. the run: the agent answers, with middleware for the token cap, as AG-UI
@@ -79,7 +80,7 @@ def create_app(get_agents: Callable[[], dict], get_log: Callable[[], Conversatio
     async def invoke(run_input: RunAgentInput, context: RequestContext) -> AsyncIterator[BaseEvent]:
         thread_id, run_id = run_input.thread_id, run_input.run_id
         try:
-            caller = agent_context(context, thread_id)
+            caller = agent_context(context, thread_id, run_input.forwarded_props)
             if not SESSION_ID.fullmatch(run_id):
                 raise InvalidRequest("Send the runId the HTTP API gave the message "
                                      "(POST /assistant/conversations/{threadId}/messages).")
@@ -344,10 +345,17 @@ def forget(agent, config: dict, log: dict) -> None:
                        extra=log, exc_info=True)
 
 
-def agent_context(context: RequestContext, thread_id: str) -> AgentContext:
-    """Who is calling, and in which conversation. Raises Unauthorized, Forbidden or InvalidRequest."""
+def agent_context(context: RequestContext, thread_id: str, forwarded_props=None) -> AgentContext:
+    """
+    Who is calling, in which workspace and in which conversation. Raises
+    Unauthorized, Forbidden or InvalidRequest.
+
+    The workspace is forwardedProps.tenantId, the HTTP API's X-Tenant-Id: in
+    the request body, since AgentCore passes on only allowlisted headers.
+    """
     authorization = (context.request_headers or {}).get("Authorization", "")
-    user = user_from_claims(claims_from_bearer(authorization))
+    tenant_id = forwarded_props.get("tenantId") if isinstance(forwarded_props, dict) else None
+    user = user_from_claims(claims_from_bearer(authorization), tenant_id if isinstance(tenant_id, str) else None)
     user.require_tenant()
     # The conversation is the AgentCore session, which also keeps the microVM
     # and the sandbox. AgentCore always passes a session id (it makes one up if
