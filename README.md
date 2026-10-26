@@ -481,7 +481,7 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
 - **Tracing:** X-Ray tracing is on for every function. (The X-Ray SDK is in
   maintenance mode; for spans inside your code, use OpenTelemetry/ADOT.)
 - **Metrics:** the relay emits `EventsPublished` to the `saas-<stage>` namespace.
-- **Alarms** go to `AlertsTopic`; set `AlertEmail` to get an email.
+- **Alarms** and budget alerts go to `AlertsTopic`; set `AlertEmail` to get an email.
   - `ApiErrorsAlarm`: the API answered 5xx. Start from the access log's
     `error` field, then `Unhandled error` in the app log group.
   - `AccountsPreTokenErrorsAlarm`: the login trigger errored, so sign-ins
@@ -502,6 +502,16 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
   API answers 503 and the client should retry.
 - **Rate limits:** the HTTP API allows 50 requests/second (bursts of 100) by
   default; change `DefaultRouteSettings` in `template.yaml`.
+- **Workers:** the accounts and notifications workers run at most 5 at a time
+  (`MaximumConcurrency`), the assistant's purge 2. A backlog or a DLQ redrive
+  waits in its queue instead of using up the account's Lambda concurrency,
+  which the API and the login trigger need.
+- **Cost:** every resource carries the stack's `project` and `stage` tags
+  (`tags` in `samconfig.toml`). Activate them once per account (Billing >
+  Cost allocation tags), and Cost Explorer splits the bill by project and
+  stage from then on. `AccountBudgetUsd` sets a monthly budget for the whole
+  account; it alerts at 80% and when the month's forecast passes it. OpenRouter
+  bills you directly, so give its key a credit limit there.
 
 ## Adding a module
 
@@ -571,8 +581,11 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
 - Check prod's values in `samconfig.toml`. `AppUrl` and `CorsOrigin` are
   empty, so the app runs at its CloudFront address (`WebUrl`); for your own
   domain, add it and its certificate to `WebDistribution` and set both to it.
-  `AlertEmail` gets the alarms: confirm its subscription email after the first
-  deploy
+  Set `AlertEmail` to your address for alarms and budget alerts, and confirm
+  its subscription email after the first deploy. Set `AccountBudgetUsd` to
+  what you expect the account to spend in a month (dev's spending counts too
+  while both share an account), and activate the cost allocation tags
+  ("Operations")
 - To send email, verify your domain in SES, request SES production access,
   and set `EmailSender` and `SesIdentity`. Until then app emails, invitations
   included, are only logged
