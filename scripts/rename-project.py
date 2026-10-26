@@ -19,7 +19,9 @@ also rename a project again. In every file git tracks it changes:
     saas.theme, saas.lang, ...              browser storage keys
 
 and, with --title, the app's name on screen (web/index.html and the locale
-files). Then it refreshes uv.lock and the requirements.txt files.
+files). A new name also empties `artifacts` in .ship/profile.yaml: those are
+the template's own links (its project page, its work log), not the copy's.
+Then it refreshes uv.lock and the requirements.txt files.
 
 Deployed resources keep their names: a renamed project deploys new stacks.
 It needs a clean git working tree, so `git diff` shows exactly what it did.
@@ -38,6 +40,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VALID_NAME = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 MAX_LENGTH = 20  # room for the longest generated names, e.g. "<name>-prod-github-deploy"
+SHIP_PROFILE = ROOT / ".ship/profile.yaml"
+# The top-level `artifacts:` key and the indented lines under it
+ARTIFACTS = re.compile(r"^artifacts:[^\n]*\n(?:[ \t]+[^\n]*\n)*", re.M)
 LOCALES = sorted((ROOT / "web/src/shared/i18n/locales").glob("*.json"))
 
 
@@ -119,6 +124,10 @@ def main() -> None:
             pattern, replacement = titles[path]
             result, n = pattern.subn(replacement, result)
             count += n
+        if renames and path == SHIP_PROFILE:
+            emptied = ARTIFACTS.sub("artifacts: {}\n", result)
+            count += emptied != result
+            result = emptied
         if count:
             changed[path] = count
             if not args.dry_run:

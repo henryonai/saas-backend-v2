@@ -1,0 +1,50 @@
+# The ship kit's profile for this repo: what `ship` and its skills need to know to plan, build,
+# check and land a change here. Repo facts live here, never in the kit.
+version: 1
+name: saas-backend
+default_branch: main
+
+plan_roots:
+  - dir: plans
+    index: plans/README.md
+    backlog: plans/BACKLOG.md
+
+landing:
+  - kind: plan-status
+  - kind: index-row
+  - kind: worktree-removed
+  - kind: branch-deleted
+  - kind: lease-released
+
+resources:
+  # No Postgres or Redis: the tests run offline, with moto and fakes. The ports are for the web
+  # app in a live check, one block per lease.
+  ports:
+    range: [5300, 5399]
+    block: 5
+    stride: 10
+
+# The checks CI runs (.github/workflows/ci.yml), in the same order.
+gates:
+  lint:
+    run: uvx ruff check .
+  test:
+    run: uv run pytest
+    count: '(\d+) passed'
+  requirements:
+    run: ./scripts/export-requirements.sh --check
+  cfn:
+    run: uvx cfn-lint template.yaml .github/deploy-role.yaml
+  web:
+    # gen:api must leave the generated client unchanged, as CI checks
+    run: >-
+      pnpm gen:api && git diff --exit-code -- src/shared/api/generated
+      && pnpm typecheck && pnpm lint && pnpm test && pnpm build
+    cwd: web
+    count: 'Tests\s+(\d+) passed'
+
+deploy:
+  workflow: deploy.yml
+
+worktrees:
+  dir: .claude/worktrees

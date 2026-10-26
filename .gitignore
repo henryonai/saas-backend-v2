@@ -10,3 +10,6 @@ docs/openapi/
 # Local env overrides
 .env.local
 .env.*.local
+
+# Worktrees the ship kit makes for a build (worktrees.dir in .ship/profile.yaml)
+.claude/worktrees/
