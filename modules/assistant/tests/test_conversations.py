@@ -9,6 +9,7 @@ checkpoints of them, and a removed member's conversations (purge.py).
 """
 import base64
 import json
+import math
 import os
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingErro
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph_checkpoint_aws import DynamoDBSaver
 from pydantic import TypeAdapter
@@ -540,6 +542,37 @@ def test_stop_ends_the_model_call_and_the_agent_keeps_the_text_so_far(ctx, api, 
     ctx.script(ctx.answer("Where was I?"))
     ctx.chat("Go on", alice)
     assert ("ai", said) in [(m.type, m.text) for m in ctx.model_calls()[0]]
+
+
+def test_a_stopped_answer_still_counts_its_tokens(ctx, api, alice, monkeypatch):
+    """
+    A stopped model call never gets the model's token counts (they come with
+    its last chunk). Its tokens are estimated, about 4 characters a token, and
+    count against the plan and in the run's log like any call's: else stopping
+    every answer just before its end would use the model for free.
+    """
+    monkeypatch.setattr(assistant.app, "STOP_CHECK_SECONDS", 0)
+    ctx.script(ctx.answer("Hello!"))
+    ctx.chat("Hi", alice)   # the conversation's title, written beside its first run, is counted then
+    before = ctx.usage.usage.get("t1", current_month())
+    story = " ".join(f"word{n}" for n in range(30))
+    ctx.script(ctx.answer(story, input_tokens=5_000, output_tokens=5_000), pause=0.1)
+    run_id = ctx.post("Tell me a story", alice)
+    assert stop(api, alice, run_id) == 204
+
+    with captured_logs(assistant.app.logger) as logs:
+        events = ctx.run(run_id, alice)
+
+    said = opened(api, alice)["messages"][-1]["content"]
+    assert events[-1]["result"]["stopped"] and story.startswith(said) and len(said) < len(story)
+    after = ctx.usage.usage.get("t1", current_month())
+    sent, wrote = after.input_tokens - before.input_tokens, after.output_tokens - before.output_tokens
+    assert sent == count_tokens_approximately(ctx.model_calls()[0])   # what the model was sent
+    assert math.ceil(len(said) / 4) <= wrote < math.ceil(len(story) / 4)   # what it wrote before it stopped
+    assert after.tokens - before.tokens == sent + wrote
+    answered = next(line for line in logs() if line["message"] == "Assistant answered")
+    assert (answered["input_tokens"], answered["output_tokens"], answered["stopped"]) == (sent, wrote, True)
+    assert events[-1]["usage"] == [{"inputTokens": sent, "outputTokens": wrote, "totalTokens": sent + wrote}]
 
 
 def test_after_a_stop_the_agent_keeps_what_the_user_saw(ctx, alice):
