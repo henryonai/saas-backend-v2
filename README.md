@@ -384,6 +384,13 @@ or the Stripe key),
 so use it on dev, not prod. The test users' logins are saved in
 `.aws-sam/smoke-users.json`.
 
+With the assistant deployed, `uv run scripts/smoke-assistant.py --stack saas-dev`
+checks it the same way, with the stack's real model, AgentCore and S3: a
+conversation over AG-UI, a long one read back, versions, memory, files
+(uploads, attachments the model reads, files it writes, links), and, on a
+workspace it sets to Pro, the sandbox's files. It adds two test users and
+costs a few cents of model tokens.
+
 ## Frontend
 
 `web/` is the React app (Vite, TanStack Router and Query, shadcn/ui, English
