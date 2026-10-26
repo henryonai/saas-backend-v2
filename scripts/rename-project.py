@@ -11,6 +11,7 @@ also rename a project again. In every file git tracks it changes:
 
     saas-shared, saas-<module>, saas-web    package names
     saas-dev, saas-prod                     stack names (samconfig.toml)
+    project=saas                            the cost allocation tag (samconfig.toml)
     saas-${Stage}                           user pool name, metrics namespace
     saas_${Stage}_...                       AgentCore names (underscores: they allow no dashes)
     /saas/dev/payment-webhook-secret        SSM parameter names
@@ -54,6 +55,7 @@ def name_rules(old: str, new: str) -> list[tuple[re.Pattern, str]]:
         (re.compile(r"\b" + o + r"-backend-v2\b"), new),            # the repository, in the README
         (re.compile(r"(?<![\w])" + o + r"(?=[-.][\w$<{])"), new),   # <name>-shared, <name>.app, ${1:-<name>-dev}
         (re.compile(r"(?<=/)" + o + r"(?=/)"), new),                # /<name>/dev/...
+        (re.compile(r"(?<=project=)" + o + r"(?![\w-])"), new),     # project=<name>, the cost allocation tag
         # AgentCore names allow no dashes: <name>_${Stage}_assistant
         (re.compile(r"(?<![A-Za-z0-9])" + o_ + r"(?=_[\w$<{])"), new.replace("-", "_")),
     ]
