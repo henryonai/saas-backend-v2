@@ -2,10 +2,12 @@ import json
 
 import boto3
 import pytest
+from aws_lambda_powertools.event_handler.api_gateway import Router
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 from pydantic import ValidationError
 
+from shared import http, outbox
 from shared.auth import CurrentUser
 from shared.dynamo import ConditionFailed, transact
 from shared.errors import Forbidden, ServiceBusy
@@ -16,7 +18,8 @@ from shared.plans import get_limit, get_plan
 from shared.settings import BaseAppSettings
 from testkit.aws import create_table
 from testkit.fakes import FakePublisher
-from testkit.http import FakeContext
+from testkit.http import FakeContext, call, claims, http_event
+from testkit.logs import captured_logs
 from testkit.outbox import outbox_events
 
 
@@ -107,10 +110,36 @@ def test_relay_retries_only_the_event_that_failed():
 
     items = [outbox_put(Event(t, "t1"))["Put"]["Item"] for t in ("Broken", "OrderCreated")]
     publisher = FlakyPublisher()
-    result = relay(stream_event(*items), FakeContext(), publisher)
+    with captured_logs(outbox.logger) as logs:
+        result = relay(stream_event(*items), FakeContext(), publisher)
     assert result == {"batchItemFailures": [{"itemIdentifier": "1"}]}
     assert publisher.types() == ["OrderCreated"]
     assert json.loads(items[1]["detail"])["tenant_id"] == "t1"
+    [failure] = [line for line in logs() if line["level"] == "WARNING"]   # the why, not only the retry
+    assert "EventBridge throttled" in failure["exception"]
+
+
+def test_an_unhandled_error_is_logged_with_the_request_tenant_and_user():
+    router = Router()
+
+    @router.get("/broken")
+    def broken():
+        raise RuntimeError("table not found")
+
+    @router.get("/fine")
+    def fine():
+        return {"ok": True}
+
+    handler = http.create_handler(http.create_app(router, title="Test"))
+    alice = claims("alice", "t1", "owner")
+    with captured_logs(http.logger) as logs:
+        with pytest.raises(RuntimeError):   # still an error to Lambda: API Gateway answers 500
+            handler(http_event("GET", "/broken", alice), FakeContext())
+        assert call(handler, "GET", "/fine", alice) == (200, {"ok": True})
+    [line] = logs()                         # one line, and none for the request that worked
+    assert line["level"] == "ERROR" and line["message"] == "Unhandled error"
+    assert "table not found" in line["exception"]
+    assert (line["correlation_id"], line["tenant_id"], line["user_id"]) == ("test", "t1", "alice")
 
 
 class CollidingTable:

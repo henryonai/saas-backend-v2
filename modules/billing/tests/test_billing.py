@@ -1,7 +1,9 @@
 import pytest
 
+from billing import webhook
 from billing.repository import SubscriptionRepository
 from testkit.http import claims
+from testkit.logs import captured_logs
 
 
 def activate(ctx, event_id="evt_1", plan="pro", using=None):
@@ -115,6 +117,17 @@ def test_unknown_or_missing_plan_is_rejected(ctx, owner, plan):
 
 def test_malformed_webhook_is_rejected(ctx, owner):
     assert ctx.webhook({"type": "subscription.activated"}) == 400   # no id / tenant_id
+
+
+def test_an_unexpected_webhook_error_is_logged_then_retried_by_the_provider(ctx, owner):
+    class Broken:
+        def handle_webhook(self, headers, raw_body):
+            raise RuntimeError("DynamoDB unavailable")
+
+    with captured_logs(webhook.logger) as logs, pytest.raises(RuntimeError):   # 500: the provider retries
+        ctx.webhook({"id": "evt_z", "type": "subscription.activated", "tenant_id": "t1"}, using=Broken())
+    [line] = logs()
+    assert line["message"] == "Webhook failed" and "DynamoDB unavailable" in line["exception"]
 
 
 def test_payment_failed_then_cancelled(ctx, owner):

@@ -44,12 +44,21 @@ def create_app(*routers, title: str) -> APIGatewayHttpResolver:
 
 
 def create_handler(app: APIGatewayHttpResolver):
-    """The Lambda entry point: adds tenant/user to every log line, then routes."""
+    """
+    The Lambda entry point: adds the request id (correlation_id, the access
+    log's requestId), tenant and user to every log line, then routes.
+    """
 
     @logger.inject_lambda_context(correlation_id_path=correlation_paths.API_GATEWAY_HTTP)
     def handler(event: dict, context) -> dict:
         claims = event.get("requestContext", {}).get("authorizer", {}).get("jwt", {}).get("claims", {})
         logger.append_keys(tenant_id=claims.get("tenant_id"), user_id=claims.get("sub"))
-        return app.resolve(event, context)
+        try:
+            return app.resolve(event, context)
+        except Exception:
+            # Lambda prints an uncaught error as plain text, without the keys above;
+            # this line has them, so a 500 in the access log leads straight to it.
+            logger.exception("Unhandled error")
+            raise
 
     return handler

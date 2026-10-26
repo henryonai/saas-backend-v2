@@ -5,6 +5,7 @@ No login on this route; security comes from the signature check.
 import base64
 
 from aws_lambda_powertools import Logger
+from aws_lambda_powertools.logging import correlation_paths
 
 from shared.errors import AppError
 
@@ -23,10 +24,14 @@ def process_webhook(event: dict, service: BillingService) -> dict:
     except AppError as e:
         logger.warning("Webhook rejected", extra={"reason": e.message})
         return {"statusCode": e.status_code, "body": e.message}
-    # Any other error -> 500 -> the provider retries later.
+    except Exception:
+        # Any other error -> 500 -> the provider retries later. Logged here, as
+        # shared/http.py does, so the line has the request id.
+        logger.exception("Webhook failed")
+        raise
     return {"statusCode": 200, "body": "ok"}
 
 
-@logger.inject_lambda_context
+@logger.inject_lambda_context(correlation_id_path=correlation_paths.API_GATEWAY_HTTP)
 def handler(event: dict, context) -> dict:
     return process_webhook(event, get_billing_service())

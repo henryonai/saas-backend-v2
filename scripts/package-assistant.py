@@ -40,6 +40,25 @@ def log(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def portable_launcher(script: bytes) -> bytes:
+    """
+    A console script made to run with the runtime's python3 rather than the
+    Python that installed it. Installers write one of two headers: a shebang
+    naming that Python, or, when its path is too long for a shebang (about
+    127 bytes, as in a deep build directory), a /bin/sh header that execs it:
+        #!/bin/sh
+        '''exec' '/long/path/bin/python' "$0" "$@"
+        ' '''
+    Either becomes "#!/usr/bin/env python3"; anything else is left alone.
+    """
+    lines = script.split(b"\n")
+    if lines[0].startswith(b"#!") and b"python" in lines[0]:
+        return b"\n".join([b"#!/usr/bin/env python3", *lines[1:]])
+    if lines[0] == b"#!/bin/sh" and len(lines) > 2 and lines[1].startswith(b"'''exec'") and lines[2] == b"' '''":
+        return b"\n".join([b"#!/usr/bin/env python3", *lines[3:]])
+    return script
+
+
 def build() -> Path:
     shutil.rmtree(BUILD, ignore_errors=True)
     package = BUILD / "package"
@@ -55,11 +74,9 @@ def build() -> Path:
                     "--python-version", "3.13", "--only-binary=:all:", "--target", str(package),
                     "-r", str(requirements)], check=True, cwd=ROOT)
     (package / ".lock").unlink(missing_ok=True)  # uv's, not ours
-    # Launchers such as bin/opentelemetry-instrument point at this machine's Python.
+    # Launchers such as bin/opentelemetry-instrument (the entry point) point at this machine's Python.
     for script in (package / "bin").glob("*"):
-        lines = script.read_bytes().split(b"\n", 1)
-        if lines[0].startswith(b"#!") and b"python" in lines[0]:
-            script.write_bytes(b"#!/usr/bin/env python3\n" + (lines[1] if len(lines) > 1 else b""))
+        script.write_bytes(portable_launcher(script.read_bytes()))
     for name, source in SOURCES.items():
         if source.is_dir():
             shutil.copytree(source, package / name, ignore=shutil.ignore_patterns("__pycache__"))

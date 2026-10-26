@@ -5,8 +5,8 @@ same agents with scripted models, an in-memory checkpointer and fakes.
 
 Every agent can talk to users (the frontend picks one by name). An agent
 listed in another's `subagents` is also built a second way, to run as a
-subagent: no checkpoints and no memory, since it works on one task and
-starts fresh each time.
+subagent: no checkpoints, since it works on one task and starts fresh each
+time.
 """
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,14 +20,7 @@ from langchain_core.tools import BaseTool
 from assistant.context import AgentContext
 from assistant.definitions import AgentDefinition
 from assistant.delegation import make_task_tool
-from assistant.memory import LongTermMemory
-from assistant.middleware import (
-    ConversationMiddleware,
-    MemoryMiddleware,
-    PlanToolsMiddleware,
-    UsageMiddleware,
-    tool_failed,
-)
+from assistant.middleware import ConversationMiddleware, PlanToolsMiddleware, UsageMiddleware, tool_failed
 from assistant.service import UsageService
 from assistant.tools import SANDBOX_TOOLS
 
@@ -43,7 +36,6 @@ class AgentDeps:
     make_model: Callable[[AgentDefinition], BaseChatModel]
     checkpointer: Any
     usage: UsageService
-    memory: LongTermMemory
     tools: dict[str, BaseTool]   # tools.make_tools()
 
 
@@ -69,8 +61,6 @@ def _build(definition: AgentDefinition, deps: AgentDeps, *, top_level: bool, ext
     if top_level:
         middleware.append(ConversationMiddleware(MAX_HISTORY_TOKENS))
     middleware.append(PlanToolsMiddleware(deps.usage, SANDBOX_TOOLS))
-    if top_level:
-        middleware.append(MemoryMiddleware(deps.memory))
     middleware += [
         ModelCallLimitMiddleware(run_limit=definition.max_turns, exit_behavior="end"),
         ToolCallLimitMiddleware(run_limit=MAX_TOOL_CALLS_PER_RUN, exit_behavior="continue"),
@@ -83,7 +73,7 @@ def _build(definition: AgentDefinition, deps: AgentDeps, *, top_level: bool, ext
         middleware=middleware,
         context_schema=AgentContext,
         # A subagent keeps nothing: False also stops it from inheriting the
-        # caller's checkpointer, which would write every step to Memory.
+        # caller's checkpointer, which would save its every step too.
         checkpointer=deps.checkpointer if top_level else False,
         name=definition.name,
     )
@@ -92,7 +82,7 @@ def _build(definition: AgentDefinition, deps: AgentDeps, *, top_level: bool, ext
 def thread_config(context: AgentContext, agent: str) -> dict:
     """
     Where `agent`'s side of the conversation is checkpointed: each agent keeps
-    its own history. The thread id includes the user, so this holds with any
-    checkpointer (AgentCoreMemorySaver also scopes by actor_id; DynamoDBSaver doesn't).
+    its own history. The thread id includes the user, since DynamoDBSaver
+    keys checkpoints by thread only.
     """
-    return {"configurable": {"thread_id": context.thread_id(agent), "actor_id": context.actor_id}}
+    return {"configurable": {"thread_id": context.thread_id(agent)}}

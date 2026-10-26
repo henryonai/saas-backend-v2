@@ -13,4 +13,6 @@ export const qk = {
   receivedInvitations: () => ['invitations', 'received'] as const,
   billing: () => ['billing'] as const,
   notifications: () => ['notifications'] as const,
+  conversations: () => ['assistant', 'conversations'] as const,
+  conversation: (threadId: string) => ['assistant', 'conversation', threadId] as const,
 };

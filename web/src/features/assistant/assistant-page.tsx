@@ -1,52 +1,175 @@
-import { BotIcon, SquarePenIcon } from 'lucide-react';
-import { useEffect, useMemo, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { Link, useNavigate } from '@tanstack/react-router';
+import { BotIcon, MessagesSquareIcon, SquarePenIcon } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ApiError } from '@/shared/api/client';
 import { PageHeader } from '@/shared/components/page-header';
+import { ErrorState } from '@/shared/components/query-state';
 import { Button } from '@/shared/components/ui/button';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/shared/components/ui/empty';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/shared/components/ui/sheet';
+import { Skeleton } from '@/shared/components/ui/skeleton';
 import { config } from '@/shared/config';
 import { Composer } from './components/composer';
+import { ConversationList } from './components/conversation-list';
 import { RunErrorNotice } from './components/run-error';
 import { AssistantTurn, UserTurn } from './components/turn';
-import { newConversation, retry, sendMessage, stopAnswer, useConversation } from './conversation';
+import {
+  conversationStore,
+  editMessage,
+  newConversation,
+  openConversation,
+  rateAnswer,
+  regenerate,
+  retry,
+  sendMessage,
+  stopAnswer,
+  useConversation,
+} from './conversation';
+import { refreshConversations, showNewConversation, useConversationHistory } from './hooks';
 import { toTurns } from './transcript';
 
 const SUGGESTIONS = ['assistant.suggestions.orders', 'assistant.suggestions.usage', 'assistant.suggestions.analyze'] as const;
 
-export function AssistantPage() {
+/**
+ * /assistant starts a new conversation; /assistant/<threadId> shows one,
+ * reopened from its history unless it is the one streaming now. The list of
+ * conversations sits beside it (in a side panel on a phone).
+ */
+export function AssistantPage({ threadId }: { threadId?: string }) {
   const { t } = useTranslation();
-  const header = <PageHeader title={t('assistant.title')} description={t('assistant.description')} actions={config.assistantUrl && <NewConversation />} />;
   if (!config.assistantUrl) {
     return (
       <>
-        {header}
+        <PageHeader title={t('assistant.title')} description={t('assistant.description')} />
         <NotSetUp />
       </>
     );
   }
   return (
-    // At least the window's height (less the header and the page's padding), so the composer starts at the bottom.
-    <div className="mx-auto flex min-h-[calc(100svh-5.5rem)] w-full max-w-3xl flex-col md:min-h-[calc(100svh-7.5rem)]">
-      {header}
-      <Conversation />
+    <div className="grid gap-6 md:grid-cols-[15rem_minmax(0,1fr)]">
+      <aside className="hidden md:block">
+        <div className="sticky top-20 max-h-[calc(100svh-7rem)] overflow-y-auto">
+          <ConversationList activeId={threadId} />
+        </div>
+      </aside>
+      {/* At least the window's height (less the header and the page's padding), so the composer starts at the bottom. */}
+      <div className="mx-auto flex min-h-[calc(100svh-5.5rem)] w-full max-w-3xl min-w-0 flex-col md:min-h-[calc(100svh-7.5rem)]">
+        <PageHeader
+          title={t('assistant.title')}
+          description={t('assistant.description')}
+          actions={
+            <>
+              <ConversationsSheet activeId={threadId} />
+              {threadId && <NewConversationButton />}
+            </>
+          }
+        />
+        {threadId ? <OpenConversation key={threadId} threadId={threadId} /> : <StartConversation />}
+      </div>
     </div>
   );
 }
 
-function NewConversation() {
+function NewConversationButton() {
   const { t } = useTranslation();
-  const { messages } = useConversation();
   return (
-    <Button variant="outline" onClick={newConversation} disabled={messages.length === 0}>
-      <SquarePenIcon />
-      {t('assistant.newConversation')}
+    <Button variant="outline" asChild>
+      <Link to="/assistant">
+        <SquarePenIcon />
+        {t('assistant.newConversation')}
+      </Link>
     </Button>
   );
 }
 
-function Conversation() {
+function ConversationsSheet({ activeId }: { activeId?: string }) {
   const { t } = useTranslation();
-  const { messages, running, error, tokens } = useConversation();
+  const [open, setOpen] = useState(false);
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger asChild>
+        <Button variant="outline" className="md:hidden">
+          <MessagesSquareIcon />
+          {t('assistant.conversations.title')}
+        </Button>
+      </SheetTrigger>
+      <SheetContent side="left" className="w-72 overflow-y-auto p-4">
+        <SheetHeader className="sr-only">
+          <SheetTitle>{t('assistant.conversations.title')}</SheetTitle>
+        </SheetHeader>
+        <ConversationList activeId={activeId} onOpen={() => setOpen(false)} />
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+/** A new conversation. Its first message gives it a URL and a place in the list. */
+function StartConversation() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  // Coming back here from a conversation (New conversation, the sidebar) starts
+  // afresh, before the old one is painted.
+  useLayoutEffect(() => {
+    if (conversationStore.getState().messages.length > 0) newConversation();
+  }, []);
+
+  function onFirstMessage(threadId: string, text: string) {
+    showNewConversation(queryClient, threadId, text);
+    void navigate({ to: '/assistant/$threadId', params: { threadId }, replace: true });
+  }
+
+  return <Conversation onFirstMessage={onFirstMessage} />;
+}
+
+/**
+ * A conversation by its URL: the one on screen already, or loaded from its
+ * history, following its answer if one is still coming.
+ */
+function OpenConversation({ threadId }: { threadId: string }) {
+  const { t } = useTranslation();
+  const live = useConversation().threadId === threadId;
+  const history = useConversationHistory(threadId, !live);
+
+  useEffect(() => {
+    if (history.data && conversationStore.getState().threadId !== threadId) openConversation(threadId, history.data);
+  }, [history.data, threadId]);
+
+  if (live) return <Conversation />;
+  if (history.isError) {
+    if (history.error instanceof ApiError && history.error.status === 404) {
+      return (
+        <Empty className="border border-dashed">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <MessagesSquareIcon />
+            </EmptyMedia>
+            <EmptyTitle>{t('assistant.conversations.goneTitle')}</EmptyTitle>
+            <EmptyDescription>{t('assistant.conversations.gone')}</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <NewConversationButton />
+          </EmptyContent>
+        </Empty>
+      );
+    }
+    return <ErrorState error={history.error} onRetry={() => void history.refetch()} />;
+  }
+  return (
+    <div className="space-y-6" aria-busy="true">
+      <Skeleton className="ml-auto h-9 w-1/2 rounded-2xl" />
+      <Skeleton className="h-24 w-full" />
+      <Skeleton className="ml-auto h-9 w-1/3 rounded-2xl" />
+    </div>
+  );
+}
+
+function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, text: string) => void }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { messages, running, error, tokens, ratings } = useConversation();
   const turns = useMemo(() => toTurns(messages), [messages]);
   const last = turns.at(-1);
   const lastPart = last?.role === 'assistant' ? last.parts.at(-1) : undefined;
@@ -54,9 +177,29 @@ function Conversation() {
   const thinking = running && (!lastPart || (lastPart.type === 'tool' && lastPart.call.result !== null));
   const follow = useFollowBottom(messages, error, running);
 
+  // After each answer: the list's order changed, and a new conversation has its model-written title.
+  const wasRunning = useRef(running);
+  useEffect(() => {
+    if (wasRunning.current && !running) void refreshConversations(queryClient);
+    wasRunning.current = running;
+  }, [running, queryClient]);
+
   function send(text: string) {
+    const { threadId, messages: before } = conversationStore.getState();
+    if (!text.trim()) return;
     follow();
     void sendMessage(text);
+    if (before.length === 0) onFirstMessage?.(threadId, text.trim());
+  }
+
+  function edit(messageId: string, text: string) {
+    follow();
+    void editMessage(messageId, text);
+  }
+
+  function answerAgain() {
+    follow();
+    void regenerate();
   }
 
   return (
@@ -82,9 +225,18 @@ function Conversation() {
         ) : (
           turns.map((turn, index) =>
             turn.role === 'user' ? (
-              <UserTurn key={turn.id} text={turn.text} />
+              <UserTurn key={turn.id} text={turn.text} onEdit={running ? undefined : (text) => edit(turn.id, text)} />
             ) : (
-              <AssistantTurn key={turn.id} turn={turn} active={running && index === turns.length - 1} thinking={thinking && index === turns.length - 1} />
+              <AssistantTurn
+                key={turn.id}
+                turn={turn}
+                active={running && index === turns.length - 1}
+                thinking={thinking && index === turns.length - 1}
+                rating={ratings[turn.answerId]}
+                onRate={(rating) => void rateAnswer(turn.answerId, rating)}
+                // The last answer; after a failed run, the error's Try again does the same.
+                onRegenerate={!running && !error && index === turns.length - 1 ? answerAgain : undefined}
+              />
             ),
           )
         )}

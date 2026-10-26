@@ -17,6 +17,7 @@ describe('toTurns', () => {
       {
         role: 'assistant',
         id: 'a1',
+        answerId: 'a2', // the answer's last message: a rating goes there
         parts: [
           { type: 'text', id: 'a1', text: 'Let me check.' },
           { type: 'tool', call: { id: 'c1', name: 'list_orders', args: { limit: 5 }, result: '{"items": []}' } },
@@ -31,7 +32,7 @@ describe('toTurns', () => {
       { id: 'u1', role: 'user', content: 'Run it' },
       { id: 'a1', role: 'assistant', toolCalls: [call('c1', 'bash', '{"command": "ls')] },
     ]);
-    expect(answer).toEqual({ role: 'assistant', id: 'a1', parts: [{ type: 'tool', call: { id: 'c1', name: 'bash', args: null, result: null } }] });
+    expect(answer).toEqual({ role: 'assistant', id: 'a1', answerId: 'a1', parts: [{ type: 'tool', call: { id: 'c1', name: 'bash', args: null, result: null } }] });
   });
 
   it('starts a new turn after each user message, and reads text parts', () => {
@@ -46,7 +47,7 @@ describe('toTurns', () => {
   });
 
   it('leaves out an assistant message that has nothing to show yet', () => {
-    expect(toTurns([{ id: 'a1', role: 'assistant', content: '' }])).toEqual([{ role: 'assistant', id: 'a1', parts: [] }]);
+    expect(toTurns([{ id: 'a1', role: 'assistant', content: '' }])).toEqual([{ role: 'assistant', id: 'a1', answerId: 'a1', parts: [] }]);
   });
 });
 

@@ -99,7 +99,7 @@ API outside React (the billing page's wait for the new plan) calls `api.ts`.
 | Team | `GET /users`, `PATCH /users/{id}/role`, `DELETE /users/{id}`, `GET /users/invitations`, `POST /users/invite`, `DELETE /users/invitations/{email}` |
 | Billing | `GET /billing`, `POST /billing/checkout`, `POST /billing/portal` ("Manage billing") |
 | Notifications (and the bell, every 45 s) | `GET /notifications`, `POST /notifications/{id}/read` |
-| Assistant | AgentCore's `/invocations` (`AssistantUrl`), AG-UI over SSE, not the HTTP API |
+| Assistant | sending: `POST /assistant/conversations/{thread_id}/messages`, then the answer from AgentCore's `/invocations` (`AssistantUrl`), AG-UI over SSE; Stop: `POST /assistant/conversations/{thread_id}/runs/{run_id}/cancel`; the list: `GET /assistant/conversations`, `GET`, `PATCH` and `DELETE /assistant/conversations/{thread_id}` |
 
 - **The session is the ID token.** Its claims say who the user is and their
   workspace, role and plan (all three or none). The routes use them to send
@@ -120,26 +120,51 @@ API outside React (the billing page's wait for the new plan) calls `api.ts`.
 
 ## The assistant's chat
 
-`features/assistant/` talks [AG-UI](https://docs.ag-ui.com), the assistant's
-only contract (modules/assistant/README.md, "Calling it from the frontend"),
-through the official client, `@ag-ui/client`:
+As in ChatGPT, the server keeps everything and knows what is running
+(modules/assistant/README.md, "Calling it from the frontend"). Sending saves
+the message with the run that will answer it (the HTTP API), then
+`features/assistant/` streams that run from AgentCore in
+[AG-UI](https://docs.ag-ui.com), the assistant's only contract, through the
+official client, `@ag-ui/client`. The run goes on whatever the page does.
 
-- `api.ts`: `AssistantAgent`, an `HttpAgent` that sends the ID token and the
-  threadId as the AgentCore session header, and only the newest user message
-  (the server keeps the conversation and reads nothing else). `runError()`
-  reads AgentCore's own errors, which come with an HTTP error status (the
-  client throws them) rather than in the stream.
-- `conversation.ts`: the conversation (a zustand store, like the session).
-  It keeps the messages the client assembles from the events, and survives
-  leaving the page; a reload, "New conversation", signing out or changing
-  workspace starts a new threadId. A token turned down (`UNAUTHORIZED`,
-  `ACCESS_DENIED`) gets one retry with new tokens, like the API client: the
-  server checks it before counting the message.
+- `api.ts`: `postMessage` and `cancelRun` on the HTTP API, and
+  `AssistantAgent`, an `HttpAgent` that sends the ID token, the threadId as
+  the AgentCore session header, and the run (`runAgent({ runId })`), no
+  messages: the server answers the one it saved. `runError()` reads
+  AgentCore's own errors, which come with an HTTP error status (the client
+  throws them) rather than in the stream; `requestError()` the HTTP API's.
+- `conversation.ts`: the conversation on screen (a zustand store, like the
+  session): the messages the client assembles from the events, or a
+  conversation reopened from its history (`openConversation`), which follows
+  its run if its answer is still coming: AgentCore sends what it said so far,
+  then the rest. It survives leaving the page; signing out or changing
+  workspace clears it. A token turned down (`UNAUTHORIZED`, `ACCESS_DENIED`)
+  gets one retry with new tokens, like the API client.
 - `transcript.ts`: messages to what the page shows: one turn per answer, its
   text (Markdown) and tool calls in order, each with its input and result.
-- Errors are `RUN_ERROR` codes: `PLAN_LIMIT_REACHED` shows the upgrade notice;
-  the rest say what happened, with "Try again" when asking again may help.
-  "Stop" only stops showing the answer: the server finishes it.
+- Errors: the plan's limit is the send's 402, which shows the upgrade notice;
+  a send while an answer is coming (another tab) is a 409. The run's are
+  `RUN_ERROR` codes, which say what happened, with "Try again" when asking
+  again may help (the same message, which the server doesn't save twice).
+- "Stop" stops the answer on screen at once and on the server, which keeps
+  what it wrote. Leaving a conversation doesn't stop its answer: reopened,
+  it is followed again.
+
+**Conversations** (`hooks.ts`, `components/conversation-list.tsx`): the list
+beside the chat (a side panel on a phone) comes from the HTTP API
+(`/assistant/conversations`), most recently used first.
+
+- `/assistant` starts a new conversation; its first message moves the URL to
+  `/assistant/<threadId>` and puts it at the top of the list, titled with that
+  message until the answer ends and the list is read again with the model's
+  title.
+- `/assistant/<threadId>` shows the conversation: the one streaming now, or
+  its history from the API (on a reload, or from the list), in the same AG-UI
+  messages the stream gave, and its answer if one is still coming (`run_id`).
+  Sending continues it with that threadId. A conversation that was deleted or
+  expired says so.
+- Rename (a dialog) and delete (a confirmation) are in each item's menu.
+  Deleting the open conversation starts a new one.
 
 The AG-UI client (with rxjs) loads with the Assistant page only.
 
@@ -183,7 +208,7 @@ files have the same keys and `{{variables}}`.
 
 ## Not built yet
 
-- Reopening an earlier conversation with the assistant (the server keeps them
-  but can't list them yet)
+- Searching the assistant's conversations, and loading messages past the
+  latest 200 of a long one
 - Changing the email address, turning on MFA (sign-in already handles an
   authenticator code)

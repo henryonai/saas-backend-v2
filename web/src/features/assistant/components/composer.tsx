@@ -5,8 +5,8 @@ import { Button } from '@/shared/components/ui/button';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { formatNumber } from '@/shared/lib/format';
 
-/** The server's limit on a message (ChatRequest in modules/assistant/src/assistant/schemas.py). */
-const MAX_LENGTH = 4000;
+/** The server's limit on a message (MessageIn in modules/assistant/src/assistant/api.py). */
+export const MAX_LENGTH = 4000;
 
 /**
  * Where the user writes. Enter sends and Shift+Enter starts a new line, except

@@ -4,10 +4,13 @@ import { useTranslation } from 'react-i18next';
 import { Alert, AlertDescription, AlertTitle } from '@/shared/components/ui/alert';
 import { Button } from '@/shared/components/ui/button';
 import { UpgradeNotice } from '@/shared/components/upgrade-notice';
-import type { RunError } from '../api';
+import { HOURLY_LIMIT, type RunError } from '../api';
 
-/** Errors about the request itself (schemas.ERROR_CODES): asking again gets the same answer. */
-const FINAL = new Set(['VALIDATION_ERROR', 'UNAUTHORIZED', 'ACCESS_DENIED', 'NOT_FOUND', 'CONFLICT']);
+/**
+ * Errors about the request itself (schemas.ERROR_CODES): asking again gets
+ * the same answer. The hourly limit's message says when it will do.
+ */
+const FINAL = new Set(['VALIDATION_ERROR', 'UNAUTHORIZED', 'ACCESS_DENIED', 'NOT_FOUND', 'CONFLICT', HOURLY_LIMIT]);
 
 /**
  * Like errorMessage() for the HTTP API: business errors carry the backend's

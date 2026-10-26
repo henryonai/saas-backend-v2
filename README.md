@@ -43,6 +43,8 @@ saas-backend-v2/
 │   ├── stripe-setup.py         # Stripe prices, portal and webhook for a stack
 │   ├── export-openapi.py       # each module's OpenAPI document -> docs/openapi/
 │   ├── package-assistant.py    # the assistant's arm64 code zip -> S3, for sam deploy
+│   ├── enable-transaction-search.sh  # once per account: the assistant's traces in CloudWatch
+│   ├── check-assistant-data.py # the assistant's table against its data model (read-only)
 │   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
 │   ├── replay-outbox.py        # publish saved events again after an outage
 │   └── rename-project.py       # give a new copy of the template its own name
@@ -77,8 +79,9 @@ saas-backend-v2/
 │       │   ├── handler.py      # Lambda entry point for the HTTP API
 │       │   └── ...             # other entry points (worker, webhook, triggers)
 │       └── tests/
-│   (modules/assistant runs on AgentCore Runtime instead: app.py instead of
-│    handler.py; its agents are Markdown files in src/assistant/agents/)
+│   (modules/assistant's chat runs on AgentCore Runtime: app.py, with its
+│    agents as Markdown files in src/assistant/agents/; its handler.py serves
+│    the users' conversations on the HTTP API)
 ├── testkit/                    # package "saas-testkit": test helpers and fakes (not deployed)
 ├── web/                        # the React app (see web/README.md)
 ├── template.yaml               # one section per module
@@ -148,7 +151,8 @@ fields such as `subscription_revision`).
 an `OUTBOX#` item in the same transaction as the change (kept 7 days) → the
 table's DynamoDB stream triggers `OutboxRelayFunction` → it publishes to this
 stack's event bus, retrying until it works → a rule sends it to the
-listener's SQS queue → the listener's worker (with a dead-letter queue).
+listener's SQS queue → the listener's worker (with a dead-letter queue, which
+also gets what the rule couldn't deliver within an hour).
 Delivery is at least once and not in order, hence rule 9.
 
 ## Main flows
@@ -351,6 +355,9 @@ sam deploy --config-env dev \
   --parameter-overrides "$(uv run python scripts/package-assistant.py --config-env dev)"
 ```
 
+Once per AWS account, for the assistant's traces:
+`./scripts/enable-transaction-search.sh <region>` (see modules/assistant/README.md).
+
 Outputs: `ApiUrl`, `UserPoolId`, `UserPoolClientId` (for the React app),
 `WebhookUrl` (for the payment provider), `EventBusName`, `AlertsTopicArn`,
 `WebUrl`, `WebBucketName`, `WebDistributionId` (where `web/scripts/deploy.sh`
@@ -404,10 +411,13 @@ tests and build.
 
 **CD** (`.github/workflows/deploy.yml`) is run by hand for now: on GitHub,
 Actions > deploy > Run workflow, then pick the branch and the environment.
-It runs the CI checks, then `sam deploy` and `web/scripts/deploy.sh` for that
+It runs the CI checks, then `sam deploy` (with the assistant's code zip from
+`scripts/package-assistant.py`, as above) and `web/scripts/deploy.sh` for that
 environment (its `[<env>.deploy]` settings in `samconfig.toml`). Prod deploys
 only from `main`, one deploy per environment runs at a time, and the run's
-summary links the app.
+summary links the app. In an account where `sam deploy` has never run, the
+first run has no bucket for the zip yet: it deploys without the assistant's
+new code and says so, and the next run adds it.
 
 Prod deploys in two runs, so someone reads the changes before they happen:
 
@@ -460,18 +470,31 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
 ## Operations
 
 - **Logs:** all functions log JSON (Powertools) into one log group per stack,
-  with `tenant_id` and `user_id` on every API log line. API Gateway access
-  logs go to their own group. Retention: `LogRetentionDays`.
+  with the request id (`correlation_id`, the access log's `requestId`),
+  `tenant_id` and `user_id` on every API log line. Routes log nothing when
+  they work. An uncaught error is one `Unhandled error` line with its
+  traceback (`Webhook failed` for the payment webhook), so a 500 in the access
+  log leads to it by `correlation_id`; a message a worker or the relay
+  couldn't process is a WARNING with its traceback. API Gateway access logs go
+  to their own group. Retention: `LogRetentionDays`.
 - **Tracing:** X-Ray tracing is on for every function. (The X-Ray SDK is in
   maintenance mode; for spans inside your code, use OpenTelemetry/ADOT.)
 - **Metrics:** the relay emits `EventsPublished` to the `saas-<stage>` namespace.
-- **Alarms:** messages in any dead-letter queue (accounts, notifications,
-  outbox) trigger an alarm sent to `AlertsTopic`; set `AlertEmail` to get an
-  email. For the accounts and notifications queues, fix the cause and move the
-  messages back with SQS "Start DLQ redrive". The outbox queue only says which
-  stream records the relay could not publish within 24 hours; republish those
-  events from the table (they are kept 7 days):
-  `uv run python scripts/replay-outbox.py --table <table> --bus <EventBusName> --since <time>`.
+- **Alarms** go to `AlertsTopic`; set `AlertEmail` to get an email.
+  - `ApiErrorsAlarm`: the API answered 5xx. Start from the access log's
+    `error` field, then `Unhandled error` in the app log group.
+  - `AccountsPreTokenErrorsAlarm`: the login trigger errored, so sign-ins
+    fail (Cognito doesn't retry it). A broken shared layer shows here first.
+  - `OutboxLagAlarm`: events have waited more than 5 minutes to be published.
+    The relay keeps retrying; see `outbox-relay` in the app log group.
+  - Messages in any dead-letter queue (accounts, notifications, outbox, the
+    assistant's purge). For accounts and notifications these are events the
+    worker failed 5 times, or that EventBridge couldn't deliver to the queue
+    within an hour (their `ERROR_CODE` message attribute says why): fix the
+    cause and move the messages back with SQS "Start DLQ redrive". The outbox
+    queue only says which stream records the relay could not publish within
+    24 hours; republish those events from the table (they are kept 7 days):
+    `uv run python scripts/replay-outbox.py --table <table> --bus <EventBusName> --since <time>`.
 - **Busy items:** transactions that collide on the same item (for example many
   orders at once in one workspace) are retried; if they keep colliding, the
   API answers 503 and the client should retry.
@@ -488,7 +511,9 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
 4. Add a section to `template.yaml` (table + functions + routes).
 5. If it publishes events: enable a stream and `expires_at` TTL on its table
    and add the stream to `OutboxRelayFunction`. If it listens: add a rule, a
-   queue with a dead-letter queue and an alarm, like accounts does.
+   queue with a dead-letter queue and an alarm, like accounts does, and give
+   the rule's target that dead-letter queue (`RetryPolicy`, `DeadLetterConfig`
+   and a queue policy that lets the rule write to it, as `AccountsDLQPolicy`).
 6. Talk to other modules only through events or the token.
 
 ## The sample module

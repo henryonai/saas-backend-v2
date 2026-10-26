@@ -4,8 +4,8 @@ from pydantic import ValidationError
 
 from assistant import container
 
-SETTINGS = {"ASSISTANT_TABLE": "assistant-dev", "MEMORY_ID": "saas_dev_assistant-abcdefghij",
-            "API_URL": "https://api.example.com", "REGION": "ap-southeast-1",
+SETTINGS = {"ASSISTANT_TABLE": "assistant-dev", "CHECKPOINT_TABLE": "checkpoints-dev",
+            "CHECKPOINT_BUCKET": "checkpoints-dev", "API_URL": "https://api.example.com", "REGION": "ap-southeast-1",
             "SANDBOX_ID": "saas_dev_sandbox-abcdefghij", "OPENROUTER_API_KEY_PARAM": "/saas/test/openrouter-api-key"}
 
 
@@ -29,9 +29,9 @@ def test_agents_build_from_settings(monkeypatch):
 
 def test_a_missing_setting_fails_clearly(monkeypatch):
     for name, value in SETTINGS.items():
-        if name != "MEMORY_ID":
+        if name != "CHECKPOINT_TABLE":
             monkeypatch.setenv(name, value)
-    with pytest.raises(ValidationError, match="memory_id"):
+    with pytest.raises(ValidationError, match="checkpoint_table"):
         container.get_agents()
 
 

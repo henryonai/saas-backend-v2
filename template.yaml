@@ -296,6 +296,41 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       AlarmActions: [!Ref AlertsTopic]
 
+  # The relay retries a record it can't publish until the record expires (24 hours),
+  # and later events on the same shard wait behind it. This fires within minutes,
+  # long before OutboxDLQAlarm.
+  OutboxLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Events are waiting to be published (see outbox-relay in the app log group)
+      Namespace: AWS/Lambda
+      MetricName: IteratorAge
+      Dimensions: [{ Name: FunctionName, Value: !Ref OutboxRelayFunction }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 300000                   # 5 minutes, in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # no events, no data
+      AlarmActions: [!Ref AlertsTopic]
+
+  # Every route's 5xx: an uncaught error or a timeout (logged as "Unhandled error",
+  # shared/http.py), or 503 when one item keeps colliding. The payment webhook too.
+  ApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The API answered 5xx (see the access log's error field, then "Unhandled error" in the app log group)
+      Namespace: AWS/ApiGateway
+      MetricName: 5xx
+      Dimensions: [{ Name: ApiId, Value: !Ref HttpApi }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # no requests, no data
+      AlarmActions: [!Ref AlertsTopic]
+
   # =====================================================================
   # Module: accounts  (/tenants, /users, login trigger, plan listener)
   # =====================================================================
@@ -371,6 +406,23 @@ Resources:
           Type: Cognito
           Properties: { UserPool: !Ref UserPool, Trigger: PreTokenGeneration }
 
+  # Cognito waits for the trigger on every sign-in and token refresh, with no retry:
+  # while it fails, nobody can sign in (e.g. a broken shared layer, ImportModuleError).
+  AccountsPreTokenErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Sign-ins are failing (the login trigger errored; see AccountsPreTokenFunction in the app log group)
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref AccountsPreTokenFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # no sign-ins, no data
+      AlarmActions: [!Ref AlertsTopic]
+
   AccountsDLQ:
     Type: AWS::SQS::Queue
     Properties:
@@ -392,7 +444,13 @@ Resources:
         source: [saas.app]
         detail-type: [SubscriptionChanged]
       Targets:
-        - { Id: AccountsQueue, Arn: !GetAtt AccountsQueue.Arn }
+        - Id: AccountsQueue
+          Arn: !GetAtt AccountsQueue.Arn
+          # An event EventBridge can't deliver (say the queue refuses it) goes to the
+          # dead-letter queue within an hour, where the alarm and the redrive work,
+          # instead of being dropped after 24 hours.
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 3600 }
+          DeadLetterConfig: { Arn: !GetAtt AccountsDLQ.Arn }
 
   AccountsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -404,6 +462,19 @@ Resources:
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
             Resource: !GetAtt AccountsQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt AccountsRule.Arn }
+
+  AccountsDLQPolicy:                    # the rule's undelivered events (DeadLetterConfig above)
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref AccountsDLQ]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt AccountsDLQ.Arn
             Condition:
               ArnEquals: { aws:SourceArn: !GetAtt AccountsRule.Arn }
 
@@ -433,7 +504,7 @@ Resources:
   AccountsDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Plan changes keep failing (messages in the accounts dead-letter queue)
+      AlarmDescription: Plan changes keep failing or weren't delivered (messages in the accounts dead-letter queue)
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt AccountsDLQ.QueueName }]
@@ -541,7 +612,11 @@ Resources:
         source: [saas.app]
         detail-type: [OrderCreated, UserInvited, SubscriptionChanged, PaymentFailed]
       Targets:
-        - { Id: NotificationsQueue, Arn: !GetAtt NotificationsQueue.Arn }
+        - Id: NotificationsQueue
+          Arn: !GetAtt NotificationsQueue.Arn
+          # Undelivered events go to the dead-letter queue within an hour (see AccountsRule).
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 3600 }
+          DeadLetterConfig: { Arn: !GetAtt NotificationsDLQ.Arn }
 
   NotificationsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -553,6 +628,19 @@ Resources:
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
             Resource: !GetAtt NotificationsQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt NotificationsRule.Arn }
+
+  NotificationsDLQPolicy:               # the rule's undelivered events (DeadLetterConfig above)
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref NotificationsDLQ]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt NotificationsDLQ.Arn
             Condition:
               ArnEquals: { aws:SourceArn: !GetAtt NotificationsRule.Arn }
 
@@ -585,7 +673,7 @@ Resources:
   NotificationsDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Notifications keep failing (messages in the dead-letter queue)
+      AlarmDescription: Notifications keep failing or weren't delivered (messages in the dead-letter queue)
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt NotificationsDLQ.QueueName }]
@@ -771,30 +859,61 @@ Resources:
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
         - { AttributeName: sk, AttributeType: S }
+        - { AttributeName: gsi1pk, AttributeType: S }
+        - { AttributeName: gsi1sk, AttributeType: S }
       KeySchema:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
-      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # old monthly usage
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1                # each user's conversations, most recent first (repository.py)
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      # Old usage, and conversations CONVERSATION_DAYS after their last message:
+      # only a conversation's META has a TTL. The stream brings its removal to
+      # the purge worker, which deletes the messages and checkpoints (purge.py).
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
+      StreamSpecification: { StreamViewType: OLD_IMAGE }
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
 
-  # Conversation checkpoints (short-term) and what the agent learns about each
-  # user (long-term). The namespaces must match assistant/memory.py.
-  AssistantMemory:
-    Type: AWS::BedrockAgentCore::Memory
+  # Each agent's state in each conversation: LangGraph checkpoints, written
+  # by DynamoDBSaver (langgraph-checkpoint-aws), which names the keys and the
+  # TTL attribute itself. Each one expires CONVERSATION_DAYS after it was
+  # written; an active conversation keeps writing new ones.
+  AssistantCheckpointTable:
+    Type: AWS::DynamoDB::Table
     Condition: HasAssistant
-    DeletionPolicy: Retain                # users' conversations outlive the stack, like the tables
+    DeletionPolicy: Retain                # users' conversations outlive the stack, like the other tables
     UpdateReplacePolicy: Retain
     Properties:
-      Name: !Sub saas_${Stage}_assistant
-      Description: Assistant conversations and long-term memories, per user and workspace
-      EventExpiryDuration: !If [IsProd, 90, 30]   # days a conversation is kept
-      MemoryStrategies:
-        - SemanticMemoryStrategy:
-            Name: facts
-            NamespaceTemplates: ["/actors/{actorId}/facts/"]
-        - UserPreferenceMemoryStrategy:
-            Name: preferences
-            NamespaceTemplates: ["/actors/{actorId}/preferences/"]
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  # A checkpoint over 350 KB, which DynamoDB can't hold. DynamoDBSaver adds
+  # the lifecycle rule that expires them, from the same TTL.
+  AssistantCheckpointBucket:
+    Type: AWS::S3::Bucket
+    Condition: HasAssistant
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
 
   # The bash tool's terminal: a separate microVM per conversation, so the
   # model's commands never run next to the agent's credentials. No
@@ -838,17 +957,22 @@ Resources:
                   - arn:aws:bedrock:*::foundation-model/*      # regional models a profile routes to
                   - arn:aws:bedrock:::foundation-model/*       # global cross-Region inference
                   - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
-              - Sid: Memory               # what AgentCoreMemorySaver and assistant/memory.py call
+              - Sid: Checkpoints          # what DynamoDBSaver calls
                 Effect: Allow
-                Action:
-                  - bedrock-agentcore:CreateEvent
-                  - bedrock-agentcore:GetEvent
-                  - bedrock-agentcore:ListEvents
-                  - bedrock-agentcore:RetrieveMemoryRecords
-                Resource: !GetAtt AssistantMemory.MemoryArn
-              - Sid: Usage
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:Query, dynamodb:BatchGetItem,
+                         dynamodb:BatchWriteItem]
+                Resource: !GetAtt AssistantCheckpointTable.Arn
+              - Sid: LargeCheckpoints     # over 350 KB
                 Effect: Allow
-                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:PutObjectTagging]
+                Resource: !Sub "${AssistantCheckpointBucket.Arn}/*"
+              - Sid: LargeCheckpointsExpiry   # DynamoDBSaver adds the rule that expires them
+                Effect: Allow
+                Action: [s3:GetLifecycleConfiguration, s3:PutLifecycleConfiguration]
+                Resource: !GetAtt AssistantCheckpointBucket.Arn
+              - Sid: Table                # usage counters, and each conversation's history (service.ConversationLog)
+                Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
                 Resource: !GetAtt AssistantTable.Arn
               - Sid: Sandbox                # assistant/sandbox.py
                 Effect: Allow
@@ -889,7 +1013,7 @@ Resources:
         CodeConfiguration:
           Code: { S3: { Bucket: !Ref AssistantCodeBucket, Prefix: !Ref AssistantCodeKey } }
           Runtime: PYTHON_3_13
-          EntryPoint: [opentelemetry-instrument, main.py]   # traces to CloudWatch (enable Transaction Search once)
+          EntryPoint: [opentelemetry-instrument, main.py]   # traces to CloudWatch (scripts/enable-transaction-search.sh, once per account)
       NetworkConfiguration: { NetworkMode: PUBLIC }
       ProtocolConfiguration: AGUI           # AG-UI events (assistant/schemas.py); AgentCore's own errors are RUN_ERROR events too
       # Only this user pool's ID tokens get in, like the HTTP API: access
@@ -907,19 +1031,180 @@ Resources:
       RequestHeaderConfiguration:
         RequestHeaderAllowlist: [Authorization]   # the verified token reaches the code (claims, and the tools' API calls)
       LifecycleConfiguration:
-        IdleRuntimeSessionTimeout: 900    # an idle conversation's microVM stops after 15 minutes; the conversation is in Memory
+        IdleRuntimeSessionTimeout: 900    # an idle conversation's microVM stops after 15 minutes; its checkpoints remain
         MaxLifetime: 28800
       EnvironmentVariables:
         POWERTOOLS_SERVICE_NAME: assistant
         POWERTOOLS_LOG_LEVEL: INFO
         PYTHONUNBUFFERED: "1"             # logs reach CloudWatch even if the microVM stops right after
         ASSISTANT_TABLE: !Ref AssistantTable
-        MEMORY_ID: !GetAtt AssistantMemory.MemoryId
+        CHECKPOINT_TABLE: !Ref AssistantCheckpointTable
+        CHECKPOINT_BUCKET: !Ref AssistantCheckpointBucket
         API_URL: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
         MODEL_ID: !Ref AssistantModelId
         OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParam
         REGION: !Ref AWS::Region
         SANDBOX_ID: !GetAtt AssistantSandbox.CodeInterpreterId
+        CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # after its last message, a conversation goes, checkpoints and all
+        # ADOT's LangChain instrumentation logs every model call's messages (the
+        # conversation so far, the answer) to this runtime's log group, and
+        # traces each model call and middleware step. Dev keeps both, the
+        # messages for a week (AssistantLogRetention); prod keeps neither, so a
+        # conversation lives only where the app can delete it.
+        AWS_GENAI_INSTRUMENTATION: !If [IsProd, disabled, enabled]
+
+  # AgentCore creates the runtime's log group itself, with the runtime and no
+  # retention, so CloudFormation can't own it: this sets its retention.
+  AssistantLogRetention:
+    Type: Custom::LogRetention
+    Condition: HasAssistant
+    Properties:
+      ServiceToken: !GetAtt AssistantLogRetentionFunction.Arn
+      LogGroupName: !Sub /aws/bedrock-agentcore/runtimes/${AssistantRuntime.AgentRuntimeId}-DEFAULT
+      RetentionInDays: !If [IsProd, !Ref LogRetentionDays, 7]   # dev's holds the conversations' text
+
+  AssistantLogRetentionFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasAssistant
+    Properties:
+      Handler: index.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [logs:CreateLogGroup, logs:PutRetentionPolicy]
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*
+      InlineCode: |
+        import boto3
+        import cfnresponse
+
+        logs = boto3.client("logs")
+
+
+        def handler(event, context):
+            """Sets the log group's retention, creating the group if it isn't there yet. Leaves it on delete."""
+            name = event["ResourceProperties"]["LogGroupName"]
+            try:
+                if event["RequestType"] != "Delete":
+                    try:
+                        logs.create_log_group(logGroupName=name)
+                    except logs.exceptions.ResourceAlreadyExistsException:
+                        pass
+                    days = int(event["ResourceProperties"]["RetentionInDays"])
+                    logs.put_retention_policy(logGroupName=name, retentionInDays=days)
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, name)
+            except Exception as error:
+                cfnresponse.send(event, context, cfnresponse.FAILED, {}, name, reason=str(error))
+
+  # The users' conversations (/assistant/conversations): send a message (saved,
+  # with the run that will answer it, before AgentCore runs it), stop an
+  # answer, list, reopen, rename, delete. A Lambda behind the HTTP API like
+  # the other modules; the agent writes the answers. Same code as the agent,
+  # but only the shared layer: these files never import LangChain (a test checks).
+  AssistantApiFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasAssistant
+    Properties:
+      CodeUri: modules/assistant/src/
+      Handler: assistant.handler.handler
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: assistant
+          ASSISTANT_TABLE: !Ref AssistantTable
+          PURGE_QUEUE_URL: !Ref AssistantPurgeQueue
+          CONVERSATION_DAYS: !If [IsProd, "90", "30"]   # as the runtime's: each message moves the expiry on
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
+              Resource: [!GetAtt AssistantTable.Arn, !Sub "${AssistantTable.Arn}/index/gsi1"]
+        - SQSSendMessagePolicy: { QueueName: !GetAtt AssistantPurgeQueue.QueueName }
+      Events:
+        ListGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/conversations, Method: GET } }
+        OneGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: GET } }
+        OnePost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: POST } }
+        OnePatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: PATCH } }
+        OneDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: DELETE } }
+
+  # Deleted conversations, for the agents' checkpoints of them: hundreds of
+  # records, too many for the request (assistant/purge.py). Also where the
+  # purge of an expired conversation goes when it keeps failing.
+  AssistantPurgeDLQ:
+    Type: AWS::SQS::Queue
+    Condition: HasAssistant
+    Properties:
+      MessageRetentionPeriod: 1209600   # keep failed messages 14 days
+
+  AssistantPurgeQueue:
+    Type: AWS::SQS::Queue
+    Condition: HasAssistant
+    Properties:
+      VisibilityTimeout: 1800           # 6x the worker timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AssistantPurgeDLQ.Arn
+        maxReceiveCount: 5              # each try continues where the last stopped
+
+  AssistantPurgeFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasAssistant
+    Properties:
+      CodeUri: modules/assistant/src/
+      Handler: assistant.purge.handler
+      Timeout: 300
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: assistant
+          ASSISTANT_TABLE: !Ref AssistantTable
+          CHECKPOINT_TABLE: !Ref AssistantCheckpointTable
+          CHECKPOINT_BUCKET: !Ref AssistantCheckpointBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:Query, dynamodb:BatchWriteItem]
+              Resource: [!GetAtt AssistantCheckpointTable.Arn, !GetAtt AssistantTable.Arn]
+            - Effect: Allow
+              Action: [s3:ListBucket]
+              Resource: !GetAtt AssistantCheckpointBucket.Arn
+            - Effect: Allow
+              Action: [s3:DeleteObject]
+              Resource: !Sub "${AssistantCheckpointBucket.Arn}/*"
+        - SQSSendMessagePolicy: { QueueName: !GetAtt AssistantPurgeDLQ.QueueName }   # a stream batch that kept failing
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AssistantPurgeQueue.Arn
+            BatchSize: 1                # one conversation per run: a retry repeats only that one
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 2 }   # no hurry: a few at a time
+        Expired:                        # TTL removed a conversation's META (repository.py)
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt AssistantTable.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 10
+            FilterCriteria:
+              Filters:
+                - Pattern: '{"eventName": ["REMOVE"], "userIdentity": {"type": ["Service"], "principalId": ["dynamodb.amazonaws.com"]}, "dynamodb": {"Keys": {"sk": {"S": ["META"]}}}}'
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: 5
+            DestinationConfig: { OnFailure: { Destination: !GetAtt AssistantPurgeDLQ.Arn } }
+
+  AssistantPurgeDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAssistant
+    Properties:
+      AlarmDescription: Deleted or expired assistant conversations still have data (messages in the purge dead-letter queue)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt AssistantPurgeDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertsTopic]
 
 Outputs:
   ApiUrl:
