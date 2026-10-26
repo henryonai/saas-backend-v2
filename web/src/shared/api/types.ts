@@ -47,5 +47,13 @@ export type AssistantVersion = Assistant['schemas']['Version'];
 export type AssistantMemory = Sent<Assistant['schemas']['MemoryOut']>;
 /** Everything it remembers about the user, and whether memory is on. */
 export type AssistantMemoryList = Omit<Assistant['schemas']['MemoryList'], 'items'> & { items: AssistantMemory[] };
+/** One of the user's files: one they attached (source upload) or one an agent made (assistant), with its versions. */
+export type AssistantFile = Sent<Assistant['schemas']['FileOut']>;
+export type AssistantFileKind = AssistantFile['kind'];
+/** A file with short-lived links: to download it, and, an image, to show it. */
+export type AssistantFileDetail = Sent<Assistant['schemas']['FileDetail']>;
+export type AssistantFilePage = { items: AssistantFile[]; next_cursor: string | null };
+/** Where the browser uploads a file to attach: a presigned POST to S3. */
+export type AssistantUpload = Omit<Assistant['schemas']['UploadOut'], 'file'> & { file: AssistantFile };
 /** The user's thumbs up or down on an answer. */
 export type AssistantRating = NonNullable<Assistant['schemas']['MessageRating']['rating']>;

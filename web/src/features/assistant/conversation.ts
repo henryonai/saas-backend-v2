@@ -16,6 +16,7 @@ import {
   runError,
   showVersion,
 } from './api';
+import { type AttachmentView, attachmentsOf, textOf, userContent } from './transcript';
 
 /**
  * The conversation on the Assistant page: the one streaming now, or one
@@ -103,15 +104,15 @@ const AGENTCORE_ERROR = 'AGENT_ERROR';
  */
 const FOLLOW_DELAYS_MS = [1000, 2000, 4000, 8000];
 
-/** Sends the user's message and streams the answer into the state. */
-export async function sendMessage(text: string): Promise<void> {
+/** Sends the user's message, with the files they attached (uploaded already), and streams the answer into the state. */
+export async function sendMessage(text: string, attachments: AttachmentView[] = []): Promise<void> {
   const prompt = text.trim();
-  if (!prompt || conversationStore.getState().running) return;
+  if ((!prompt && attachments.length === 0) || conversationStore.getState().running) return;
   const target = currentAgent();
   const id = crypto.randomUUID();
-  target.addMessage({ id, role: 'user', content: prompt });
+  target.addMessage({ id, role: 'user', content: userContent(prompt, attachments) });
   conversationStore.setState({ messages: [...target.messages] });
-  await ask(target, id, prompt);
+  await ask(target, id, prompt, { attachments: attachments.map((file) => file.fileId) });
 }
 
 /**
@@ -126,9 +127,10 @@ export async function editMessage(messageId: string, text: string): Promise<void
   const target = currentAgent();
   const at = target.messages.findIndex((message) => message.id === messageId && message.role === 'user');
   if (at < 0) return;
+  const files = attachmentsOf(target.messages[at].content); // its files stay on the new version
   const id = crypto.randomUUID();
-  show(target, [...target.messages.slice(0, at), { id, role: 'user', content: prompt }]);
-  await ask(target, id, prompt, messageId);
+  show(target, [...target.messages.slice(0, at), { id, role: 'user', content: userContent(prompt, files) }]);
+  await ask(target, id, prompt, { replaces: messageId, attachments: files.map((file) => file.fileId) });
 }
 
 /**
@@ -143,11 +145,16 @@ export async function regenerate(answerId?: string): Promise<void> {
   const end = answerId ? target.messages.findIndex((message) => message.id === answerId) : target.messages.length;
   const at = lastUserMessage(target.messages.slice(0, end < 0 ? 0 : end));
   const question = target.messages[at];
-  if (!question || typeof question.content !== 'string') return;
+  if (!question || question.role !== 'user') return;
   const answered = target.messages.length > at + 1; // else there is no old answer to keep (it failed before writing)
   show(target, target.messages.slice(0, at + 1));
-  // The last answer: the newest question sent again, which the server answers again, as Try again after a failed send.
-  await ask(target, question.id, question.content, answerId ? question.id : undefined, answered);
+  // The last answer: the newest question sent again, which the server answers again, as Try again after a failed
+  // send. Its files: the server answers the message as it saved it; one that never got there goes with them.
+  await ask(target, question.id, textOf(question.content as Parameters<typeof textOf>[0]), {
+    replaces: answerId ? question.id : undefined,
+    newVersion: answered,
+    attachments: answerId ? [] : attachmentsOf(question.content).map((file) => file.fileId),
+  });
 }
 
 /**
@@ -261,16 +268,23 @@ sessionStore.subscribe((state, previous) => {
   if (state.status === 'signed-out' || state.user?.tenantId !== previous.user?.tenantId) newConversation();
 });
 
-/**
- * Saves the message with the run that will answer it (the HTTP API), then
- * follows the run. `newVersion`: its answer is a new version of a message
- * (an edit, an answer asked for again), which the server numbers.
- */
-async function ask(target: AssistantAgent, id: string, content: string, replaces?: string, newVersion = replaces !== undefined): Promise<void> {
+interface Asking {
+  /** an edit (another message's id), or the message answered again (its own) */
+  replaces?: string;
+  /** its answer is a new version of a message (an edit, an answer asked for again), which the server numbers */
+  newVersion?: boolean;
+  /** the ids of the files it is sent with */
+  attachments?: string[];
+}
+
+/** Saves the message with the run that will answer it (the HTTP API), then follows the run. */
+async function ask(target: AssistantAgent, id: string, content: string, { replaces, newVersion = replaces !== undefined, attachments = [] }: Asking = {}): Promise<void> {
   update(target, { running: true, error: null, tokens: null });
   let runId: string;
   try {
-    ({ run_id: runId } = await postMessage(target.threadId, { id, content, agent: MAIN_AGENT, ...(replaces && { replaces }) }));
+    ({ run_id: runId } = await postMessage(target.threadId, {
+      id, content, agent: MAIN_AGENT, ...(replaces && { replaces }), ...(attachments.length > 0 && { attachments }),
+    }));
   } catch (error) {
     update(target, { running: false, error: requestError(error) });
     return;

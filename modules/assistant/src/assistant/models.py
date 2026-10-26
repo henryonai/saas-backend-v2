@@ -1,8 +1,8 @@
 """
 What the assistant module stores: one usage record per workspace and month,
-each user's conversations with their messages, and what it remembers about
-each user. What its two endpoints (the HTTP API and the agent's) accept and
-return is in schemas.py.
+each user's conversations with their messages, what it remembers about each
+user, and their files (attached, or made by an agent). What its two
+endpoints (the HTTP API and the agent's) accept and return is in schemas.py.
 """
 from datetime import UTC, datetime
 from typing import Literal
@@ -44,6 +44,52 @@ TitleSource = Literal["message", "model", "user"]
 Rating = Literal["up", "down"]
 
 
+# What a file is, for filters and for how an agent gets it (files.kind_of).
+FileKind = Literal["image", "text", "data", "document", "other"]
+FileSource = Literal["upload", "assistant"]   # the user attached it, or an agent made it
+
+
+class Attachment(BaseModel):
+    """A file on a user's message: what the agent is told about it (and given, for images and text)."""
+    file_id: str
+    name: str
+    content_type: str
+    size: int
+    kind: FileKind
+
+
+class FileVersion(BaseModel):
+    version: int    # from 1; its S3 object is <tenant>/<user>/<file_id>/<version>
+    size: int
+    created_at: str
+
+
+class File(BaseModel):
+    """
+    A user's file, in S3 with this record: one they attached to a message, or
+    one an agent made (a report, a chart, data), each with its versions. Kept
+    until its user deletes it, or leaves the workspace; an upload never sent
+    expires a day after it was asked for.
+    """
+    file_id: str
+    name: str
+    content_type: str
+    kind: FileKind
+    size: int                   # the newest version's, in bytes
+    source: FileSource
+    status: Literal["pending", "ready"]   # pending: an upload not sent with a message yet
+    created_at: str
+    updated_at: str
+    versions: list[FileVersion]
+    thread_id: str | None = None   # the conversation it was attached to or made in
+    agent: str | None = None       # the agent that made it
+    expires_at: int | None = None  # while pending (TTL)
+
+    def attachment(self) -> Attachment:
+        return Attachment(file_id=self.file_id, name=self.name, content_type=self.content_type, size=self.size,
+                          kind=self.kind)
+
+
 class Run(BaseModel):
     """
     The answer being written to a conversation's newest message: one at a
@@ -64,6 +110,7 @@ class Run(BaseModel):
     # (another version was shown, or another agent spoke since): it starts
     # again from the history of the one shown (app.restored).
     restore: bool = False
+    attachments: list[Attachment] = []   # the files on the message
 
 
 class Memory(BaseModel):

@@ -35,6 +35,7 @@ Each request:
 """
 import asyncio
 import base64
+import dataclasses
 import json
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -52,7 +53,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from shared.auth import user_from_claims
 from shared.errors import AppError, InvalidRequest, NotFound, Unauthorized
 
-from assistant.agui import AgUiStream, Transcript, agent_messages, error_event, internal_error
+from assistant.agui import AgUiStream, Transcript, agent_messages, error_event, internal_error, user_message
 from assistant.container import get_agents, get_conversation_log, get_titles
 from assistant.context import SESSION_ID, AgentContext, actor_of
 from assistant.factory import thread_config
@@ -138,10 +139,11 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
            titles: Titles) -> Iterator[BaseEvent]:
     """One run, start to finish, as AG-UI events. Its history is kept however it ends."""
     thread_id, run_id = context.session_id, run.run_id
+    context = dataclasses.replace(context, agent=run.agent)
     # Its timestamp tells this log of the run from another (resume_after).
     yield RunStartedEvent(thread_id=thread_id, run_id=run_id, timestamp=time.time_ns() // 1_000_000)
     # A new conversation is titled while the agent answers, not after it.
-    naming = titles.start(context, run.prompt) if run.first else None
+    naming = titles.start(context, run.prompt or ", ".join(a.name for a in run.attachments)) if run.first else None
     log = {"tenant_id": context.user.tenant_id, "user_id": context.user.user_id, "session_id": thread_id,
            "run_id": run_id, "agent": run.agent}
     input_tokens = output_tokens = 0
@@ -161,7 +163,7 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
         else:   # none, or one of another version of the conversation
             earlier = restored(history, context, run, log, replace=saved is not None)
         # The user's message keeps its AG-UI id: an edit or a retry finds it (rewound).
-        messages = [*earlier, HumanMessage(run.prompt, id=run.message_id)]
+        messages = [*earlier, user_message(run.message_id, run.prompt, run.attachments)]
         # Subagents' own output doesn't come through here (see delegation.py), only the calling agent's.
         # durability="exit": one checkpoint when the run ends (stopped, failed or done), not one per step.
         stream = agent.stream({"messages": messages}, config, context=context, stream_mode="messages",

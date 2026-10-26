@@ -35,6 +35,14 @@ class Sandbox(Protocol):
         on_new_session runs first and may raise to refuse (plan limits)."""
         ...
 
+    def write_file(self, conversation_id: str, path: str, data: bytes, on_new_session: Callable[[], None]) -> bool:
+        """Puts a file in the conversation's sandbox, starting one if needed. True if that one is new (empty)."""
+        ...
+
+    def read_file(self, conversation_id: str, path: str) -> bytes | None:
+        """A file from the conversation's sandbox; None if it has none running (its files are gone)."""
+        ...
+
 
 class SandboxError(Exception):
     """The sandbox service failed (throttled, internal error...)."""
@@ -62,6 +70,41 @@ class AgentCoreSandbox:
             result = self._execute(self._session(conversation_id, on_new_session), command)
             return CommandResult(result.exit_code, result.stdout, result.stderr, restarted=True)
 
+    def write_file(self, conversation_id: str, path: str, data: bytes, on_new_session: Callable[[], None]) -> bool:
+        with self._lock:
+            new = conversation_id not in self._sessions
+        arguments = {"content": [{"path": path, "blob": data}]}
+        try:
+            self._invoke(self._session(conversation_id, on_new_session), "writeFiles", arguments)
+        except _SessionGone:
+            with self._lock:
+                self._sessions.pop(conversation_id, None)
+            self._invoke(self._session(conversation_id, on_new_session), "writeFiles", arguments)
+            return True
+        return new
+
+    def read_file(self, conversation_id: str, path: str) -> bytes | None:
+        with self._lock:
+            session_id = self._sessions.get(conversation_id)
+        if session_id is None:
+            return None
+        try:
+            results = self._invoke(session_id, "readFiles", {"paths": [path]})
+        except _SessionGone:
+            with self._lock:
+                self._sessions.pop(conversation_id, None)
+            return None
+        for result in results:
+            if result.get("isError"):
+                raise SandboxError(" ".join(c.get("text", "") for c in result.get("content", [])) or f"No file {path}")
+            for content in result.get("content", []):
+                resource = content.get("resource") or {}
+                if resource.get("blob") is not None:
+                    return resource["blob"]
+                if resource.get("text") is not None:
+                    return resource["text"].encode()
+        raise SandboxError(f"No file {path} in the sandbox.")
+
     def _session(self, conversation_id: str, on_new_session: Callable[[], None]) -> str:
         with self._lock:
             if conversation_id not in self._sessions:
@@ -74,23 +117,27 @@ class AgentCoreSandbox:
                 self._sessions[conversation_id] = response["sessionId"]
             return self._sessions[conversation_id]
 
-    def _execute(self, session_id: str, command: str) -> CommandResult:
+    def _invoke(self, session_id: str, name: str, arguments: dict) -> list[dict]:
+        """One of the sandbox's tools (executeCommand, readFiles, writeFiles): the results it streamed."""
         try:
             response = self.client.invoke_code_interpreter(
-                codeInterpreterIdentifier=self.interpreter_id, sessionId=session_id,
-                name="executeCommand", arguments={"command": command})
+                codeInterpreterIdentifier=self.interpreter_id, sessionId=session_id, name=name, arguments=arguments)
         except ClientError as e:
             if e.response["Error"]["Code"] == "ResourceNotFoundException":
                 raise _SessionGone from e
             raise SandboxError(e.response["Error"].get("Message", "The sandbox failed")) from e
-
-        stdout, stderr, exit_code = [], [], None
+        results = []
         for event in response["stream"]:
             if "resourceNotFoundException" in event:
                 raise _SessionGone
             if errors := [v for k, v in event.items() if k.endswith("Exception")]:
                 raise SandboxError(errors[0].get("message", "The sandbox failed"))
-            result = event.get("result") or {}
+            results.append(event.get("result") or {})
+        return results
+
+    def _execute(self, session_id: str, command: str) -> CommandResult:
+        stdout, stderr, exit_code = [], [], None
+        for result in self._invoke(session_id, "executeCommand", {"command": command}):
             if structured := result.get("structuredContent"):
                 stdout.append(structured.get("stdout") or "")
                 stderr.append(structured.get("stderr") or "")

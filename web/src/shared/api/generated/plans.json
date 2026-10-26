@@ -9,7 +9,8 @@
       "assistant_messages_per_month": 50,
       "assistant_messages_per_user_hour": 20,
       "assistant_tokens_per_month": 500000,
-      "assistant_sandbox_sessions_per_month": 0
+      "assistant_sandbox_sessions_per_month": 0,
+      "assistant_uploads_per_user_hour": 20
     },
     "pro": {
       "name": "Pro",
@@ -19,7 +20,8 @@
       "assistant_messages_per_month": 2000,
       "assistant_messages_per_user_hour": 60,
       "assistant_tokens_per_month": 20000000,
-      "assistant_sandbox_sessions_per_month": 200
+      "assistant_sandbox_sessions_per_month": 200,
+      "assistant_uploads_per_user_hour": 60
     },
     "business": {
       "name": "Business",
@@ -29,7 +31,8 @@
       "assistant_messages_per_month": null,
       "assistant_messages_per_user_hour": 120,
       "assistant_tokens_per_month": 100000000,
-      "assistant_sandbox_sessions_per_month": 2000
+      "assistant_sandbox_sessions_per_month": 2000,
+      "assistant_uploads_per_user_hour": 120
     }
   }
 }

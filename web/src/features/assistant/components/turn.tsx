@@ -6,8 +6,9 @@ import { Button } from '@/shared/components/ui/button';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { cn } from '@/shared/lib/utils';
-import type { Turn } from '../transcript';
+import { type AttachmentView, savedFileOf, type Turn } from '../transcript';
 import { MAX_LENGTH } from './composer';
+import { Attachments, SavedFileCard } from './files';
 import { Markdown } from './markdown';
 import { ToolCall } from './tool-call';
 
@@ -19,8 +20,9 @@ const ON_HOVER = 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@
  * text, a new version of it. `version`: which of its versions it is, and
  * `onVersion` shows another.
  */
-export function UserTurn({ text, onEdit, version, onVersion }: {
+export function UserTurn({ text, attachments = [], onEdit, version, onVersion }: {
   text: string;
+  attachments?: AttachmentView[];
   onEdit?: (text: string) => void;
   version?: AssistantVersion;
   onVersion?: (version: number) => void;
@@ -41,9 +43,12 @@ export function UserTurn({ text, onEdit, version, onVersion }: {
   }
   return (
     <div className="group flex flex-col items-end gap-1">
-      <div className="max-w-[85%] rounded-2xl bg-primary px-4 py-2 text-sm whitespace-pre-wrap break-words text-primary-foreground">
-        {text}
-      </div>
+      <Attachments files={attachments} className="max-w-[85%]" />
+      {text && (
+        <div className="max-w-[85%] rounded-2xl bg-primary px-4 py-2 text-sm whitespace-pre-wrap break-words text-primary-foreground">
+          {text}
+        </div>
+      )}
       <div className="flex items-center gap-0.5 text-muted-foreground">
         {onEdit && (
           <Button variant="ghost" size="icon-sm" className={ON_HOVER} onClick={() => setEditing(true)} aria-label={t('assistant.edit')} title={t('assistant.edit')}>
@@ -155,9 +160,16 @@ export function AssistantTurn({ turn, active, thinking, latest = false, rating, 
         <BotIcon className="size-4" />
       </div>
       <div className="min-w-0 flex-1 space-y-3 pt-0.5">
-        {turn?.parts.map((part) =>
-          part.type === 'text' ? <Markdown key={part.id} text={part.text} /> : <ToolCall key={part.call.id} call={part.call} active={active} />,
-        )}
+        {turn?.parts.map((part) => {
+          if (part.type === 'text') return <Markdown key={part.id} text={part.text} />;
+          const saved = savedFileOf(part.call);
+          return (
+            <div key={part.call.id} className="space-y-2">
+              <ToolCall call={part.call} active={active} />
+              {saved && <SavedFileCard saved={saved} />}
+            </div>
+          );
+        })}
         {thinking && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Spinner className="size-3.5" />

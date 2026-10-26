@@ -21,13 +21,14 @@ from assistant.context import AgentContext
 from assistant.definitions import AgentDefinition
 from assistant.delegation import make_task_tool
 from assistant.middleware import (
+    AttachmentsMiddleware,
     ConversationMiddleware,
     MemoryMiddleware,
     PlanToolsMiddleware,
     UsageMiddleware,
     tool_failed,
 )
-from assistant.service import MemoryService, UsageService
+from assistant.service import FileService, MemoryService, UsageService
 from assistant.tools import SANDBOX_TOOLS
 
 # Tool calls in one run, whatever the model decides (maxTurns bounds model calls).
@@ -44,6 +45,7 @@ class AgentDeps:
     usage: UsageService
     tools: dict[str, BaseTool]   # tools.make_tools()
     memories: MemoryService
+    files: FileService
 
 
 def build_agents(definitions: dict[str, AgentDefinition], deps: AgentDeps) -> dict[str, Any]:
@@ -66,7 +68,8 @@ def _build(definition: AgentDefinition, deps: AgentDeps, *, top_level: bool, ext
     # exactly as the model answered it.
     middleware = [UsageMiddleware(deps.usage)]
     if top_level:
-        middleware.append(ConversationMiddleware(MAX_HISTORY_TOKENS))
+        # The history each model call is sent, then the files on its user messages.
+        middleware += [ConversationMiddleware(MAX_HISTORY_TOKENS), AttachmentsMiddleware(deps.files)]
     if definition.memory:
         middleware.append(MemoryMiddleware(deps.memories))
     middleware.append(PlanToolsMiddleware(deps.usage, SANDBOX_TOOLS))

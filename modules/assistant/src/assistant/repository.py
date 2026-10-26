@@ -10,9 +10,14 @@ Assistant table:
                                                                  the first (branch 1 from position 4: an edit,
                                                                  or an answer asked for again, versions.py)
   pk = TENANT#<t>                         sk = USER#<u>#HOUR#<YYYY-MM-DDTHH>  messages a user sent that hour (UTC)
+  pk = TENANT#<t>                         sk = USER#<u>#UPLOADS#<YYYY-MM-DDTHH>  files they uploaded that hour
   pk = TENANT#<t>#USER#<u>#MEMORY         sk = MEM#<id>          something the assistant remembers about the user
                                                                  (models.Memory)
   pk = TENANT#<t>#USER#<u>#MEMORY         sk = SETTINGS          whether it remembers anything (enabled)
+  pk = TENANT#<t>#USER#<u>#FILES          sk = FILE#<file_id>    one of the user's files (models.File), newest
+                                                                 last (ids sort by time); the bytes are in S3
+  pk = TENANT#<t>#USER#<u>#FILES          sk = NAMED#<thread>#<name>   the file an agent saved under that name
+                                                                 in that conversation: saved again, a new version
   gsi1pk = TENANT#<t>#USER#<u>#CONVS      gsi1sk = <updated_at>  on META only: the user's list, newest first
 
 The tenant is part of every key, and the user of every conversation key, so
@@ -34,13 +39,14 @@ import json
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from decimal import Decimal
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from shared.dynamo import is_condition_failure
 
-from assistant.models import Conversation, Memory, Rating, Run, TitleSource, Usage
+from assistant.models import Conversation, File, FileVersion, Memory, Rating, Run, TitleSource, Usage
 from assistant.versions import Node, Tree
 
 USAGE_TTL_SECONDS = 400 * 24 * 60 * 60
@@ -151,15 +157,16 @@ class UsageRepository:
         item = self.table.get_item(Key=_key(tenant_id, month), ConsistentRead=True).get("Item")
         return _usage(item) if item else Usage(tenant_id=tenant_id, month=month)
 
-    def add_hourly_message(self, tenant_id: str, user_id: str, hour: str, max_messages: int, expires_at: int) -> bool:
+    def add_hourly_message(self, tenant_id: str, user_id: str, hour: str, max_messages: int, expires_at: int,
+                           counter: str = "HOUR") -> bool:
         """
         Counts one message the user sent this hour (UTC, e.g. "2026-10-25T09"),
         but only under max_messages: one conditional update, like the monthly
-        count. False at the limit.
+        count. False at the limit. `counter` UPLOADS counts files they attach.
         """
         try:
             self.table.update_item(
-                Key={"pk": f"TENANT#{tenant_id}", "sk": f"USER#{user_id}#HOUR#{hour}"},
+                Key={"pk": f"TENANT#{tenant_id}", "sk": f"USER#{user_id}#{counter}#{hour}"},
                 UpdateExpression="ADD #messages :one SET #expires = if_not_exists(#expires, :expires)",
                 ConditionExpression="attribute_not_exists(#messages) OR #messages < :max",
                 ExpressionAttributeNames={"#messages": "messages", "#expires": "expires_at"},
@@ -196,6 +203,17 @@ def _message_sk(position: int, branch: int = 0) -> str:
 
 def _position(sk: str) -> int:
     return int(sk.rpartition("MSG#")[2])
+
+
+def _plain(value):
+    """A message as it was written: DynamoDB gives its numbers (a file's size) back as Decimal."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value
 
 
 def _conversation(item: dict) -> Conversation:
@@ -406,7 +424,7 @@ class ConversationRepository:
         """The message stored at `node` (its branch and position), or None."""
         item = self.table.get_item(Key={"pk": _conversation_pk(tenant_id, user_id, thread_id),
                                         "sk": _message_sk(node[1], node[0])}, ConsistentRead=True).get("Item")
-        return item and item["message"]
+        return item and _plain(item["message"])
 
     def rate(self, tenant_id: str, user_id: str, thread_id: str, node: Node, rating: Rating | None) -> bool:
         """Sets (or, with None, clears) the user's rating of the message at `node`. False if it's gone."""
@@ -474,7 +492,7 @@ class ConversationRepository:
         """
         last = tree.count if before is None else min(tree.count, before - 1)
         found = list(self._path(tenant_id, user_id, thread_id, tree, max(1, last - limit + 1), last))
-        return ([item["message"] for _, item in found],
+        return ([_plain(item["message"]) for _, item in found],
                 {item["message"]["id"]: item["rating"] for _, item in found if "rating" in item},
                 [position for position, _ in found])
 
@@ -485,7 +503,7 @@ class ConversationRepository:
         with the agent each was said to or by (None: saved before messages
         had one).
         """
-        return [(item.get("agent"), item["message"])
+        return [(item.get("agent"), _plain(item["message"]))
                 for _, item in self._path(tenant_id, user_id, thread_id, tree, max(1, tree.count - limit + 1),
                                           tree.count)]
 
@@ -659,6 +677,162 @@ class MemoryRepository:
                                UpdateExpression="SET #enabled = :enabled",
                                ExpressionAttributeNames={"#enabled": "enabled"},
                                ExpressionAttributeValues={":enabled": enabled})
+
+
+def _files_pk(tenant_id: str, user_id: str) -> str:
+    return f"TENANT#{tenant_id}#USER#{user_id}#FILES"
+
+
+def _named_sk(thread_id: str, name: str) -> str:
+    return f"NAMED#{thread_id}#{name.casefold()}"
+
+
+def _file(item: dict) -> File:
+    return File.model_validate({k: v for k, v in item.items() if k not in ("pk", "sk")})
+
+
+class FileRepository:
+    """
+    The records of a user's files (the bytes are in S3, files.py), under one
+    key per user, newest last. The tenant and user come from the caller's
+    token, so a file id from a client only ever names one of their own.
+    """
+
+    def __init__(self, table):
+        self.table = table
+
+    def create(self, tenant_id: str, user_id: str, file: File) -> None:
+        values = {f":{k}": v for k, v in file.model_dump().items() if v is not None}
+        self.table.update_item(
+            Key={"pk": _files_pk(tenant_id, user_id), "sk": f"FILE#{file.file_id}"},
+            UpdateExpression="SET " + ", ".join(f"#{name[1:]} = {name}" for name in values),
+            ConditionExpression="attribute_not_exists(pk)",
+            ExpressionAttributeNames={f"#{name[1:]}": name[1:] for name in values},
+            ExpressionAttributeValues=values,
+        )
+
+    def get(self, tenant_id: str, user_id: str, file_id: str) -> File | None:
+        """The file, or None. A pending upload whose day ran out is gone, even before TTL removes it."""
+        item = self.table.get_item(Key={"pk": _files_pk(tenant_id, user_id), "sk": f"FILE#{file_id}"},
+                                   ConsistentRead=True).get("Item")
+        if not item or "expires_at" in item and item["expires_at"] <= time.time():
+            return None
+        return _file(item)
+
+    def attach(self, tenant_id: str, user_id: str, file_id: str, thread_id: str, now: str) -> File | None:
+        """A pending upload sent with a message: kept from now on, in that conversation. None if it's gone."""
+        try:
+            result = self.table.update_item(
+                Key={"pk": _files_pk(tenant_id, user_id), "sk": f"FILE#{file_id}"},
+                UpdateExpression="SET #status = :ready, #thread = if_not_exists(#thread, :thread), "
+                                 "#updated = :now REMOVE #expires",
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeNames={"#status": "status", "#thread": "thread_id", "#updated": "updated_at",
+                                          "#expires": "expires_at"},
+                ExpressionAttributeValues={":ready": "ready", ":thread": thread_id, ":now": now},
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as e:
+            if is_condition_failure(e):
+                return None
+            raise
+        return _file(result["Attributes"])
+
+    def named(self, tenant_id: str, user_id: str, thread_id: str, name: str) -> str | None:
+        """The id of the file an agent saved as `name` in this conversation, if any."""
+        item = self.table.get_item(Key={"pk": _files_pk(tenant_id, user_id), "sk": _named_sk(thread_id, name)},
+                                   ConsistentRead=True).get("Item")
+        return item and item["file_id"]
+
+    def name(self, tenant_id: str, user_id: str, thread_id: str, name: str, file_id: str) -> None:
+        """Saved as `name` in this conversation again, it is a new version of this file."""
+        self.table.update_item(Key={"pk": _files_pk(tenant_id, user_id), "sk": _named_sk(thread_id, name)},
+                               UpdateExpression="SET file_id = :file", ExpressionAttributeValues={":file": file_id})
+
+    def add_version(self, tenant_id: str, user_id: str, file_id: str, version: FileVersion,
+                    content_type: str) -> File | None:
+        """
+        Its new newest version, if it is the one after the newest (another
+        save may have taken that number meanwhile): None then, or if it's gone.
+        """
+        try:
+            result = self.table.update_item(
+                Key={"pk": _files_pk(tenant_id, user_id), "sk": f"FILE#{file_id}"},
+                UpdateExpression="SET #versions = list_append(#versions, :version), #size = :size, "
+                                 "#type = :type, #updated = :now",
+                ConditionExpression="attribute_exists(pk) AND size(#versions) = :before",
+                ExpressionAttributeNames={"#versions": "versions", "#size": "size", "#type": "content_type",
+                                          "#updated": "updated_at"},
+                ExpressionAttributeValues={":version": [version.model_dump()], ":size": version.size,
+                                           ":type": content_type, ":now": version.created_at,
+                                           ":before": version.version - 1},
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as e:
+            if is_condition_failure(e):
+                return None
+            raise
+        return _file(result["Attributes"])
+
+    def list(self, tenant_id: str, user_id: str, limit: int, cursor: str | None = None, *,
+             source: str | None = None, kind: str | None = None,
+             thread_id: str | None = None) -> tuple[list[File], str | None]:
+        """
+        Newest first, kept ones only (not uploads still pending), filtered;
+        and a cursor for the next page (None at the end). A page may have
+        fewer than `limit` when filters skip some.
+        """
+        condition = Attr("status").eq("ready")
+        for field, value in (("source", source), ("kind", kind), ("thread_id", thread_id)):
+            if value is not None:
+                condition &= Attr(field).eq(value)
+        params = {"KeyConditionExpression": Key("pk").eq(_files_pk(tenant_id, user_id))
+                  & Key("sk").begins_with("FILE#"),
+                  "FilterExpression": condition, "ScanIndexForward": False, "Limit": limit}
+        if cursor:
+            try:
+                (file_id,) = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+            except (ValueError, TypeError) as e:
+                raise InvalidCursor(cursor) from e
+            if not isinstance(file_id, str):
+                raise InvalidCursor(cursor)
+            params["ExclusiveStartKey"] = {"pk": _files_pk(tenant_id, user_id), "sk": f"FILE#{file_id}"}
+        result = self.table.query(**params)
+        last = result.get("LastEvaluatedKey")
+        next_cursor = base64.urlsafe_b64encode(json.dumps([last["sk"].removeprefix("FILE#")]).encode()) \
+            .decode().rstrip("=") if last else None
+        return [_file(item) for item in result["Items"]], next_cursor
+
+    def delete(self, tenant_id: str, user_id: str, file_id: str) -> File | None:
+        """Removes the record, and its name in its conversation; returns it (its versions are in S3), or None."""
+        try:
+            result = self.table.delete_item(Key={"pk": _files_pk(tenant_id, user_id), "sk": f"FILE#{file_id}"},
+                                            ConditionExpression="attribute_exists(pk)", ReturnValues="ALL_OLD")
+        except ClientError as e:
+            if is_condition_failure(e):
+                return None
+            raise
+        file = _file(result["Attributes"])
+        if file.source == "assistant" and file.thread_id and self.named(tenant_id, user_id, file.thread_id,
+                                                                        file.name) == file_id:
+            self.table.delete_item(Key={"pk": _files_pk(tenant_id, user_id), "sk": _named_sk(file.thread_id,
+                                                                                               file.name)})
+        return file
+
+    def delete_all(self, tenant_id: str, user_id: str) -> int:
+        """Every record of the user's files (a removed member's). Returns how many records."""
+        params = {"KeyConditionExpression": Key("pk").eq(_files_pk(tenant_id, user_id)),
+                  "ProjectionExpression": "pk, sk"}
+        deleted = 0
+        with self.table.batch_writer() as batch:
+            while True:
+                result = self.table.query(**params)
+                for item in result["Items"]:
+                    batch.delete_item(Key={"pk": item["pk"], "sk": item["sk"]})
+                deleted += len(result["Items"])
+                if "LastEvaluatedKey" not in result:
+                    return deleted
+                params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
 
 
 def _expiry(expires_at: int | None, values: dict) -> tuple[str, str]:

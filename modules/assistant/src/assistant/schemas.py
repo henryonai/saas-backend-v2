@@ -28,12 +28,12 @@ AG-UI is the only contract. Anything new the frontend needs goes out as an
 AG-UI event (CUSTOM for what AG-UI has no event for), never in a format of
 our own: the tests check every stream against the order AG-UI clients enforce.
 """
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from assistant.agent_names import MAIN_AGENT
-from assistant.models import Conversation, Rating
+from assistant.models import Conversation, FileKind, FileSource, FileVersion, Rating
 
 # The agent endpoint's RUN_ERROR codes, by status, like the HTTP API's errors;
 # the names AgentCore uses for its own where they overlap.
@@ -53,13 +53,22 @@ ERROR_CODES = {
 
 class MessageIn(BaseModel):
     id: str = Field(min_length=1, max_length=100)        # the client's id for it: the history keeps it
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(default="", max_length=4000)    # may be empty with attachments
+    # The user's files it is sent with: ids from POST /assistant/files, uploaded. The message's
+    # content is then AG-UI parts: its text, and an image or document part per file (a file source).
+    attachments: list[str] = Field(default=[], max_length=5)
     agent: str = Field(default=MAIN_AGENT, max_length=64)   # an agent's `name` (agents/*.md)
     # An edit: the id of the user's earlier message this one is a new
     # version of; the old one stays, with what came after it. Its own id
     # (or the newest question's id sent again: Try again) answers it again,
     # and the old answer stays a version.
     replaces: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def _says_something(self) -> "MessageIn":
+        if not self.content.strip() and not self.attachments and self.replaces != self.id:
+            raise ValueError("Write a message, or attach a file.")
+        return self
 
 
 class ConversationRename(BaseModel):
@@ -76,6 +85,12 @@ class MemoryIn(BaseModel):
 
 class MemorySettings(BaseModel):
     enabled: bool   # off: agents neither see nor save memories; what is saved stays until deleted
+
+
+class UploadIn(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    content_type: str | None = Field(default=None, max_length=200)   # as the browser has it; else from the name
+    size: int = Field(gt=0)   # bytes: the upload must be exactly this (images up to 5 MB, other files 20 MB)
 
 
 class VersionIn(BaseModel):
@@ -139,6 +154,39 @@ class MemoryList(BaseModel):
     enabled: bool             # whether agents remember things about the user
     items: list[MemoryOut]    # oldest first
     limit: int                # the most kept: an agent with memory is sent them all
+
+
+class FileOut(BaseModel):
+    file_id: str
+    name: str
+    content_type: str
+    kind: FileKind           # image, text, data, document or other
+    size: int                # bytes, of the newest version
+    source: FileSource       # upload: the user attached it; assistant: an agent made it
+    status: Literal["pending", "ready"]   # pending: uploaded, not sent with a message yet
+    created_at: str
+    updated_at: str
+    versions: list[FileVersion]   # oldest first; an agent saving it again adds one
+    thread_id: str | None = None  # the conversation it was attached to or made in
+    agent: str | None = None      # the agent that made it
+
+
+class FileDetail(FileOut):
+    download_url: str             # a short-lived link that downloads it (the version asked for, or the newest)
+    view_url: str | None = None   # for an image: a short-lived link that shows it
+
+
+class FilePage(BaseModel):
+    items: list[FileOut]
+    next_cursor: str | None = None   # pass back as ?cursor= to get the next page
+
+
+class UploadOut(BaseModel):
+    file: FileOut
+    # A presigned POST to S3, for 15 minutes: a multipart form with these fields, then the
+    # file as the last field, "file". The file's id goes in the message's `attachments`.
+    url: str
+    fields: dict[str, str]
 
 
 class RunOut(BaseModel):

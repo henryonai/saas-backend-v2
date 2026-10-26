@@ -143,7 +143,7 @@ fields such as `subscription_revision`).
 | Event | Published by | Used by |
 |---|---|---|
 | `UserInvited` | accounts | notifications (invitation email) |
-| `MemberRemoved` | accounts | assistant (deletes the member's conversations in that workspace) |
+| `MemberRemoved` | accounts | assistant (deletes the member's conversations, memories and files in that workspace) |
 | `OrderCreated` | orders | notifications (in-app) |
 | `SubscriptionChanged` (with `revision`) | billing | accounts (plan copy), notifications |
 | `PaymentFailed` | billing | notifications |

@@ -10,13 +10,38 @@ from aws_lambda_powertools import Logger
 
 from shared.auth import CurrentUser
 from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached, TooManyRequests
+from shared.ids import sortable_id
 from shared.plans import get_limit
 
 from assistant.agent_names import MAIN_AGENT, agent_names
 from assistant.context import SESSION_ID, AgentContext, actor_of, checkpoint_session
-from assistant.models import Conversation, Memory, Rating, Run, Usage, current_month, iso, now_iso
+from assistant.files import (
+    IMAGES,
+    MAX_FILE_BYTES,
+    MAX_IMAGE_BYTES,
+    FileStore,
+    accepted,
+    clean_name,
+    content_type_of,
+    kind_of,
+    object_key,
+)
+from assistant.models import (
+    Attachment,
+    Conversation,
+    File,
+    FileVersion,
+    Memory,
+    Rating,
+    Run,
+    Usage,
+    current_month,
+    iso,
+    now_iso,
+)
 from assistant.repository import (
     ConversationRepository,
+    FileRepository,
     InvalidCursor,
     MemoryRepository,
     UsageLimitReached,
@@ -30,6 +55,7 @@ logger = Logger()
 
 MESSAGES = "assistant_messages_per_month"
 MESSAGES_PER_HOUR = "assistant_messages_per_user_hour"
+UPLOADS_PER_HOUR = "assistant_uploads_per_user_hour"
 TOKENS = "assistant_tokens_per_month"
 SANDBOX_SESSIONS = "assistant_sandbox_sessions_per_month"
 
@@ -63,20 +89,28 @@ class UsageService:
                                    f"{user.plan} plan. Upgrade for more.")
 
     def _start_hourly_message(self, user: CurrentUser) -> None:
+        self._count_hourly(user, MESSAGES_PER_HOUR, "HOUR", "send the assistant {limit} messages")
+
+    def start_upload(self, user: CurrentUser) -> None:
+        """Call before a file is uploaded: raises TooManyRequests (429) at the user's hourly limit."""
+        self._count_hourly(user, UPLOADS_PER_HOUR, "UPLOADS", "attach {limit} files")
+
+    def _count_hourly(self, user: CurrentUser, limit_name: str, counter: str, what: str) -> None:
         """
         A fixed window, the calendar hour in UTC, as one counter per user and
         hour: at most twice the limit can fit in an hour that straddles two.
         """
-        per_hour = get_limit(user.plan, MESSAGES_PER_HOUR)
+        per_hour = get_limit(user.plan, limit_name)
         if per_hour is None:
             return
         now = datetime.now(UTC)
         hour_ends = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         if not self.usage.add_hourly_message(user.require_tenant(), user.user_id, now.strftime("%Y-%m-%dT%H"),
-                                             per_hour, expires_at=int(hour_ends.timestamp()) + 3600):
-            logger.info("Hourly message limit reached", extra={"limit": per_hour, "plan": user.plan})
+                                             per_hour, expires_at=int(hour_ends.timestamp()) + 3600, counter=counter):
+            label = "Hourly message limit reached" if counter == "HOUR" else "Hourly upload limit reached"
+            logger.info(label, extra={"limit": per_hour, "plan": user.plan})
             minutes = max(1, math.ceil((hour_ends - now).total_seconds() / 60))
-            raise TooManyRequests(f"You can send the assistant {per_hour} messages an hour. Try again in "
+            raise TooManyRequests(f"You can {what.format(limit=per_hour)} an hour. Try again in "
                                   f"{minutes} minute{'s' if minutes != 1 else ''}.")
 
     def within_token_cap(self, user: CurrentUser) -> bool:
@@ -187,6 +221,219 @@ class MemoryService:
     def set_enabled(self, user: CurrentUser, enabled: bool) -> None:
         """Memory on or off. Off, agents neither see nor save memories; what is saved stays until deleted."""
         self.memories.set_enabled(user.require_tenant(), user.user_id, enabled)
+
+
+MAX_ATTACHMENTS = 5        # files on one message
+MAX_FILE_VERSIONS = 50     # one file an agent saves again and again
+PENDING_SECONDS = 24 * 3600   # an upload not sent with a message goes after this (its record's TTL, the bucket's rule)
+
+
+@dataclass(frozen=True)
+class Upload:
+    """Where the browser sends a file: a presigned POST, `fields` then the file (files.S3FileStore.upload_form)."""
+    file: File
+    url: str
+    fields: dict
+
+
+class FileService:
+    """
+    The users' files (files.py): what they attach to messages, uploaded
+    straight to S3, and what agents make for them (tools/files.py), each
+    saved again in a conversation as a new version. Kept until their user
+    deletes them, or leaves the workspace; deleting a conversation keeps its
+    files.
+    """
+
+    def __init__(self, files: FileRepository, store: FileStore, usage: UsageService):
+        self.files = files
+        self.store = store
+        self.usage = usage
+
+    def start_upload(self, user: CurrentUser, name: str, content_type: str | None, size: int) -> Upload:
+        """
+        A new upload: its record (pending, gone in a day unless a message
+        takes it), and the presigned POST that takes exactly this file. 400
+        for a type or size not taken; 429 at the user's hourly limit.
+        """
+        tenant_id = user.require_tenant()
+        name = clean_name(name)
+        content_type = content_type_of(name, content_type)
+        if not accepted(name, content_type):
+            raise InvalidRequest(f"{name} can't be attached: attach images, text, data, documents or archives.")
+        limit = MAX_IMAGE_BYTES if content_type in IMAGES else MAX_FILE_BYTES
+        if not 0 < size <= limit:
+            raise InvalidRequest(f"{name} is too big: attach files up to {limit // (1024 * 1024)} MB.")
+        self.usage.start_upload(user)
+        now = datetime.now(UTC)
+        file = File(file_id=sortable_id(now), name=name, content_type=content_type, kind=kind_of(name, content_type),
+                    size=size, source="upload", status="pending", created_at=iso(now), updated_at=iso(now),
+                    versions=[FileVersion(version=1, size=size, created_at=iso(now))],
+                    expires_at=int(now.timestamp()) + PENDING_SECONDS)
+        self.files.create(tenant_id, user.user_id, file)
+        form = self.store.upload_form(object_key(tenant_id, user.user_id, file.file_id, 1), content_type, size)
+        return Upload(file, form["url"], form["fields"])
+
+    def check(self, user: CurrentUser, file_ids: list[str]) -> list[File]:
+        """
+        The user's files a message is sent with, each one uploaded already (or
+        kept from before), in order. Changes nothing: keep() does, once the
+        message counts. 400 or 404 for one that can't go.
+        """
+        tenant_id = user.require_tenant()
+        ids = list(dict.fromkeys(file_ids))
+        if len(ids) > MAX_ATTACHMENTS:
+            raise InvalidRequest(f"Attach at most {MAX_ATTACHMENTS} files to a message.")
+        found = []
+        for file_id in ids:
+            file = self.files.get(tenant_id, user.user_id, file_id)
+            if file is None:
+                raise NotFound("A file is gone: it was deleted, or its upload expired. Attach it again.")
+            if file.status == "pending" and self.store.size(object_key(tenant_id, user.user_id, file_id, 1)) is None:
+                raise InvalidRequest(f"{file.name} hasn't finished uploading.")
+            found.append(file)
+        return found
+
+    def keep(self, user: CurrentUser, files: list[File], thread_id: str) -> list[Attachment]:
+        """The files sent with a message (check()): kept from now on, in its conversation."""
+        tenant_id, kept = user.require_tenant(), []
+        for file in files:
+            if file.status == "pending":
+                self.store.keep(object_key(tenant_id, user.user_id, file.file_id, 1))
+                file = self.files.attach(tenant_id, user.user_id, file.file_id, thread_id, now_iso())
+                if file is None:
+                    raise NotFound("A file is gone: it was deleted meanwhile. Attach it again.")
+            kept.append(file.attachment())
+        return kept
+
+    def save(self, user: CurrentUser, *, name: str, data: bytes, content_type: str | None, thread_id: str,
+             agent: str | None) -> File:
+        """
+        A file an agent made in a conversation: new, or, saved under the same
+        name in the same conversation, its next version (up to
+        MAX_FILE_VERSIONS). Raises InvalidRequest (empty, too big) or Conflict.
+        """
+        tenant_id = user.require_tenant()
+        name = clean_name(name)
+        content_type = content_type_of(name, content_type)
+        if not data:
+            raise InvalidRequest(f"{name} is empty: nothing to save.")
+        if len(data) > MAX_FILE_BYTES:
+            raise InvalidRequest(f"{name} is too big: files are at most {MAX_FILE_BYTES // (1024 * 1024)} MB.")
+        now = now_iso()
+        named = self.files.named(tenant_id, user.user_id, thread_id, name)
+        file = named and self.files.get(tenant_id, user.user_id, named)
+        if file:
+            version = len(file.versions) + 1
+            if version > MAX_FILE_VERSIONS:
+                raise Conflict(f"{name} has {MAX_FILE_VERSIONS} versions, the most kept: save it under a new name.")
+            self.store.write(object_key(tenant_id, user.user_id, file.file_id, version), data, content_type)
+            saved = self.files.add_version(tenant_id, user.user_id, file.file_id,
+                                           FileVersion(version=version, size=len(data), created_at=now), content_type)
+            if saved is None:
+                raise Conflict(f"{name} was saved from elsewhere at the same moment: save it again.")
+        else:
+            saved = File(file_id=sortable_id(), name=name, content_type=content_type,
+                         kind=kind_of(name, content_type), size=len(data), source="assistant", status="ready",
+                         created_at=now, updated_at=now, versions=[FileVersion(version=1, size=len(data),
+                                                                               created_at=now)],
+                         thread_id=thread_id, agent=agent)
+            self.store.write(object_key(tenant_id, user.user_id, saved.file_id, 1), data, content_type)
+            self.files.create(tenant_id, user.user_id, saved)
+            self.files.name(tenant_id, user.user_id, thread_id, name, saved.file_id)
+        logger.info("File saved", extra={"file_id": saved.file_id, "version": len(saved.versions), "size": len(data),
+                                         "agent": agent, "session_id": thread_id})
+        return saved
+
+    def get(self, user: CurrentUser, file_id: str) -> File:
+        file = self.files.get(user.require_tenant(), user.user_id, file_id)
+        if file is None:
+            raise NotFound("No such file: it was deleted.")
+        return file
+
+    def read(self, user: CurrentUser, file_id: str) -> tuple[File, bytes]:
+        """A file kept (not a pending upload) and its newest version's bytes. Raises NotFound."""
+        file = self.kept(user, file_id)
+        return file, self.bytes_of(user, file)
+
+    def kept(self, user: CurrentUser, file_id: str) -> File:
+        """A file kept: sent with a message, or made by an agent. Raises NotFound."""
+        file = self.get(user, file_id)
+        if file.status != "ready":
+            raise NotFound("No such file: it was never sent with a message.")
+        return file
+
+    def bytes_of(self, user: CurrentUser, file: File) -> bytes:
+        """Its newest version's bytes."""
+        return self.store.read(object_key(user.require_tenant(), user.user_id, file.file_id, len(file.versions)))
+
+    def links(self, user: CurrentUser, file_id: str, version: int | None = None) -> tuple[File, str, str | None]:
+        """
+        The file, a link that downloads it (a version, or the newest), and
+        one that shows it, for an image. Short-lived (files.URL_SECONDS).
+        """
+        file = self.get(user, file_id)
+        version = version or len(file.versions)
+        if not 1 <= version <= len(file.versions):
+            raise NotFound(f"{file.name} has no version {version}.")
+        key = object_key(user.require_tenant(), user.user_id, file_id, version)
+        view = self.store.link(key, file.name, file.content_type, inline=True) if file.kind == "image" else None
+        return file, self.store.link(key, file.name, file.content_type), view
+
+    def list(self, user: CurrentUser, limit: int, cursor: str | None = None, *, source: str | None = None,
+             kind: str | None = None, thread_id: str | None = None) -> tuple[list[File], str | None]:
+        try:
+            return self.files.list(user.require_tenant(), user.user_id, limit, cursor, source=source, kind=kind,
+                                   thread_id=thread_id)
+        except InvalidCursor:
+            raise InvalidRequest("Pass the next_cursor of the previous page as ?cursor=.")
+
+    def delete(self, user: CurrentUser, file_id: str) -> None:
+        """The file and every version of it. A message it was on still names it, as a file that is gone."""
+        tenant_id = user.require_tenant()
+        file = self.files.delete(tenant_id, user.user_id, file_id)
+        if file is None:
+            raise NotFound("No such file: it was deleted.")
+        self.store.delete([object_key(tenant_id, user.user_id, file_id, v.version) for v in file.versions])
+        logger.info("File deleted", extra={"file_id": file_id, "source": file.source})
+
+    def delete_all(self, tenant_id: str, user_id: str) -> int:
+        """Every file of a member who left the workspace (the purge worker). Returns how many objects."""
+        self.files.delete_all(tenant_id, user_id)
+        return self.store.delete_prefix(f"{tenant_id}/{user_id}/")
+
+
+def user_content(text: str, attachments: list[Attachment]) -> str | list[dict]:
+    """
+    A user message's AG-UI content: its text, or, with files, a text part and
+    a part for each (an image, or a document), naming it by its id (a file
+    source: a handle only this app resolves, GET /assistant/files/{id}).
+    """
+    if not attachments:
+        return text
+    parts: list[dict] = [{"type": "text", "text": text}] if text else []
+    for attachment in attachments:
+        parts.append({"type": "image" if attachment.kind == "image" else "document",
+                      "source": {"type": "file", "value": attachment.file_id, "mimeType": attachment.content_type},
+                      "metadata": {"name": attachment.name, "size": attachment.size, "kind": attachment.kind}})
+    return parts
+
+
+def user_parts(content) -> tuple[str, list[Attachment]]:
+    """A user message's text and files, from its AG-UI content (user_content's)."""
+    if not isinstance(content, list):
+        return content if isinstance(content, str) else "", []
+    text = "\n".join(part.get("text") or "" for part in content if part.get("type") == "text")
+    attachments = []
+    for part in content:
+        source, metadata = part.get("source") or {}, part.get("metadata") or {}
+        if part.get("type") in ("image", "document") and source.get("type") == "file":
+            content_type = source.get("mimeType") or "application/octet-stream"
+            name = metadata.get("name") or "file"
+            attachments.append(Attachment(file_id=source["value"], name=name, content_type=content_type,
+                                          size=metadata.get("size") or 0,
+                                          kind=metadata.get("kind") or kind_of(name, content_type)))
+    return text, attachments
 
 
 TITLE_CHARS = 80               # a conversation's title, however it was set
@@ -344,14 +591,16 @@ class ConversationService:
     delete.
     """
 
-    def __init__(self, conversations: ConversationRepository, purge: PurgeQueue, usage: UsageService, days: int):
+    def __init__(self, conversations: ConversationRepository, purge: PurgeQueue, usage: UsageService, days: int,
+                 files: FileService | None = None):
         self.conversations = conversations
         self.purge = purge
         self.usage = usage
         self.days = days
+        self.files = files
 
     def send(self, user: CurrentUser, thread_id: str, message_id: str, content: str, agent: str,
-             replaces: str | None = None) -> Run:
+             replaces: str | None = None, attachments: list[str] = ()) -> Run:
         """
         Saves the user's message, and the run that will answer it, before
         anything runs: the conversation has them from now on, whatever the
@@ -367,7 +616,9 @@ class ConversationService:
         answered again, and its old answer stays as a version. The agent goes
         back to before it too (Run.rewind_to), or, when its checkpoints are
         of another version of the conversation, starts again from the
-        history of this one (Run.restore).
+        history of this one (Run.restore). `attachments`: the ids of the
+        user's files it is sent with (FileService), kept from then on; a
+        message answered again keeps its own.
         """
         tenant_id = user.require_tenant()
         if not SESSION_ID.fullmatch(thread_id):
@@ -383,7 +634,9 @@ class ConversationService:
         if replaces is None and conversation and conversation.question_id == message_id:
             replaces = message_id
         tree = conversation.tree() if conversation else Tree.load(None, None, 0)
-        message: dict | None = {"id": message_id, "role": "user", "content": content}
+        new = True   # a new message (or a new version of one), not one answered again
+        files: list[File] = []
+        kept: list[Attachment] = []
         position = tree.count + 1
         if replaces is not None:
             found = conversation and self.conversations.find_message(tenant_id, user.user_id, thread_id, replaces,
@@ -392,32 +645,42 @@ class ConversationService:
                 raise NotFound("No such message of yours in this conversation.")
             position = found.position
             if replaces == message_id:   # answered again: the message stays, its old answer is a version
-                message, content = None, self._question(user, thread_id, tree, position) or content
+                new, (text, kept) = False, self._question(user, thread_id, tree, position)
+                content = text if text or kept else content
                 tree = tree.branched(position + 1) if tree.count > position else tree
             else:
                 tree = tree.branched(position)
-        if message is not None:
+        if new:
             tree = tree.grown(1)
+            if attachments:
+                if self.files is None:
+                    raise InvalidRequest("This assistant takes no files.")
+                files = self.files.check(user, list(attachments))
+            if not content.strip() and not files:
+                raise InvalidRequest("Write a message, or attach a file.")
         self.usage.start_message(user)
+        if files:
+            kept = self.files.keep(user, files, thread_id)
+        message = {"id": message_id, "role": "user", "content": user_content(content, kept)} if new else None
         now = datetime.now(UTC)
         # The agent's checkpoints are of the conversation as it is (or there are none yet to be wrong).
         current = conversation is None or conversation.rev is None or conversation.heads.get(agent) == conversation.rev
         first = conversation is None or (position == 1 and conversation.title_source == "message")
         run = Run(run_id=str(uuid4()), message_id=message_id, prompt=content, agent=agent, since=iso(now),
-                  first=first, rewind_to=replaces if current else None, restore=not current)
+                  first=first, rewind_to=replaces if current else None, restore=not current, attachments=kept)
+        title = first_message_title(content) or (kept[0].name if kept else "New conversation")
         saved = self.conversations.add_question(
-            tenant_id, user.user_id, thread_id, message=message, run=run, title=first_message_title(content),
+            tenant_id, user.user_id, thread_id, message=message, run=run, title=title,
             before=conversation, tree=tree, now=run.since, expires_at=_expires_at(self.days),
             stale_before=iso(now - RUN_LIMIT))
         if not saved:
             raise Conflict(STILL_ANSWERING)   # sent from another tab a moment ago
         return run
 
-    def _question(self, user: CurrentUser, thread_id: str, tree: Tree, position: int) -> str | None:
-        """The text of the user's message at `position`, as it was saved: what answering it again answers."""
+    def _question(self, user: CurrentUser, thread_id: str, tree: Tree, position: int) -> tuple[str, list[Attachment]]:
+        """The user's message at `position`, as it was saved, its text and files: what answering it again answers."""
         message = self.conversations.message(user.require_tenant(), user.user_id, thread_id, tree.node(position))
-        content = message and message.get("content")
-        return content if isinstance(content, str) else None
+        return user_parts((message or {}).get("content"))
 
     def show_version(self, user: CurrentUser, thread_id: str, message_id: str,
                      version: int) -> tuple[Conversation, HistoryPage]:

@@ -34,6 +34,7 @@ interface Sent {
   content: string;
   agent: string;
   replaces?: string;
+  attachments?: string[];
 }
 
 /**
@@ -59,6 +60,9 @@ function backend(...answers: Answer[]) {
   // Each conversation's messages with other versions, and what showing one of them shows: `${messageId}/${version}`.
   const versions = new Map<string, Record<string, { index: number; count: number }>>();
   const shownVersions = new Map<string, { messages: Message[]; versions: Record<string, { index: number; count: number }> }>();
+  // Files: the uploads S3 got, and each file's record.
+  const uploads: FormData[] = [];
+  const files = new Map<string, Record<string, unknown>>();
 
   function keep(threadId: string, title: string, messages: Message[]) {
     const now = new Date().toISOString();
@@ -68,6 +72,10 @@ function backend(...answers: Answer[]) {
 
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
+    if (url.startsWith('https://s3.test')) {
+      uploads.push(init?.body as FormData);
+      return new Response(null, { status: 204 });
+    }
     if (url.startsWith('https://agent.test')) {
       const run: Run = JSON.parse(String(init?.body));
       runs.push(run);
@@ -89,6 +97,16 @@ function backend(...answers: Answer[]) {
     calls.push(`${method} ${path}`);
     if (path === '/tenants/me') return json({ tenant_id: 'tenant-1', name: 'Acme Coffee', plan: 'free' });
     if (path === '/notifications') return json([]);
+    if (path === '/assistant/files' && method === 'POST') {
+      const { name, content_type, size } = JSON.parse(String(init?.body));
+      const file = { file_id: `f${files.size + 1}`, name, content_type, size, kind: content_type.startsWith('image/') ? 'image' : 'text', source: 'upload', status: 'pending', created_at: '', updated_at: '', versions: [], thread_id: null, agent: null };
+      files.set(file.file_id, file);
+      return json({ file, url: 'https://s3.test/', fields: { key: `t/u/${file.file_id}/1` } }, 201);
+    }
+    if (path.startsWith('/assistant/files/')) {
+      const fileId = path.split('/')[3];
+      return json({ ...files.get(fileId), file_id: fileId, download_url: `https://s3.test/download/${fileId}`, view_url: `https://s3.test/view/${fileId}` });
+    }
     if (path === '/assistant/conversations') {
       return json({ items: [...conversations.values()].reverse(), next_cursor: null });
     }
@@ -146,7 +164,7 @@ function backend(...answers: Answer[]) {
     return json({ message: 'Not Found' }, 404);
   }));
   return {
-    runs, sent, calls, conversations, histories, running, keep, ratings, rated, earlierFrom, earlier, versions, shownVersions,
+    runs, sent, calls, conversations, histories, running, keep, ratings, rated, earlierFrom, earlier, versions, shownVersions, uploads, files,
     refuse: (status: number, message: string) => refusals.push({ status, message }),
   };
 }
@@ -372,6 +390,26 @@ describe('chatting', () => {
     expect(screen.getAllByText(/Once upon/)).toHaveLength(1);
   });
 
+  it('attaches a file: uploaded to S3 at once, then sent with the message, which shows it', async () => {
+    const server = backend(finished(...text('m1', 'Buy green tea.')));
+    renderAt('/assistant');
+    const user = userEvent.setup();
+    await user.upload(await screen.findByLabelText('Files to attach'), new File(['Buy more green tea.'], 'notes.txt', { type: 'text/plain' }));
+    const attached = within(await screen.findByRole('list', { name: 'Files attached' }));
+    expect(await attached.findByText('notes.txt')).toBeInTheDocument();
+    // Once it is up, the file alone could be sent.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+    expect(server.uploads).toHaveLength(1);
+
+    await ask('What do I need?');
+
+    expect(await screen.findByText('Buy green tea.')).toBeInTheDocument();
+    expect(server.sent).toEqual([expect.objectContaining({ content: 'What do I need?', attachments: ['f1'] })]);
+    expect(server.uploads[0].get('key')).toBe('t/u/f1/1');
+    expect(screen.getByRole('button', { name: 'Download notes.txt' })).toBeInTheDocument(); // on the message
+    expect(screen.queryByRole('list', { name: 'Files attached' })).not.toBeInTheDocument(); // the composer is clear
+  });
+
   it('starts a new conversation with a new threadId', async () => {
     const server = backend(finished(...text('m1', 'Hello!')), finished(...text('m2', 'Hi again.')));
     const router = renderAt('/assistant');
@@ -575,6 +613,33 @@ describe('conversations', () => {
     expect(await screen.findByText('What did we order?')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Show earlier messages' })).not.toBeInTheDocument();
     expect(server.calls.filter((call) => call === `GET /assistant/conversations/${THREAD}/messages`)).toHaveLength(2);
+  });
+
+  it('shows the files on a message, an image as itself, and offers what an agent saved', async () => {
+    const server = backend();
+    server.files.set('f9', { name: 'receipt.png', kind: 'image' });
+    const saved = { file_id: 'f7', name: 'report.md', content_type: 'text/markdown', size: 2048, version: 2 };
+    server.keep(THREAD, 'Receipt', [
+      { id: 'u1', role: 'user', content: [
+        { type: 'text', text: 'Write up this receipt' },
+        { type: 'image', source: { type: 'file', value: 'f9', mimeType: 'image/png' }, metadata: { name: 'receipt.png', size: 2048, kind: 'image' } },
+      ] } as Message,
+      { id: 'a1', role: 'assistant', content: '', toolCalls: [{ id: 'c1', type: 'function', function: { name: 'write_file', arguments: '{"name": "report.md", "content": "# Receipt"}' } }] },
+      { id: 't1', role: 'tool', toolCallId: 'c1', content: JSON.stringify(saved) },
+      { id: 'a2', role: 'assistant', content: 'Here is the write-up.' },
+    ]);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+
+    expect(await screen.findByRole('img', { name: 'Image: receipt.png' })).toHaveAttribute('src', 'https://s3.test/view/f9');
+    expect(screen.getByText('Write up this receipt')).toBeInTheDocument();
+    expect(screen.getByText(/version 2/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Download report.md' }));
+
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    expect(server.calls).toContain('GET /assistant/files/f7');
+    click.mockRestore();
   });
 
   it("says when a conversation isn't there any more", async () => {

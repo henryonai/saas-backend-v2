@@ -107,6 +107,24 @@ export interface paths {
         patch: operations["edit_memory_assistant_memories__memory_id__patch"];
         trace?: never;
     };
+    "/assistant/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /assistant/files/{file_id} */
+        get: operations["get_file_assistant_files__file_id__get"];
+        put?: never;
+        post?: never;
+        /** DELETE /assistant/files/{file_id} */
+        delete: operations["delete_file_assistant_files__file_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assistant/conversations": {
         parameters: {
             query?: never;
@@ -142,6 +160,24 @@ export interface paths {
         head?: never;
         /** PATCH /assistant/memories */
         patch: operations["set_memory_assistant_memories_patch"];
+        trace?: never;
+    };
+    "/assistant/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /assistant/files */
+        get: operations["list_files_assistant_files_get"];
+        put?: never;
+        /** POST /assistant/files */
+        post: operations["start_upload_assistant_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
 }
@@ -211,6 +247,98 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** FileDetail */
+        FileDetail: {
+            /** File Id */
+            file_id: string;
+            /** Name */
+            name: string;
+            /** Content Type */
+            content_type: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "image" | "text" | "data" | "document" | "other";
+            /** Size */
+            size: number;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "upload" | "assistant";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "ready";
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Versions */
+            versions: components["schemas"]["FileVersion"][];
+            /** Thread Id */
+            thread_id?: string | null;
+            /** Agent */
+            agent?: string | null;
+            /** Download Url */
+            download_url: string;
+            /** View Url */
+            view_url?: string | null;
+        };
+        /** FileOut */
+        FileOut: {
+            /** File Id */
+            file_id: string;
+            /** Name */
+            name: string;
+            /** Content Type */
+            content_type: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "image" | "text" | "data" | "document" | "other";
+            /** Size */
+            size: number;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "upload" | "assistant";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "ready";
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Versions */
+            versions: components["schemas"]["FileVersion"][];
+            /** Thread Id */
+            thread_id?: string | null;
+            /** Agent */
+            agent?: string | null;
+        };
+        /** FilePage */
+        FilePage: {
+            /** Items */
+            items: components["schemas"]["FileOut"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** FileVersion */
+        FileVersion: {
+            /** Version */
+            version: number;
+            /** Size */
+            size: number;
+            /** Created At */
+            created_at: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -252,8 +380,16 @@ export interface components {
         MessageIn: {
             /** Id */
             id: string;
-            /** Content */
+            /**
+             * Content
+             * @default
+             */
             content: string;
+            /**
+             * Attachments
+             * @default []
+             */
+            attachments: string[];
             /**
              * Agent
              * @default assistant
@@ -294,6 +430,25 @@ export interface components {
         RunOut: {
             /** Run Id */
             run_id: string;
+        };
+        /** UploadIn */
+        UploadIn: {
+            /** Name */
+            name: string;
+            /** Content Type */
+            content_type?: string | null;
+            /** Size */
+            size: number;
+        };
+        /** UploadOut */
+        UploadOut: {
+            file: components["schemas"]["FileOut"];
+            /** Url */
+            url: string;
+            /** Fields */
+            fields: {
+                [key: string]: string;
+            };
         };
         /** ValidationError */
         ValidationError: {
@@ -664,6 +819,70 @@ export interface operations {
             };
         };
     };
+    get_file_assistant_files__file_id__get: {
+        parameters: {
+            query?: {
+                version?: number | null;
+            };
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_file_assistant_files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_conversations_assistant_conversations_get: {
         parameters: {
             query?: {
@@ -807,6 +1026,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemoryList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_files_assistant_files_get: {
+        parameters: {
+            query?: {
+                source?: ("upload" | "assistant") | null;
+                kind?: ("image" | "text" | "data" | "document" | "other") | null;
+                thread_id?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_upload_assistant_files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadOut"];
                 };
             };
             /** @description Validation Error */

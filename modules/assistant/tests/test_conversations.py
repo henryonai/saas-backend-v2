@@ -1296,10 +1296,12 @@ def member_removed(tenant_id: str, user_id: str, occurred_at: str) -> dict:
                        "user_id": user_id, "removed_by": "owner"}}
 
 
-def test_a_removed_members_conversations_and_memories_go(ctx, checkpoints):
+def test_a_removed_members_conversations_memories_and_files_go(ctx, checkpoints):
     alice, bob = claims("alice", "t1", "member"), claims("bob", "t1", "member")
     for user in (alice, bob):
         ctx.memories.remember(user_from_claims(user), "Likes short answers")
+        ctx.files.save(user_from_claims(user), name="report.md", data=b"# Hi", content_type=None, thread_id=THREAD,
+                       agent="assistant")
     ctx.memories.set_enabled(user_from_claims(alice), False)
     start(ctx, thread(1), "2026-10-24T08:00:00.000Z")
     start(ctx, thread(2), "2026-10-24T09:00:00.000Z", expires_in=-60)   # expired, TTL hasn't removed it yet
@@ -1313,12 +1315,16 @@ def test_a_removed_members_conversations_and_memories_go(ctx, checkpoints):
 
     with captured_logs(assistant.purge.logger) as logs:
         assert process_batch(message, FakeContext(), checkpoints.purge, ctx.conversations,
-                             ctx.memories.memories) == {"batchItemFailures": []}
+                             ctx.memories.memories, ctx.files) == {"batchItemFailures": []}
 
     assert {i["pk"] for i in ctx.table.scan()["Items"] if "#CONV#" in i["pk"]} == {
         f"TENANT#t1#USER#alice#CONV#{thread(4)}", f"TENANT#t1#USER#bob#CONV#{thread(3)}"}
     assert ctx.memories.read(user_from_claims(alice)) == (True, [])   # memories and setting
     assert len(ctx.memories.read(user_from_claims(bob))[1]) == 1
+    assert ctx.files.list(user_from_claims(alice), 10)[0] == []
+    assert len(ctx.files.list(user_from_claims(bob), 10)[0]) == 1
+    objects = ctx.s3.list_objects_v2(Bucket="assistant-files-test")["Contents"]
+    assert [o["Key"].split("/")[1] for o in objects] == ["bob"]
     assert checkpoints.left(mine) == {} and checkpoints.left(bobs) != {}
     assert [line["conversations"] for line in logs() if line["message"].startswith("Purged a removed")] == [2]
     # Delivered again (at least once): nothing left to do, nothing else goes.

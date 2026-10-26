@@ -5,17 +5,20 @@ from pydantic import ValidationError
 from assistant import container
 
 SETTINGS = {"ASSISTANT_TABLE": "assistant-dev", "CHECKPOINT_TABLE": "checkpoints-dev",
-            "CHECKPOINT_BUCKET": "checkpoints-dev", "API_URL": "https://api.example.com", "REGION": "ap-southeast-1",
+            "CHECKPOINT_BUCKET": "checkpoints-dev", "FILES_BUCKET": "files-dev", "API_URL": "https://api.example.com",
+            "REGION": "ap-southeast-1",
             "SANDBOX_ID": "saas_dev_sandbox-abcdefghij", "OPENROUTER_API_KEY_PARAM": "/saas/test/openrouter-api-key"}
 
 
 @pytest.fixture(autouse=True)
 def fresh_container():
-    for cached in (container.get_settings, container.get_usage_service, container.get_agents):
-        cached.cache_clear()
+    cached = (container.get_settings, container.get_usage_service, container.get_agents, container.get_memories,
+              container.get_file_service)
+    for function in cached:
+        function.cache_clear()
     yield
-    for cached in (container.get_settings, container.get_usage_service, container.get_agents):
-        cached.cache_clear()
+    for function in cached:
+        function.cache_clear()
 
 
 def test_agents_build_from_settings(monkeypatch):

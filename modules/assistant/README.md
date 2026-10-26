@@ -24,6 +24,7 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
                    3. agent.stream(...)   built by factory.py from its Markdown file
                         ├─ UsageMiddleware         tokens of every model call → DynamoDB, stop at the cap
                         ├─ ConversationMiddleware  repair cut-off tool calls; send recent history only
+                        ├─ AttachmentsMiddleware   the images and text files on those messages, from S3
                         ├─ MemoryMiddleware        what it remembers about the user, in its system prompt
                         ├─ PlanToolsMiddleware     hide tools the plan doesn't include
                         ├─ Model/ToolCallLimit, ToolErrorMiddleware (built-in)
@@ -32,14 +33,17 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
                         ├─ tools ──user's own token──▶ HTTP API (/orders ...)
                         ├─ bash ──InvokeCodeInterpreter──▶ sandbox microVM (one per conversation,
                         │                                   no AWS role, no internet by default)
+                        ├─ write_file, save_file ──▶ S3 (AssistantFilesBucket), the user's files
+                        ├─ open_file ──S3──▶ writeFiles ──▶ the sandbox
                         └─ task ──▶ a subagent (fresh context, same user and sandbox, no checkpoints)
                       stops early when the user pressed Stop (asked once a second)
                       meanwhile, for a new conversation: titles.py, one small call for its title
                    4. ConversationLog.record     the history gets what streamed (AG-UI messages),
                                                  then the conversation's run is removed
 
+browser ──presigned POST──▶ S3 (AssistantFilesBucket): a file to attach, before its message
 browser ──ID token──▶ HTTP API /assistant/conversations ──▶ handler.py (Lambda): list, open, rename,
-                                                              delete, stop an answer, rate one
+                      /assistant/memories, /files            delete, stop an answer, rate one; memories; files
                                                               └─ delete ──SQS──▶ purge.py: the checkpoints
 DynamoDB TTL removes an idle conversation's META ──stream──▶ purge.py: its messages and checkpoints
 ```
@@ -59,8 +63,10 @@ src/assistant/
 │   ├── orders.py        list_orders, get_order (the HTTP API, with the user's token)
 │   ├── usage.py         assistant_usage
 │   ├── bash.py          bash (the sandbox)
-│   └── memory.py        remember, forget (agents with `memory: user`)
-├── middleware/          one file per middleware (usage, conversation, memory, plan_tools, errors)
+│   ├── memory.py        remember, forget (agents with `memory: user`)
+│   └── files.py         write_file, save_file, open_file (the user's files)
+├── middleware/          one file per middleware (usage, conversation, attachments, memory, plan_tools, errors)
+├── files.py             the users' files in S3: what may be uploaded, presigned uploads and links
 ├── titles.py            names a new conversation from its first message, while the agent answers
 ├── app.py               AgentCore entry point (the SDK's AGUIApp): auth, the run, stop, history, stream
 ├── stop.py              Stop ends the run's model call, and estimates what the call cost
@@ -71,7 +77,7 @@ src/assistant/
 ├── schemas.py           what the HTTP API and the AG-UI endpoint accept and return (no AG-UI import)
 ├── checkpoints.py       deletes a thread's checkpoints, as DynamoDBSaver laid them out (boto3 only)
 ├── sandbox.py           AgentCore Code Interpreter adapter: one sandbox per conversation
-├── service.py, repository.py, models.py   usage per workspace; conversations and their history; memories
+├── service.py, repository.py, models.py   usage per workspace; conversations and their history; memories; files
 ├── api.py, handler.py   Lambda: the HTTP API for the users' conversations (sending a message too) and memories
 ├── agent_names.py       the agents' names without loading them, for that Lambda
 ├── purge.py             Lambda: what is left of a deleted conversation or a removed member's (SQS), or an
@@ -235,6 +241,63 @@ checks the tenant and the role as it does for the frontend, no module imports
 another (rule 1), and the agent can never do more than the user could. The
 token reaches tools through `runtime.context`; the model never sees it.
 
+## Files (attachments, and what agents make)
+
+As in ChatGPT and Claude, a message can carry files, and an answer can leave
+files behind: a report, a table, a chart, each kept with its versions until
+the user deletes it (the web app's Files page; Guildloft's Artifacts page
+reads the same records). The bytes are in `AssistantFilesBucket`, one object
+per version (`<tenant>/<user>/<file_id>/<version>`); each file has a record in
+the assistant table (`FILE#<id>` under the user's `FILES` key: name, type,
+kind, size, versions, the conversation and the agent).
+
+- **Attaching** is two steps, so bytes never pass through a Lambda:
+  `POST /assistant/files` checks the type and size and gives a presigned
+  POST that takes exactly that file, tagged `pending`; the browser sends it
+  to S3. The message names it (`attachments`): `ConversationService.send`
+  checks each file is the user's and uploaded (HeadObject), counts the
+  message, then keeps the files (the tag goes, the record loses its TTL).
+  An upload never sent goes a day later, the record by TTL and the object by
+  the bucket's lifecycle rule on the tag. Images (PNG, JPEG, GIF, WebP) up
+  to 5 MB, the models' common limit; text, code, data (CSV, JSON, Excel),
+  documents (PDF, Word, PowerPoint) and archives up to 20 MB; 5 a message;
+  `assistant_uploads_per_user_hour` in `shared/plans.py` (Free 20, Pro 60,
+  Business 120), counted like messages.
+- **The message** keeps them as AG-UI parts: its text, then an `image` or
+  `document` part per file with a file source (`{"type": "file", "value":
+  <file id>}`, a handle only this app resolves) and its name and size. The
+  page shows them from there (`GET /assistant/files/{id}` for a link). An
+  edit keeps the message's files unless the page sends others; an answer
+  asked for again answers the message as it was saved, files and all.
+- **What the model gets** (`AttachmentsMiddleware`): the agent's state keeps
+  a line per file (name, type, size, id), never its bytes, so checkpoints
+  stay small; each model call is sent, among the messages it is sent, the
+  newest 4 images as images and text files inline, 20,000 characters each
+  and 60,000 in all (read from S3 once per version, cached in the microVM).
+  Anything else (a PDF, a spreadsheet), and whatever is past those limits,
+  the agent opens in the sandbox: `open_file` copies a file there
+  (`files/<name>`, Code Interpreter `writeFiles`) to read with code.
+- **Files agents make**: `write_file` saves text the agent wrote (Markdown,
+  CSV, JSON, HTML, SVG; no sandbox needed, so every plan has it);
+  `save_file` saves a file from the sandbox (`readFiles`): a chart drawn
+  with matplotlib, a spreadsheet. Saved under the same name in the same
+  conversation, it is the next version of that file (50 at most). The tool
+  result is the file as JSON, which the page shows as a card to download
+  (an image, shown). Each records the agent that made it (a subagent's
+  inside `task`).
+- **Downloads** are presigned GETs for 15 minutes, as attachments (`view_url`
+  shows an image inline): a file an agent wrote never opens as a page on the
+  app's origin. The bucket answers CORS for the app's origin (`CorsOrigin`),
+  for the uploads and for a text preview.
+- **Kept** until the user deletes it; deleting a conversation keeps its
+  files (the Files page links to a conversation that may be gone). A member
+  who leaves the workspace loses theirs with their conversations.
+- **IAM**: the HTTP API's role signs the uploads (`s3:PutObject`,
+  `s3:PutObjectTagging`), checks and keeps them, and links and deletes them;
+  the runtime reads attachments and writes what agents save; the purge
+  worker deletes a removed member's. `test_files.py` checks every S3 call
+  the code makes is allowed in `template.yaml`, as moto checks none.
+
 ## The terminal (bash tool)
 
 The `bash` tool gives the model a Linux shell (bash, Python, Node.js) in an
@@ -254,9 +317,9 @@ The `bash` tool gives the model a Linux shell (bash, Python, Node.js) in an
   workspace data, the model fetches it with the other tools and writes a file.
 - **Plan rule**: `assistant_sandbox_sessions_per_month` in `shared/plans.py`
   (Free 0 = not included, Pro 200, Business 2,000), counted with a conditional
-  update like messages. `PlanToolsMiddleware` hides the tool from plans
-  without it, and the tool refuses anyway (a model can call a tool it wasn't
-  shown). Output is cut to 10,000 characters per stream, keeping the start and
+  update like messages. `PlanToolsMiddleware` hides the sandbox's tools
+  (`bash`, `save_file`, `open_file`) from plans without it, and they refuse
+  anyway (a model can call a tool it wasn't shown). Output is cut to 10,000 characters per stream, keeping the start and
   the end.
 - **Cost**: the sandbox is billed like Runtime ($0.0895 per vCPU-hour, $0.00945
   per GB-hour in Singapore) for the minutes it is alive, at most 15 per
@@ -347,6 +410,10 @@ token (`handler.py`, a Lambda):
 | `PATCH /assistant/memories` `{"enabled"}` | memory on or off |
 | `PATCH`, `DELETE /assistant/memories/{memoryId}` | edit one, delete one |
 | `DELETE /assistant/memories` | forget everything (204; on or off stays) |
+| `POST /assistant/files` `{"name", "content_type"?, "size"}` | a file to attach: 201 `{file, url, fields}`, a presigned POST to S3 (400 for a type or size not taken, 429 at the hourly limit) |
+| `GET /assistant/files?source=&kind=&limit=30&cursor=` | the caller's files, newest first: what agents made (`assistant`) and what they attached (`upload`) |
+| `GET /assistant/files/{fileId}?version=` | a file with short-lived links: `download_url`, and `view_url` for an image |
+| `DELETE /assistant/files/{fileId}` | delete it, every version (204) |
 
 - **Sending** (`ConversationService.send`) counts the message against the
   plan, then saves it, creating the conversation the first time (titled with
@@ -641,10 +708,11 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   conversations.
 - **Tools that change data**: idempotency keys plus `HumanInTheLoopMiddleware`
   (needs a resume flow in the frontend).
-- **Terminal data in and out**: a tool that writes workspace data straight into
-  the sandbox (Code Interpreter `writeFiles`), so the model doesn't retype it;
-  and an S3 bucket the sandbox can write to, one prefix per tenant, for files
-  and charts the user can download.
+- **Workspace data into the sandbox**: a tool that writes the orders (or any
+  API data) straight into the sandbox, as `open_file` does for the user's
+  files, so the model doesn't retype them.
+- **Files**: a storage quota per workspace (uploads are limited per hour
+  only), PDFs sent to models that read them, and search over files.
 - **More tools or third-party APIs**: AgentCore Gateway (MCP) with interceptors,
   and AgentCore Identity for OAuth on the user's behalf.
 - **Guardrails** (Bedrock Guardrails) for prompt injection and PII; tool output

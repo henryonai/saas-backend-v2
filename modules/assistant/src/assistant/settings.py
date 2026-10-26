@@ -7,6 +7,7 @@ class AssistantSettings(BaseAppSettings):
     assistant_table: str
     checkpoint_table: str    # the agents' checkpoints of each conversation (DynamoDBSaver)
     checkpoint_bucket: str   # where a checkpoint over 350 KB goes
+    files_bucket: str        # the users' files: attached, and made by agents (files.py)
     api_url: str       # this stack's HTTP API, which the tools call with the user's token
     # Set explicitly in template.yaml: the AgentCore SDK falls back to us-west-2
     # when the environment doesn't name a region.
@@ -32,8 +33,9 @@ class AssistantSettings(BaseAppSettings):
 
 
 class ConversationsApiSettings(BaseAppSettings):
-    """The HTTP API's Lambda (handler.py): the users' conversations."""
+    """The HTTP API's Lambda (handler.py): the users' conversations, memories and files."""
     assistant_table: str
+    files_bucket: str      # uploads and downloads are presigned for it
     purge_queue_url: str   # where deleted conversations go for purge.py
     conversation_days: int = 0   # as the runtime's (AssistantSettings): sending a message moves the expiry on
 
@@ -43,3 +45,4 @@ class PurgeSettings(BaseAppSettings):
     assistant_table: str     # the messages of an expired conversation, or of a removed member's
     checkpoint_table: str
     checkpoint_bucket: str
+    files_bucket: str        # a removed member's files

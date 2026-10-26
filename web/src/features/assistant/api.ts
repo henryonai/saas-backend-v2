@@ -4,11 +4,15 @@ import type {
   AssistantConversation,
   AssistantConversationDetail,
   AssistantConversationPage,
+  AssistantFileDetail,
+  AssistantFileKind,
+  AssistantFilePage,
   AssistantMemory,
   AssistantMemoryList,
   AssistantMessagePage,
   AssistantRating,
   AssistantRun,
+  AssistantUpload,
 } from '@/shared/api/types';
 import { config } from '@/shared/config';
 
@@ -113,7 +117,7 @@ export function requestError(error: unknown): RunError {
  * Regenerate), keeping the old answer as a version. 402 at the plan's limit;
  * 429 at the user's hourly limit; 409 while the previous answer is coming.
  */
-export function postMessage(threadId: string, message: { id: string; content: string; agent: string; replaces?: string }) {
+export function postMessage(threadId: string, message: { id: string; content: string; agent: string; replaces?: string; attachments?: string[] }) {
   return api<AssistantRun>(`/assistant/conversations/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: message });
 }
 
@@ -195,6 +199,46 @@ export function deleteAllMemories() {
 /** Off: the assistant neither sees nor saves memories; what it saved stays until deleted. */
 export function setMemoryEnabled(enabled: boolean) {
   return api<AssistantMemoryList>('/assistant/memories', { method: 'PATCH', body: { enabled } });
+}
+
+/**
+ * Attaching a file: the API gives it an id and a presigned POST, and the
+ * browser sends it to S3 there (uploadFile). It goes with the message that
+ * names it; never sent, it is deleted a day later. 400 for a type or size
+ * not taken; 429 at the hourly limit.
+ */
+export function startUpload(file: { name: string; type: string; size: number }) {
+  return api<AssistantUpload>('/assistant/files', { method: 'POST', body: { name: file.name, content_type: file.type || null, size: file.size } });
+}
+
+/** The file to S3, as the presigned POST says: its fields, then the file. Throws an ApiError when S3 refuses it. */
+export async function uploadFile(upload: AssistantUpload, file: Blob, signal?: AbortSignal): Promise<void> {
+  const form = new FormData();
+  for (const [name, value] of Object.entries(upload.fields)) form.append(name, value);
+  form.append('file', file);
+  let response: Response;
+  try {
+    response = await fetch(upload.url, { method: 'POST', body: form, signal });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new ApiError(0, 'Network error');
+  }
+  if (!response.ok) throw new ApiError(response.status, `The upload failed (HTTP ${response.status}).`);
+}
+
+/** The user's files, newest first: what the assistant made (source assistant), what they attached (upload). */
+export function listFiles(query: { source?: 'upload' | 'assistant'; kind?: AssistantFileKind; limit?: number; cursor?: string }, signal?: AbortSignal) {
+  return api<AssistantFilePage>('/assistant/files', { query, signal });
+}
+
+/** A file, with short-lived links to download it (`version`, or the newest) and, an image, to show it. */
+export function getFile(fileId: string, version?: number, signal?: AbortSignal) {
+  return api<AssistantFileDetail>(`/assistant/files/${encodeURIComponent(fileId)}`, { query: { version }, signal });
+}
+
+/** Every version of it. A message it was on still names it, as a file that is gone. */
+export function deleteFile(fileId: string) {
+  return api<void>(`/assistant/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
 }
 
 /** The first `data:` line of an SSE body, parsed. */

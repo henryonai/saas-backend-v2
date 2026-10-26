@@ -8,7 +8,7 @@ from assistant.llm import chat_model, is_openrouter_model
 from assistant.settings import AssistantSettings
 
 REQUIRED = {"assistant_table": "assistant-dev", "checkpoint_table": "checkpoints-dev",
-            "checkpoint_bucket": "checkpoints-dev",
+            "checkpoint_bucket": "checkpoints-dev", "files_bucket": "files-dev",
             "api_url": "https://api.example.com", "region": "ap-southeast-1",
             "sandbox_id": "saas_dev_sandbox-abcdefghij"}
 

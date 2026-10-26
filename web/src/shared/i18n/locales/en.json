@@ -50,6 +50,7 @@
   "nav": {
     "account": "Account",
     "assistant": "Assistant",
+    "files": "Files",
     "billing": "Billing",
     "notifications": "Notifications",
     "orders": "Orders",
@@ -365,7 +366,10 @@
       "done": "Done",
       "remember": "Saved to memory",
       "rememberAgain": "Updated a memory",
-      "forget": "Forgot a memory"
+      "forget": "Forgot a memory",
+      "writeFile": "Write a file",
+      "saveFile": "Save a file",
+      "openFile": "Open a file in the terminal"
     },
     "memory": {
       "title": "Memory",
@@ -387,6 +391,57 @@
       "forgetAll": "Forget everything",
       "forgetAllTitle": "Forget everything?",
       "forgetAllDescription": "Everything the assistant remembers about you is deleted for good. Your conversations stay."
+    },
+    "files": {
+      "attach": "Attach files",
+      "choose": "Files to attach",
+      "attached": "Files attached",
+      "remove": "Remove {{name}}",
+      "failed": "Not attached",
+      "notAttached": "{{name}} wasn't attached: {{reason}}",
+      "tooMany": "Attach at most {{count}} files to a message.",
+      "download": "Download {{name}}",
+      "downloadShort": "Download",
+      "image": "Image: {{name}}",
+      "version": "version {{version}}"
+    }
+  },
+  "files": {
+    "title": "Files",
+    "description": "What the assistant made for you, and what you attached to messages. They stay until you delete them.",
+    "sourceLabel": "Show",
+    "sources": {
+      "all": "All",
+      "assistant": "Made by the assistant",
+      "upload": "Attached by you"
+    },
+    "kindLabel": "Kind",
+    "kinds": {
+      "all": "All kinds",
+      "image": "Images",
+      "text": "Text",
+      "data": "Data",
+      "document": "Documents",
+      "other": "Other"
+    },
+    "columns": {
+      "name": "Name",
+      "from": "From",
+      "size": "Size",
+      "updated": "Updated",
+      "actions": "Actions"
+    },
+    "versions_one": "{{count}} version",
+    "versions_other": "{{count}} versions",
+    "you": "You",
+    "openChat": "Open the conversation",
+    "delete": "Delete {{name}}",
+    "deleteShort": "Delete",
+    "deleteTitle": "Delete this file?",
+    "deleteDescription": "“{{name}}” and all its versions are deleted for good. Messages it was on show that it's gone.",
+    "empty": {
+      "title": "No files yet",
+      "description": "Attach files to your messages, or ask the assistant for a report, a table or a chart."
     }
   },
   "upgrade": {

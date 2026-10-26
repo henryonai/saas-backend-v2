@@ -33,7 +33,7 @@ import {
   useConversation,
 } from './conversation';
 import { refreshConversations, showNewConversation, useConversationHistory } from './hooks';
-import { toTurns } from './transcript';
+import { type AttachmentView, toTurns } from './transcript';
 
 const SUGGESTIONS = ['assistant.suggestions.orders', 'assistant.suggestions.usage', 'assistant.suggestions.analyze'] as const;
 
@@ -191,12 +191,12 @@ function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, 
     wasRunning.current = running;
   }, [running, queryClient]);
 
-  function send(text: string) {
+  function send(text: string, attachments: AttachmentView[] = []) {
     const { threadId, messages: before } = conversationStore.getState();
-    if (!text.trim()) return;
+    if (!text.trim() && attachments.length === 0) return;
     follow();
-    void sendMessage(text);
-    if (before.length === 0) onFirstMessage?.(threadId, text.trim());
+    void sendMessage(text, attachments);
+    if (before.length === 0) onFirstMessage?.(threadId, text.trim() || attachments[0].name);
   }
 
   function edit(messageId: string, text: string) {
@@ -252,6 +252,7 @@ function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, 
               <UserTurn
                 key={turn.id}
                 text={turn.text}
+                attachments={turn.attachments}
                 onEdit={running ? undefined : (text) => edit(turn.id, text)}
                 version={versions[turn.id]}
                 onVersion={running ? undefined : (version) => showVersion(turn.id, version)}

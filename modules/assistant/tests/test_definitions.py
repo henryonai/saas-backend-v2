@@ -9,7 +9,7 @@ from assistant.definitions import (
 )
 from assistant.llm import MODEL_ALIASES
 
-TOOLS = {"list_orders", "get_order", "assistant_usage", "bash"}
+TOOLS = {"list_orders", "get_order", "assistant_usage", "bash", "write_file", "save_file", "open_file"}
 
 
 def agent_md(front: str, body: str = "You are a test agent.") -> str:
@@ -24,7 +24,8 @@ def test_the_shipped_agents_load():
     agents = load_agents(TOOLS)
     assert set(agents) == {"assistant", "analyst"}
     assert agents["assistant"].subagents == ("analyst",)
-    assert agents["analyst"].tools == ("bash", "get_order", "list_orders") and agents["analyst"].max_turns == 12
+    assert agents["analyst"].tools == ("bash", "get_order", "list_orders", "open_file", "save_file", "write_file")
+    assert agents["analyst"].max_turns == 12
 
 
 def test_a_full_definition():

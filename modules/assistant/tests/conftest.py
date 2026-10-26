@@ -12,6 +12,7 @@ import time
 from types import SimpleNamespace
 from uuid import uuid4
 
+import boto3
 import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
@@ -20,22 +21,24 @@ from langgraph.checkpoint.memory import InMemorySaver
 from starlette.testclient import TestClient
 
 from assistant.app import create_app
-from assistant.container import get_conversation_service, get_memory_service
+from assistant.container import get_api_file_service, get_conversation_service, get_memory_service
 from assistant.definitions import MAIN_AGENT, load_agents
 from assistant.factory import AgentDeps, build_agents
+from assistant.files import S3FileStore
 from assistant.handler import app as http_app
 from assistant.handler import handler
 from assistant.models import current_month
-from assistant.repository import ConversationRepository, MemoryRepository, UsageRepository
+from assistant.repository import ConversationRepository, FileRepository, MemoryRepository, UsageRepository
 from assistant.runs import Runs
 from assistant.sandbox import CommandResult
-from assistant.service import ConversationLog, ConversationService, MemoryService, UsageService
+from assistant.service import ConversationLog, ConversationService, FileService, MemoryService, UsageService
 from assistant.titles import Titles
 from assistant.tools import make_tools
 from testkit.aws import create_table
 from testkit.http import call, claims
 
 SESSION = "11111111-2222-3333-4444-555555555555"
+FILES_BUCKET = "assistant-files-test"
 SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
 
 
@@ -132,19 +135,41 @@ class FakeApi:
 
 
 class FakeSandbox:
-    """Stands in for Code Interpreter: records commands per conversation and answers with `result`."""
+    """
+    Stands in for Code Interpreter: records commands per conversation and
+    answers with `result`; keeps the files written to it, by conversation and path.
+    """
 
     def __init__(self):
         self.started: list[str] = []
         self.commands: list[dict] = []
+        self.files: dict[tuple[str, str], bytes] = {}
         self.result = CommandResult(exit_code=0, stdout="", stderr="")
 
     def run(self, conversation_id: str, command: str, on_new_session) -> CommandResult:
-        if conversation_id not in self.started:
-            on_new_session()   # may refuse (plan limits): then nothing runs
-            self.started.append(conversation_id)
+        self._start(conversation_id, on_new_session)
         self.commands.append({"conversation_id": conversation_id, "command": command})
         return self.result
+
+    def write_file(self, conversation_id: str, path: str, data: bytes, on_new_session) -> bool:
+        new = self._start(conversation_id, on_new_session)
+        self.files[conversation_id, path] = data
+        return new
+
+    def read_file(self, conversation_id: str, path: str) -> bytes | None:
+        if conversation_id not in self.started:
+            return None
+        if (conversation_id, path) not in self.files:
+            from assistant.sandbox import SandboxError
+            raise SandboxError(f"No such file: {path}")
+        return self.files[conversation_id, path]
+
+    def _start(self, conversation_id: str, on_new_session) -> bool:
+        if conversation_id in self.started:
+            return False
+        on_new_session()   # may refuse (plan limits): then nothing runs
+        self.started.append(conversation_id)
+        return True
 
 
 def id_token(user_claims: dict) -> str:
@@ -164,7 +189,10 @@ def ctx():
     title_model = TitleModel(calls=[])
     titles = Titles(title_model, history, usage)
     memories = MemoryService(MemoryRepository(table))
-    tools = make_tools(api, usage, sandbox, memories)
+    s3 = boto3.client("s3", region_name="ap-southeast-1")
+    s3.create_bucket(Bucket=FILES_BUCKET, CreateBucketConfiguration={"LocationConstraint": "ap-southeast-1"})
+    files = FileService(FileRepository(table), S3FileStore(s3, FILES_BUCKET), usage)
+    tools = make_tools(api, usage, sandbox, memories, files)
     definitions = load_agents(set(tools))
     models: dict[str, ScriptedModel] = {}
     state = SimpleNamespace(agents=None, checkpointer=InMemorySaver())
@@ -174,20 +202,23 @@ def ctx():
         models[agent] = ScriptedModel(responses=list(responses), calls=[], tools_shown=[], pause=pause)
         state.agents = build_agents(definitions, AgentDeps(
             make_model=lambda d: models.setdefault(d.name, ScriptedModel(responses=[], calls=[], tools_shown=[])),
-            checkpointer=state.checkpointer, usage=usage, tools=tools, memories=memories))
+            checkpointer=state.checkpointer, usage=usage, tools=tools, memories=memories, files=files))
 
     # The HTTP API (handler.py) with this table, and the AgentCore Runtime app (app.py) with these agents.
     purges: list[list[str]] = []
-    service = ConversationService(conversations, usage=usage, days=0, purge=SimpleNamespace(send=purges.append))
+    service = ConversationService(conversations, usage=usage, days=0, purge=SimpleNamespace(send=purges.append),
+                                  files=files)
     http_app.dependency_overrides[get_conversation_service] = lambda: service
     http_app.dependency_overrides[get_memory_service] = lambda: memories
+    http_app.dependency_overrides[get_api_file_service] = lambda: files
     runs = Runs()
 
     def send(prompt: str, user: dict | None, thread_id: str = SESSION, agent: str | None = None,
-             message_id: str | None = None, replaces: str | None = None) -> tuple[int, dict | None]:
+             message_id: str | None = None, replaces: str | None = None,
+             attachments: list[str] | None = None) -> tuple[int, dict | None]:
         """What the page does first: POST /assistant/conversations/{threadId}/messages. (status, body)"""
         body = {"id": message_id or str(uuid4()), "content": prompt, **({"agent": agent} if agent else {}),
-                **({"replaces": replaces} if replaces else {})}
+                **({"replaces": replaces} if replaces else {}), **({"attachments": attachments} if attachments else {})}
         return call(handler, "POST", f"/assistant/conversations/{thread_id}/messages", user, body=body)
 
     def run(run_id: str, user: dict | None = None, thread_id: str = SESSION, session_id: str | None = SESSION,
@@ -211,9 +242,9 @@ def ctx():
         return events
 
     def post(prompt: str, user: dict, thread_id: str = SESSION, agent: str | None = None,
-             message_id: str | None = None, replaces: str | None = None) -> str:
+             message_id: str | None = None, replaces: str | None = None, attachments: list[str] | None = None) -> str:
         """send() that must succeed: the run's id."""
-        status, body = send(prompt, user, thread_id, agent, message_id, replaces)
+        status, body = send(prompt, user, thread_id, agent, message_id, replaces, attachments)
         assert status == 201, body
         return body["run_id"]
 
@@ -229,6 +260,7 @@ def ctx():
     # One event loop for every request, as uvicorn has: a run outlives the request that started it.
     with TestClient(create_app(lambda: state.agents, lambda: history, lambda: titles, runs)) as runtime:
         yield SimpleNamespace(table=table, usage=usage, api=api, sandbox=sandbox, state=state, memories=memories,
+                              files=files, s3=s3,
                               conversations=conversations, history=history, service=service,
                               title_model=title_model,
                               definitions=definitions, script=script, send=send, post=post, run=run, chat=chat,

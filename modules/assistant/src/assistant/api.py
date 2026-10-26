@@ -1,7 +1,8 @@
 """
 The HTTP API for the users' conversations with the assistant
-(/assistant/conversations) and what it remembers about them
-(/assistant/memories), a Lambda behind API Gateway like the other modules.
+(/assistant/conversations), what it remembers about them
+(/assistant/memories) and their files (/assistant/files: what they attach,
+and what agents make), a Lambda behind API Gateway like the other modules.
 
 Sending a message starts here, as in ChatGPT: POST .../messages saves it with
 the run that will answer it, and the page then has AgentCore Runtime run it,
@@ -19,12 +20,15 @@ from aws_lambda_powertools.event_handler.openapi.params import Query
 
 from shared.auth import CurrentUser, get_current_user
 
-from assistant.container import get_conversation_service, get_memory_service
+from assistant.container import get_api_file_service, get_conversation_service, get_memory_service
 from assistant.schemas import (
     ConversationDetail,
     ConversationOut,
     ConversationPage,
     ConversationRename,
+    FileDetail,
+    FileOut,
+    FilePage,
     MemoryIn,
     MemoryList,
     MemoryOut,
@@ -33,17 +37,20 @@ from assistant.schemas import (
     MessagePage,
     MessageRating,
     RunOut,
+    UploadIn,
+    UploadOut,
     Version,
     VersionIn,
 )
-from assistant.models import Conversation
-from assistant.service import MAX_MEMORIES, ConversationService, HistoryPage, MemoryService, active_run
+from assistant.models import Conversation, FileKind, FileSource
+from assistant.service import MAX_MEMORIES, ConversationService, FileService, HistoryPage, MemoryService, active_run
 
 router = Router()
 
 User = Annotated[CurrentUser, Depends(get_current_user)]
 Service = Annotated[ConversationService, Depends(get_conversation_service)]
 Memories = Annotated[MemoryService, Depends(get_memory_service)]
+Files = Annotated[FileService, Depends(get_api_file_service)]
 
 
 # ---------- routes ----------
@@ -58,7 +65,8 @@ def send_message(thread_id: str, body: MessageIn, user: User, service: Service) 
     stays. 402 at the plan's limit; 429 at the user's hourly limit; 409 while
     the conversation's previous answer is coming.
     """
-    run = service.send(user, thread_id, body.id, body.content, body.agent, replaces=body.replaces)
+    run = service.send(user, thread_id, body.id, body.content, body.agent, replaces=body.replaces,
+                       attachments=body.attachments)
     return Response(status_code=201, content_type=content_types.APPLICATION_JSON,
                     body=RunOut(run_id=run.run_id).model_dump(mode="json"))
 
@@ -167,6 +175,52 @@ def delete_memories(user: User, memories: Memories):
     """Forgets everything (memory stays on or off)."""
     memories.forget_all(user)
     return Response(status_code=204)
+
+
+# ---------- files ----------
+
+@router.post("/assistant/files")
+def start_upload(body: UploadIn, user: User, files: Files) -> Response[UploadOut]:
+    """
+    A file to attach: its record, and where the browser uploads it (a
+    presigned POST). It goes with the next message that names it; never
+    sent, it is deleted a day later. 400 for a type or size not taken; 429
+    at the user's hourly limit.
+    """
+    upload = files.start_upload(user, body.name, body.content_type, body.size)
+    out = UploadOut(file=_file(upload.file), url=upload.url, fields=upload.fields)
+    return Response(status_code=201, content_type=content_types.APPLICATION_JSON, body=out.model_dump(mode="json"))
+
+
+@router.get("/assistant/files")
+def list_files(user: User, files: Files,
+               source: Annotated[FileSource | None, Query()] = None,
+               kind: Annotated[FileKind | None, Query()] = None,
+               thread_id: Annotated[str | None, Query(max_length=100)] = None,
+               limit: Annotated[int, Query(gt=0, le=100)] = 30,
+               cursor: Annotated[str | None, Query(max_length=400)] = None) -> FilePage:
+    """The caller's files, newest first: what agents made (source=assistant), what they attached (upload)."""
+    items, next_cursor = files.list(user, limit, cursor, source=source, kind=kind, thread_id=thread_id)
+    return FilePage(items=[_file(file) for file in items], next_cursor=next_cursor)
+
+
+@router.get("/assistant/files/<file_id>")
+def get_file(file_id: str, user: User, files: Files,
+             version: Annotated[int | None, Query(gt=0)] = None) -> FileDetail:
+    """A file, with short-lived links to download it (`version`, or the newest) and, an image, to show it."""
+    file, download, view = files.links(user, file_id, version)
+    return FileDetail(**_file(file).model_dump(), download_url=download, view_url=view)
+
+
+@router.delete("/assistant/files/<file_id>")
+def delete_file(file_id: str, user: User, files: Files):
+    """Deletes it, every version. A message it was on still names it, as a file that is gone."""
+    files.delete(user, file_id)
+    return Response(status_code=204)
+
+
+def _file(file) -> FileOut:
+    return FileOut.model_validate(file.model_dump())
 
 
 def _memories(memories: MemoryService, user: CurrentUser) -> MemoryList:

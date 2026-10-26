@@ -1,13 +1,16 @@
 import { type InfiniteData, type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { qk } from '@/shared/api/keys';
-import type { AssistantConversation, AssistantConversationPage, AssistantMemoryList } from '@/shared/api/types';
+import type { AssistantConversation, AssistantConversationPage, AssistantFileKind, AssistantMemoryList } from '@/shared/api/types';
 import {
   addMemory,
   deleteAllMemories,
   deleteConversation,
+  deleteFile,
   deleteMemory,
   editMemory,
   getConversation,
+  getFile,
+  listFiles,
   listConversations,
   listMemories,
   renameConversation,
@@ -125,4 +128,54 @@ export function useMemoryChanges() {
       onSuccess: (list: AssistantMemoryList) => queryClient.setQueryData(qk.memories(), list),
     }),
   };
+}
+
+/**
+ * A file's links (to download it, and, an image, to show it). They last 15
+ * minutes on the server: kept 10 here, then read again.
+ */
+export function useFileLinks(fileId: string, version?: number) {
+  return useQuery({
+    queryKey: qk.file(fileId, version),
+    queryFn: ({ signal }) => getFile(fileId, version, signal),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    retry: false,
+  });
+}
+
+/** Downloads a file (a version, or the newest): a fresh link, opened. Throws what failed. */
+export async function downloadFile(fileId: string, version?: number): Promise<void> {
+  const { download_url } = await getFile(fileId, version);
+  const link = document.createElement('a');
+  link.href = download_url;
+  link.rel = 'noopener';
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+export interface FileFilters {
+  source?: 'upload' | 'assistant';
+  kind?: AssistantFileKind;
+}
+
+const FILES_PAGE = 30;
+
+/** The user's files, newest first, a page at a time. */
+export function useFiles(filters: FileFilters) {
+  return useInfiniteQuery({
+    queryKey: qk.fileList({ ...filters }),
+    queryFn: ({ pageParam, signal }) => listFiles({ ...filters, limit: FILES_PAGE, cursor: pageParam }, signal),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+  });
+}
+
+export function useDeleteFile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteFile,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: qk.files() }),
+  });
 }

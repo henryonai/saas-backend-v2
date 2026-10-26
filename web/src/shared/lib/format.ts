@@ -13,6 +13,14 @@ export function formatNumber(value: number): string {
   return new Intl.NumberFormat(locale()).format(value);
 }
 
+/** A file's size: "820 B", "12 KB", "3.4 MB". */
+export function formatBytes(bytes: number): string {
+  const format = (value: number, digits: number) => new Intl.NumberFormat(locale(), { maximumFractionDigits: digits }).format(value);
+  if (bytes < 1024) return `${format(bytes, 0)} B`;
+  if (bytes < 1024 * 1024) return `${format(bytes / 1024, 0)} KB`;
+  return `${format(bytes / 1024 / 1024, 1)} MB`;
+}
+
 /** An ISO timestamp from the API, or epoch seconds (invitations' `expires_at`). */
 function toDate(value: string | number): Date {
   return typeof value === 'number' ? new Date(value * 1000) : new Date(value);

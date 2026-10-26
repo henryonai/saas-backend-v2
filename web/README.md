@@ -99,7 +99,7 @@ API outside React (the billing page's wait for the new plan) calls `api.ts`.
 | Team | `GET /users`, `PATCH /users/{id}/role`, `DELETE /users/{id}`, `GET /users/invitations`, `POST /users/invite`, `DELETE /users/invitations/{email}` |
 | Billing | `GET /billing`, `POST /billing/checkout`, `POST /billing/portal` ("Manage billing") |
 | Notifications (and the bell, every 45 s) | `GET /notifications`, `POST /notifications/{id}/read` |
-| Assistant | sending: `POST /assistant/conversations/{thread_id}/messages`, then the answer from AgentCore's `/invocations` (`AssistantUrl`), AG-UI over SSE; Stop: `POST /assistant/conversations/{thread_id}/runs/{run_id}/cancel`; the list: `GET /assistant/conversations`, `GET`, `PATCH` and `DELETE /assistant/conversations/{thread_id}`; older messages: `GET /assistant/conversations/{thread_id}/messages?before=` |
+| Assistant | sending: `POST /assistant/conversations/{thread_id}/messages`, then the answer from AgentCore's `/invocations` (`AssistantUrl`), AG-UI over SSE; Stop: `POST /assistant/conversations/{thread_id}/runs/{run_id}/cancel`; the list: `GET /assistant/conversations`, `GET`, `PATCH` and `DELETE /assistant/conversations/{thread_id}`; older messages: `GET /assistant/conversations/{thread_id}/messages?before=`; versions: `POST .../messages/{message_id}/version`; memories: `/assistant/memories`; files: `POST /assistant/files` (then S3), `GET /assistant/files`, `GET` and `DELETE /assistant/files/{file_id}` |
 
 - **The session is the ID token.** Its claims say who the user is and their
   workspace, role and plan (all three or none). The routes use them to send
@@ -171,6 +171,15 @@ beside the chat (a side panel on a phone) comes from the HTTP API
   (`switchVersion`). A new version is numbered once its answer is in.
 - Rename (a dialog) and delete (a confirmation) are in each item's menu.
   Deleting the open conversation starts a new one.
+
+**Files** (`components/composer.tsx`, `components/files.tsx`, and the Files
+page, `features/files/`): the paperclip (or a drop, or a paste) uploads a
+file at once, straight to S3 with the presigned POST the API gives
+(`startUpload`, `uploadFile`), and the message names it (`attachments`). A
+message shows its files (images as themselves), and an answer the files an
+agent saved, to download (`downloadFile` asks for a fresh link). The Files
+page lists them all, by source and kind, with Download, Delete, and a link
+to the conversation.
 
 **Memory** (`components/memory-dialog.tsx`, the Memory button beside the
 chat): what the assistant remembers about the user across conversations
