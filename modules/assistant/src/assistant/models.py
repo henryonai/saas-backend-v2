@@ -68,6 +68,8 @@ class Conversation(BaseModel):
     updated_at: str            # the last message
     message_count: int         # AG-UI messages stored: the user's, the assistant's, tool results
     agents: set[str] = set()   # the agents spoken to (forwardedProps.agent): each keeps its own checkpoints
-    expires_at: int            # epoch seconds; DynamoDB's TTL removes it some time after
+    # Epoch seconds; DynamoDB's TTL removes it some time after. None: kept
+    # until its user deletes it (CONVERSATION_DAYS = 0).
+    expires_at: int | None = None
     question_id: str | None = None   # the newest user message's: sent again (a retry), it isn't added twice
     run: Run | None = None

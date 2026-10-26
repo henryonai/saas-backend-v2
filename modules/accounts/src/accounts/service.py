@@ -78,7 +78,8 @@ class AccountService:
             raise Forbidden("The owner can't leave or be removed")
         # Sign out first: if removing then fails, they simply log in again.
         self.identity.sign_out(target_user_id)
-        if not self.accounts.remove_member(caller.tenant_id, target_user_id):
+        removed = events.member_removed(caller.tenant_id, target_user_id, removed_by=user.user_id)
+        if not self.accounts.remove_member(caller.tenant_id, target_user_id, removed):
             raise NotFound("User not found in this workspace")
 
     # ---------- invitations sent by a workspace ----------

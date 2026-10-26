@@ -11,7 +11,7 @@ from shared.auth import CurrentUser
 from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached, TooManyRequests
 from shared.plans import get_limit
 
-from assistant.agent_names import agent_names
+from assistant.agent_names import MAIN_AGENT, agent_names
 from assistant.context import SESSION_ID, AgentContext, actor_of, checkpoint_session
 from assistant.models import Conversation, Rating, Run, Usage, current_month, iso, now_iso
 from assistant.repository import ConversationRepository, InvalidCursor, UsageLimitReached, UsageRepository
@@ -128,12 +128,16 @@ def active_run(conversation: Conversation, now: datetime | None = None) -> Run |
     return run
 
 
-def _expires_at(days: int) -> int:
+def _expires_at(days: int) -> int | None:
     """
     When a conversation whose last message is now expires, whole (its META's
-    TTL): as long as the agents' checkpoints written now (container.py).
+    TTL), or None to keep it until its user deletes it (days = 0).
     """
-    return int(time.time()) + days * 24 * 3600
+    return int(time.time()) + days * 24 * 3600 if days else None
+
+
+def _expired(conversation: Conversation) -> bool:
+    return conversation.expires_at is not None and conversation.expires_at <= time.time()
 
 
 class ConversationLog:
@@ -142,7 +146,9 @@ class ConversationLog:
     remembers through its checkpoints): the run it is to answer, whether the
     user stopped it, and what streamed back, kept as the AG-UI messages the
     page showed. The user's message was saved when it was sent
-    (ConversationService.send).
+    (ConversationService.send). Each message is saved with the agent it was
+    said to or by, so an agent that lost its checkpoints gets its own side of
+    the conversation back (earlier).
     """
 
     def __init__(self, conversations: ConversationRepository, days: int):
@@ -163,15 +169,34 @@ class ConversationLog:
         return conversation is None or conversation.run is None or conversation.run.run_id != run_id \
             or conversation.run.cancelled
 
-    def record(self, context: AgentContext, run_id: str, messages: list[dict]) -> bool:
+    def earlier(self, context: AgentContext, run: Run) -> list[dict]:
+        """
+        What the run's agent was told and said in this conversation before
+        the run's message, oldest first: what its checkpoint had, for an agent
+        that has none any more (app.restored). Messages saved before each
+        was marked with its agent (October 2026) count as the main agent's.
+        """
+        tenant_id, user_id = context.user.require_tenant(), context.user.user_id
+        conversation = self.conversations.get(tenant_id, user_id, context.session_id, expired=True)
+        if conversation is None or conversation.message_count <= 1:   # the run's message is its first
+            return []
+        said = self.conversations.all_messages(tenant_id, user_id, context.session_id,
+                                               last=conversation.message_count)
+        mine = [message for agent, message in said if (agent or MAIN_AGENT) == run.agent]
+        at = next((i for i, m in enumerate(mine) if m.get("role") == "user" and m.get("id") == run.message_id),
+                  len(mine))
+        return mine[:at]
+
+    def record(self, context: AgentContext, run_id: str, messages: list[dict], *, agent: str) -> bool:
         """
         After the run (answered, failed, stopped or cut off): the messages it
-        streamed, and that it's over. False if the conversation was deleted
-        meanwhile: its answer is not kept.
+        streamed, as `agent`'s, and that it's over. False if the conversation
+        was deleted meanwhile: its answer is not kept.
         """
         saved = self.conversations.add_answer(
             context.user.require_tenant(), context.user.user_id, context.session_id, run_id,
-            [_kept(message) for message in messages], now=now_iso(), expires_at=_expires_at(self.days))
+            [_kept(message) for message in messages], agent=agent, now=now_iso(),
+            expires_at=_expires_at(self.days))
         if not saved:
             logger.info("The conversation was deleted while the agent answered; its answer is not kept")
         return saved
@@ -243,7 +268,7 @@ class ConversationService:
         if agent not in agent_names():
             raise NotFound(f"No agent named {agent!r}. Agents: {', '.join(sorted(agent_names()))}.")
         conversation = self.conversations.get(tenant_id, user.user_id, thread_id, expired=True)
-        if conversation and conversation.expires_at <= time.time():
+        if conversation and _expired(conversation):
             # Expired, and waiting for TTL to remove it: a message now would bring its old messages back.
             raise NotFound(NOT_FOUND)
         if conversation and active_run(conversation):

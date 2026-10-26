@@ -317,7 +317,7 @@
       "deleteTitle": "Xóa cuộc trò chuyện này?",
       "deleteDescription": "“{{title}}” và mọi nội dung trong đó sẽ bị xóa vĩnh viễn.",
       "goneTitle": "Cuộc trò chuyện này không còn",
-      "gone": "Nó đã bị xóa, hoặc đã hết hạn: cuộc trò chuyện chỉ được giữ một thời gian sau tin nhắn cuối."
+      "gone": "Nó đã bị xóa, hoặc không còn khả dụng."
     },
     "emptyTitle": "Hỏi trợ lý",
     "empty": "Trợ lý có thể tra cứu đơn hàng, xem hạn mức trợ lý tháng này và, với các gói trả phí, chạy code để phân tích chúng.",

@@ -13,6 +13,8 @@ as that tool's result.
 
 Transcript assembles the same events into AG-UI messages, as a client does:
 the conversation's history, which the page shows again when it is reopened.
+agent_messages turns them back into the agent's own, for an agent that lost
+its checkpoints of the conversation.
 """
 import json
 from collections.abc import Iterator
@@ -30,7 +32,7 @@ from ag_ui.core import (
     ToolCallResultEvent,
     ToolCallStartEvent,
 )
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
 
 from shared.errors import AppError
 
@@ -147,3 +149,37 @@ class Transcript:
             self._by_id[message_id] = {"id": message_id, "role": "assistant"}
             self.messages.append(self._by_id[message_id])
         return self._by_id[message_id]
+
+
+def agent_messages(history: list[dict]) -> list[BaseMessage]:
+    """
+    A conversation's AG-UI messages (the history: the user's, and what
+    Transcript kept) as the agent's own messages, which its checkpoint held.
+    A tool call whose arguments were cut off mid-stream (Stop) is left out,
+    with any result it has; one left without a result is answered by
+    ConversationMiddleware, as in a checkpoint.
+    """
+    messages: list[BaseMessage] = []
+    left_out: set[str] = set()
+    for message in history:
+        match message.get("role"):
+            case "user":
+                messages.append(HumanMessage(message.get("content") or "", id=message["id"]))
+            case "assistant":
+                calls = []
+                for call in message.get("toolCalls") or []:
+                    try:
+                        args = json.loads(call["function"]["arguments"] or "{}")
+                    except ValueError:
+                        args = None
+                    if isinstance(args, dict):
+                        calls.append({"id": call["id"], "name": call["function"]["name"], "args": args,
+                                      "type": "tool_call"})
+                    else:
+                        left_out.add(call["id"])
+                if message.get("content") or calls:
+                    messages.append(AIMessage(message.get("content") or "", id=message["id"], tool_calls=calls))
+            case "tool" if message.get("toolCallId") not in left_out:
+                messages.append(ToolMessage(message.get("content") or "", tool_call_id=message["toolCallId"],
+                                            id=message["id"]))
+    return messages

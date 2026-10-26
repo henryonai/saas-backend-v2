@@ -209,6 +209,19 @@ def test_change_role_and_remove_sign_the_user_out(ctx, owner, join):
     assert ctx.login("bob") == {}
 
 
+def test_removing_a_member_or_leaving_publishes_member_removed(ctx, owner, join):
+    join("bob")
+    carol = join("carol")
+
+    assert ctx.api("DELETE", "/users/bob", owner)[0] == 204
+    assert ctx.api("DELETE", "/users/carol", carol)[0] == 204   # leaves
+    assert ctx.api("DELETE", "/users/bob", owner)[0] == 404     # gone already: no second event
+
+    removed = [e["detail"] for e in ctx.events() if e["type"] == "MemberRemoved"]
+    assert sorted((d["user_id"], d["removed_by"]) for d in removed) == [("bob", "alice"), ("carol", "carol")]
+    assert {d["tenant_id"] for d in removed} == {owner["tenant_id"]}
+
+
 def test_demoted_admin_cannot_use_old_token_to_promote_themselves(ctx, owner, join):
     bob_old_token = join("bob", role="admin")
     ctx.api("PATCH", "/users/bob/role", owner, {"role": "member"})
@@ -234,7 +247,8 @@ def test_removed_member_can_be_invited_again(ctx, owner, join):
 
 def test_role_change_after_removal_does_not_create_a_broken_member(ctx, owner, join):
     join("bob")
-    ctx.service.accounts.remove_member(owner["tenant_id"], "bob")   # lands between check and write
+    ctx.service.accounts.remove_member(owner["tenant_id"], "bob",   # lands between check and write
+                                       Event("MemberRemoved", owner["tenant_id"]))
     assert not ctx.service.accounts.change_role(owner["tenant_id"], "bob", "admin")
     assert ctx.api("GET", "/users", owner)[0] == 200
 

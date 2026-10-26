@@ -15,10 +15,13 @@ class AssistantSettings(BaseAppSettings):
     # vendor/model = OpenRouter; any other id = Bedrock (see llm.py).
     model_id: str = "deepseek/deepseek-v4.1-flash-1017"
     sandbox_session_seconds: int = 900   # a sandbox, and its files, last this long; then a new one starts
-    # Days a conversation is kept after its last message: its history, and
-    # the agents' checkpoints of it (each of which expires this long after it
-    # was written; the newest has the agent's whole state).
-    conversation_days: int = 30
+    # Days a conversation is kept after its last message; 0 = until its user
+    # deletes it or leaves the workspace (AssistantConversationDays).
+    conversation_days: int = 0
+    # Days each of the agents' checkpoints is kept after it was written: the
+    # newest has the agent's whole state. An agent whose checkpoints expired
+    # while the conversation is kept starts again from the history (app.restored).
+    checkpoint_days: int = 30
 
     # The OpenRouter API key, needed only for OpenRouter models. In AWS, set
     # OPENROUTER_API_KEY_PARAM to the name of an SSM SecureString parameter
@@ -32,11 +35,11 @@ class ConversationsApiSettings(BaseAppSettings):
     """The HTTP API's Lambda (handler.py): the users' conversations."""
     assistant_table: str
     purge_queue_url: str   # where deleted conversations go for purge.py
-    conversation_days: int = 30   # as the runtime's (AssistantSettings): sending a message moves the expiry on
+    conversation_days: int = 0   # as the runtime's (AssistantSettings): sending a message moves the expiry on
 
 
 class PurgeSettings(BaseAppSettings):
     """The purge worker's Lambda (purge.py)."""
-    assistant_table: str     # an expired conversation's messages
+    assistant_table: str     # the messages of an expired conversation, or of a removed member's
     checkpoint_table: str
     checkpoint_bucket: str

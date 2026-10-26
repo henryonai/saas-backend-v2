@@ -8,7 +8,8 @@ Three entry points use it:
   handler.py  Lambda: the HTTP API for the users' conversations, which also
               takes their messages (and counts them against the plan).
   purge.py    Lambda: deletes what is left of a deleted or expired
-              conversation: the agents' checkpoints, an expired one's messages.
+              conversation, or of a removed member's: the agents'
+              checkpoints, and the messages.
 
 The two Lambdas get the shared layer, not the agents' dependencies (LangChain,
 the AgentCore SDK, httpx): only get_agents() and get_titles() import those,
@@ -80,11 +81,12 @@ def get_agents() -> dict:
     return build_agents(load_agents(set(tools)), AgentDeps(
         make_model=model_for,
         # Each checkpoint holds the agent's whole state, so the newest one is
-        # all a conversation needs, and older ones can expire with the history.
+        # all a conversation needs, and older ones can expire. When the newest
+        # has too, the agent starts again from the history (app.restored).
         checkpointer=DynamoDBSaver(
             table_name=settings.checkpoint_table,
             region_name=settings.region,
-            ttl_seconds=settings.conversation_days * 24 * 60 * 60,
+            ttl_seconds=settings.checkpoint_days * 24 * 60 * 60,
             enable_checkpoint_compression=True,
             s3_offload_config={"bucket_name": settings.checkpoint_bucket},   # over 350 KB
         ),
@@ -120,5 +122,5 @@ def get_checkpoint_purge() -> CheckpointPurge:
 
 @lru_cache
 def get_purged_conversations() -> ConversationRepository:
-    """For the purge worker: what is left of the conversations that expired."""
+    """For the purge worker: what is left of the conversations that expired, and a removed member's."""
     return ConversationRepository(_table(PurgeSettings().assistant_table))
