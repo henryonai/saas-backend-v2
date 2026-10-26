@@ -8,11 +8,15 @@ to these actions immediately.
 
 Invitations are only joined when the invited person accepts one, signed in
 with that (verified) email. Nobody is added to a workspace without saying yes.
+
+A user can belong to several workspaces (up to max_workspaces). The login
+token lists them all, and each request names the one it acts in (shared/auth.py).
 """
+import json
 import time
 from dataclasses import dataclass
 
-from shared.auth import ROLE_ADMIN, ROLE_OWNER, CurrentUser
+from shared.auth import ROLE_ADMIN, ROLE_OWNER, WORKSPACES_CLAIM, CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import Conflict, Forbidden, NotFound, PlanLimitReached, TooManyRequests
 from shared.plans import get_limit
@@ -33,26 +37,31 @@ class InvitationLimits:
 
 class AccountService:
     def __init__(self, accounts: AccountRepository, identity: IdentityProvider,
-                 invitation_limits: InvitationLimits):
+                 invitation_limits: InvitationLimits, max_workspaces: int):
         self.accounts = accounts
         self.identity = identity
         self.limits = invitation_limits
+        self.max_workspaces = max_workspaces   # workspaces one user can belong to
 
     # ---------- tenants ----------
 
     def create_tenant(self, user: CurrentUser, data: TenantCreate) -> Tenant:
-        """First step after sign-up. The creator becomes the owner."""
+        """The creator becomes the owner. Their next token lists the new workspace."""
         tenant = Tenant(name=data.name, owner_id=user.user_id)
         owner = Member(tenant_id=tenant.tenant_id, user_id=user.user_id,
                        email=user.email.lower(), role=ROLE_OWNER)
         try:
-            self.accounts.create_tenant(tenant, owner)
+            self.accounts.create_tenant(tenant, owner, self.max_workspaces)
         except ConditionFailed:
-            raise Conflict("You already belong to a workspace")
+            raise self._too_many_workspaces()
         return tenant
 
     def get_tenant(self, user: CurrentUser) -> Tenant:
         return self._tenant(self._caller(user).tenant_id)
+
+    def my_workspaces(self, user: CurrentUser) -> list[tuple[Tenant, Member]]:
+        """Every workspace the caller belongs to, by name, as stored now."""
+        return sorted(self.accounts.workspaces_of(user.user_id), key=lambda w: w[0].name.lower())
 
     # ---------- members ----------
 
@@ -76,8 +85,12 @@ class AccountService:
         target = caller if leaving else self._get_member(caller.tenant_id, target_user_id)
         if target.role == ROLE_OWNER:
             raise Forbidden("The owner can't leave or be removed")
-        # Sign out first: if removing then fails, they simply log in again.
-        self.identity.sign_out(target_user_id)
+        if not leaving:
+            # Removed by someone else: their tokens go now, not in up to 15 minutes, and
+            # sign them out of every workspace. Sign out first: if removing then fails, they
+            # simply log in again. Someone who leaves keeps their session: the app refreshes
+            # the token, which then no longer lists this workspace.
+            self.identity.sign_out(target_user_id)
         removed = events.member_removed(caller.tenant_id, target_user_id, removed_by=user.user_id)
         if not self.accounts.remove_member(caller.tenant_id, target_user_id, removed):
             raise NotFound("User not found in this workspace")
@@ -129,7 +142,7 @@ class AccountService:
         return self._pending(self.accounts.invitations_for(self._verified_email(user)))
 
     def accept_invitation(self, user: CurrentUser, tenant_id: str) -> Tenant:
-        """Joins the workspace. The frontend must then refresh the token."""
+        """Joins the workspace, keeping any others. The frontend must then refresh the token."""
         email = self._verified_email(user)
         invitation = self.accounts.get_invitation(tenant_id, email)
         if not invitation or invitation.expired():
@@ -137,10 +150,13 @@ class AccountService:
         tenant = self._tenant(tenant_id)
         member = Member(tenant_id=tenant_id, user_id=user.user_id, email=email, role=invitation.role)
         try:
-            self.accounts.accept_invitation(invitation, member, get_limit(tenant.plan, "max_users"))
+            self.accounts.accept_invitation(invitation, member, get_limit(tenant.plan, "max_users"),
+                                            self.max_workspaces)
         except ConditionFailed as e:
             if "membership" in e.failed:
-                raise Conflict("Leave your current workspace before joining another one")
+                raise Conflict("You are already in this workspace")
+            if "workspaces" in e.failed:
+                raise self._too_many_workspaces()
             if "invitation" in e.failed:
                 raise NotFound("Invitation not found or expired")
             raise PlanLimitReached("This workspace is full. Ask its owner to upgrade the plan.")
@@ -153,19 +169,23 @@ class AccountService:
     # ---------- used by the login trigger and event listener ----------
 
     def token_claims_for(self, user_id: str) -> dict:
-        """Claims to put in the login token. Empty if the user has no workspace yet."""
-        tenant_id = self.accounts.get_membership(user_id)
-        member = self.accounts.get_member(tenant_id, user_id) if tenant_id else None
-        if not member:
-            return {}
-        tenant = self.accounts.get_tenant(tenant_id)
-        return {"tenant_id": tenant_id, "role": member.role, "plan": tenant.plan if tenant else "free"}
+        """
+        Claims to put in the login token: every workspace the user belongs to,
+        with their role there and its plan (shared/auth.py reads them). Empty if
+        the user has no workspace yet.
+        """
+        workspaces = {tenant.tenant_id: {"role": member.role, "plan": tenant.plan}
+                      for tenant, member in self.accounts.workspaces_of(user_id)}
+        return {WORKSPACES_CLAIM: json.dumps(workspaces, separators=(",", ":"))} if workspaces else {}
 
     def apply_subscription_change(self, tenant_id: str, plan: str, status: str, revision: int) -> None:
         """Called when billing publishes SubscriptionChanged. Late or repeated events are skipped."""
         self.accounts.apply_subscription(tenant_id, plan, status, revision)
 
     # ---------- helpers ----------
+
+    def _too_many_workspaces(self) -> Conflict:
+        return Conflict(f"You can belong to at most {self.max_workspaces} workspaces. Leave one first.")
 
     def _caller(self, user: CurrentUser, *roles: str) -> Member:
         """The caller's membership as stored now (the token may be minutes old)."""

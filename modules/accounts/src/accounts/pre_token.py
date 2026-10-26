@@ -1,7 +1,8 @@
 """
 Cognito "pre token generation" trigger: runs at every login and token refresh.
-Adds tenant_id, role and plan to the ID token. Other modules read these from
-the token, so they never need to call the accounts module.
+Adds the "workspaces" claim to the ID token: every workspace the user belongs
+to, with their role there and its plan. Other modules read it from the token
+(shared/auth.py), so they never need to call the accounts module.
 
 The frontend must send the ID token to the API (V1 trigger customizes it).
 """

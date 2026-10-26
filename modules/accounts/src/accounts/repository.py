@@ -8,10 +8,11 @@ Key design:
   TENANT#<tenant_id>  USER#<user_id>      member
   TENANT#<tenant_id>  INVITE#<email>      invitation (gsi1: EMAIL#<email>; removed by TTL when expired)
   TENANT#<tenant_id>  INVITES_SENT#<day>  invitations sent that day (rate limit, expires)
-  USER#<user_id>      MEMBERSHIP          the user's tenant (at most one per user)
+  USER#<user_id>      WORKSPACE#<tenant>  one of the user's workspaces (one item per membership)
+  USER#<user_id>      WORKSPACES          how many workspaces the user belongs to (count, limited)
   OUTBOX#<event_id>   OUTBOX              events to publish (shared/outbox.py)
 
-Rules that must hold even under concurrent requests (one workspace per user,
+Rules that must hold even under concurrent requests (the workspaces per user,
 the seat limit, owner protection) are DynamoDB conditions, not "read, then
 write" code.
 """
@@ -46,12 +47,46 @@ def _member_key(tenant_id: str, user_id: str) -> dict:
     return {"pk": _tenant_pk(tenant_id), "sk": f"USER#{user_id}"}
 
 
-def _membership_key(user_id: str) -> dict:
-    return {"pk": f"USER#{user_id}", "sk": "MEMBERSHIP"}
+def _workspace_key(user_id: str, tenant_id: str) -> dict:
+    return {"pk": f"USER#{user_id}", "sk": f"WORKSPACE#{tenant_id}"}
+
+
+def _workspace_count_key(user_id: str) -> dict:
+    return {"pk": f"USER#{user_id}", "sk": "WORKSPACES"}
 
 
 def _invite_key(tenant_id: str, email: str) -> dict:
     return {"pk": _tenant_pk(tenant_id), "sk": f"INVITE#{email}"}
+
+
+def _join(m: Member, max_workspaces: int) -> dict:
+    """
+    The two operations that add a workspace to the user's list: "membership"
+    fails if they are in it already, "workspaces" if they are in max_workspaces.
+    """
+    return {
+        "membership": {"Put": {"Item": {**_workspace_key(m.user_id, m.tenant_id), "tenant_id": m.tenant_id},
+                               "ConditionExpression": "attribute_not_exists(pk)"}},
+        "workspaces": {"Update": {
+            "Key": _workspace_count_key(m.user_id),
+            "UpdateExpression": "ADD #count :one",
+            "ConditionExpression": "attribute_not_exists(#count) OR #count < :max",
+            "ExpressionAttributeNames": {"#count": "count"},
+            "ExpressionAttributeValues": {":one": 1, ":max": max_workspaces},
+        }},
+    }
+
+
+def _leave(user_id: str, tenant_id: str) -> dict:
+    return {
+        "membership": {"Delete": {"Key": _workspace_key(user_id, tenant_id)}},
+        "workspaces": {"Update": {
+            "Key": _workspace_count_key(user_id),
+            "UpdateExpression": "ADD #count :minus_one",
+            "ExpressionAttributeNames": {"#count": "count"},
+            "ExpressionAttributeValues": {":minus_one": -1},
+        }},
+    }
 
 
 def _seats(tenant_id: str, change: int, max_seats: int | None = None) -> dict:
@@ -73,11 +108,11 @@ class AccountRepository:
 
     # ---------- tenants ----------
 
-    def create_tenant(self, tenant: Tenant, owner: Member) -> None:
-        """Raises ConditionFailed({"membership"}) if the owner already has a workspace."""
+    def create_tenant(self, tenant: Tenant, owner: Member, max_workspaces: int) -> None:
+        """Raises ConditionFailed({"workspaces"}) if the owner is in max_workspaces already."""
         transact(
             self.table,
-            membership=self._put_membership(owner),
+            **_join(owner, max_workspaces),
             tenant={"Put": {"Item": {**_profile(tenant.tenant_id), **tenant.model_dump()}}},
             member={"Put": {"Item": self._member_item(owner)}},
         )
@@ -105,10 +140,27 @@ class AccountRepository:
 
     # ---------- members ----------
 
-    def get_membership(self, user_id: str) -> str | None:
-        """The user's tenant id. Strongly consistent: right after sign-up, the token refresh sees it."""
-        item = self.table.get_item(Key=_membership_key(user_id), ConsistentRead=True).get("Item")
-        return item["tenant_id"] if item else None
+    def workspaces_of(self, user_id: str) -> list[tuple[Tenant, Member]]:
+        """
+        The user's workspaces, each with their membership there. Strongly
+        consistent: right after creating or joining one, the token refresh sees it.
+        """
+        result = self.table.query(
+            KeyConditionExpression=Key("pk").eq(f"USER#{user_id}") & Key("sk").begins_with("WORKSPACE#"),
+            ConsistentRead=True,
+        )
+        tenant_ids = [item["tenant_id"] for item in result["Items"]]
+        items = self._get_many([key for t in tenant_ids for key in (_profile(t), _member_key(t, user_id))])
+
+        def found(key: dict) -> dict | None:
+            return items.get((key["pk"], key["sk"]))
+
+        workspaces = []
+        for t in tenant_ids:
+            profile, member = found(_profile(t)), found(_member_key(t, user_id))
+            if profile and member:
+                workspaces.append((Tenant.model_validate(_clean(profile)), Member.model_validate(_clean(member))))
+        return workspaces
 
     def get_member(self, tenant_id: str, user_id: str) -> Member | None:
         item = self.table.get_item(Key=_member_key(tenant_id, user_id), ConsistentRead=True).get("Item")
@@ -150,7 +202,7 @@ class AccountRepository:
                     "ExpressionAttributeNames": {"#r": "role"},
                     "ExpressionAttributeValues": {":owner": "owner"},
                 }},
-                membership={"Delete": {"Key": _membership_key(user_id)}},
+                **_leave(user_id, tenant_id),
                 seats=_seats(tenant_id, -1),
                 event=outbox_put(event),
             )
@@ -213,15 +265,17 @@ class AccountRepository:
                 return False
             raise
 
-    def accept_invitation(self, invitation: Invitation, member: Member, max_seats: int | None) -> None:
+    def accept_invitation(self, invitation: Invitation, member: Member, max_seats: int | None,
+                          max_workspaces: int) -> None:
         """
         Turns the invitation into a membership and takes a seat, in one
-        transaction. Raises ConditionFailed with "membership" (already in a
-        workspace), "invitation" (cancelled or expired) or "seats" (full).
+        transaction. Raises ConditionFailed with "membership" (already in this
+        workspace), "workspaces" (in max_workspaces already), "invitation"
+        (cancelled or expired) or "seats" (full).
         """
         transact(
             self.table,
-            membership=self._put_membership(member),
+            **_join(member, max_workspaces),
             member={"Put": {"Item": self._member_item(member)}},
             invitation={"Delete": {
                 "Key": _invite_key(invitation.tenant_id, invitation.email),
@@ -237,7 +291,13 @@ class AccountRepository:
     def _member_item(m: Member) -> dict:
         return {**_member_key(m.tenant_id, m.user_id), **m.model_dump()}
 
-    @staticmethod
-    def _put_membership(m: Member) -> dict:
-        return {"Put": {"Item": {**_membership_key(m.user_id), "tenant_id": m.tenant_id},
-                        "ConditionExpression": "attribute_not_exists(pk)"}}
+    def _get_many(self, keys: list[dict]) -> dict[tuple[str, str], dict]:
+        """Strongly consistent reads of up to 100 items, by (pk, sk)."""
+        found: dict[tuple[str, str], dict] = {}
+        request = {self.table.name: {"Keys": keys, "ConsistentRead": True}} if keys else {}
+        while request:
+            result = self.table.meta.client.batch_get_item(RequestItems=request)
+            for item in result["Responses"].get(self.table.name, []):
+                found[(item["pk"], item["sk"])] = item
+            request = result.get("UnprocessedKeys") or {}   # DynamoDB may return some for later
+        return found

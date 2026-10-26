@@ -58,6 +58,14 @@
     "team": "Thành viên",
     "toggleSidebar": "Ẩn/hiện thanh bên"
   },
+  "workspaces": {
+    "title": "Workspace",
+    "switch": "Chuyển workspace",
+    "create": "Tạo workspace",
+    "createDescription": "Bạn sẽ là chủ sở hữu, và vẫn giữ các workspace khác. Mỗi tab trình duyệt có thể làm việc trong một workspace khác nhau.",
+    "invitations": "Lời mời ({{count}})",
+    "invitationsDescription": "Tham gia một workspace không làm bạn rời các workspace đang có. Chỉ chấp nhận lời mời từ người bạn biết."
+  },
   "auth": {
     "backToSignIn": "Quay lại đăng nhập",
     "code": "Mã xác nhận",
@@ -103,8 +111,7 @@
       "done": "Đã đổi mật khẩu. Hãy đăng nhập bằng mật khẩu mới."
     },
     "signedOut": {
-      "expired": "Phiên đăng nhập đã kết thúc. Hãy đăng nhập lại để tiếp tục.",
-      "left": "Bạn đã rời workspace. Hãy đăng nhập lại để tạo hoặc tham gia workspace khác."
+      "expired": "Phiên đăng nhập đã kết thúc. Hãy đăng nhập lại để tiếp tục."
     },
     "errors": {
       "emailTaken": "Email này đã có tài khoản. Hãy đăng nhập.",
@@ -223,7 +230,8 @@
     "removed": "Đã xóa {{email}}.",
     "leave": "Rời workspace",
     "leaveTitle": "Rời workspace này?",
-    "leaveDescription": "Bạn mất quyền truy cập ngay và sẽ bị đăng xuất. Muốn quay lại, cần có người mời bạn lần nữa.",
+    "leaveDescription": "Bạn mất quyền truy cập workspace này ngay, và vẫn đăng nhập trong các workspace khác. Muốn quay lại, cần có người mời bạn lần nữa.",
+    "left": "Bạn đã rời workspace",
     "invite": {
       "open": "Mời",
       "title": "Mời thành viên",

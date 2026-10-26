@@ -33,7 +33,7 @@ from assistant.service import ConversationLog, ConversationService, UsageService
 from assistant.titles import Titles
 from assistant.tools import make_tools
 from testkit.aws import create_table
-from testkit.http import call, claims
+from testkit.http import ONLY_WORKSPACE, call, claims, only_workspace
 
 SESSION = "11111111-2222-3333-4444-555555555555"
 SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
@@ -126,8 +126,8 @@ class FakeApi:
         self.calls: list[dict] = []
         self.responses: dict[str, dict] = {}
 
-    def get(self, authorization: str, path: str, params: dict | None = None) -> dict:
-        self.calls.append({"authorization": authorization, "path": path, "params": params})
+    def get(self, authorization: str, tenant_id: str, path: str, params: dict | None = None) -> dict:
+        self.calls.append({"authorization": authorization, "tenant_id": tenant_id, "path": path, "params": params})
         return self.responses.get(path, {"error": "Not found"})
 
 
@@ -190,19 +190,22 @@ def ctx():
 
     def run(run_id: str, user: dict | None = None, thread_id: str = SESSION, session_id: str | None = SESSION,
             authorization: str | None = None, messages: list | None = None,
-            resume: dict | None = None) -> list[dict]:
+            resume: dict | None = None, tenant_id: str | None | object = ONLY_WORKSPACE) -> list[dict]:
         """
         What the page does next, and again to follow the answer after a
         reload (or, with `resume`, to read on after its stream broke): sends
-        AgentCore the run. Every event as it went on the wire, after checking
-        their order.
+        AgentCore the run, in `tenant_id` (forwardedProps.tenantId; by default
+        the token's only workspace). Every event as it went on the wire, after
+        checking their order.
         """
+        tenant = only_workspace(user) if tenant_id is ONLY_WORKSPACE else tenant_id
         headers = {"Authorization": authorization if authorization is not None else id_token(user)}
         if session_id:
             headers[SESSION_HEADER] = session_id
         response = runtime.post("/invocations", headers=headers, json={
             "threadId": thread_id, "runId": run_id, "state": {}, "tools": [], "context": [],
-            "forwardedProps": {"resume": resume} if resume else {}, "messages": messages or []})
+            "forwardedProps": {**({"tenantId": tenant} if tenant else {}), **({"resume": resume} if resume else {})},
+            "messages": messages or []})
         assert response.status_code == 200, response.text
         events = sse_events(response)
         check_agui_order(events, resumed=resume is not None)

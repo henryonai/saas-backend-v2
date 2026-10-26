@@ -288,7 +288,11 @@ async function stream(target: AssistantAgent, runId: string, before: Message[], 
   const drawn = idsOf(target.messages);
   try {
     await target.runAgent(
-      { runId, forwardedProps: { agent: MAIN_AGENT, ...(resume && { resume }) } },
+      {
+        runId,
+        // tenantId: the workspace this tab works in (AgentCore passes on no custom headers)
+        forwardedProps: { agent: MAIN_AGENT, tenantId: sessionStore.getState().user?.tenantId, ...(resume && { resume }) },
+      },
       {
         onRunStartedEvent: ({ event }) => {
           if (resume && event.timestamp === resume.startedAt) {

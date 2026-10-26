@@ -2,10 +2,32 @@ import { fetchAuthSession, signOut } from 'aws-amplify/auth';
 import { Hub } from 'aws-amplify/utils';
 import { useStore } from 'zustand';
 import { createStore } from 'zustand/vanilla';
-import { type SessionUser, userFromClaims } from './claims';
+import { inWorkspace, type SessionUser, userFromClaims } from './claims';
 
 /** Why the app signed the user out, so the sign-in page can say so. */
-export type SignedOutReason = 'expired' | 'left';
+export type SignedOutReason = 'expired';
+
+// The workspace this tab works in (sessionStorage is per tab), and where a new tab starts.
+const TAB_WORKSPACE = 'saas.workspace';
+const LAST_WORKSPACE = 'saas.lastWorkspace';
+
+function chosenWorkspace(): string | null {
+  try {
+    return sessionStorage.getItem(TAB_WORKSPACE) ?? localStorage.getItem(LAST_WORKSPACE);
+  } catch {
+    return null; // storage blocked: the token's first workspace
+  }
+}
+
+function rememberWorkspace(tenantId: string | null): void {
+  if (!tenantId) return;
+  try {
+    sessionStorage.setItem(TAB_WORKSPACE, tenantId);
+    localStorage.setItem(LAST_WORKSPACE, tenantId);
+  } catch {
+    // storage blocked: this tab still works in it until reloaded
+  }
+}
 
 export type SessionState =
   | { status: 'signed-out'; user: null; reason: SignedOutReason | null }
@@ -27,7 +49,8 @@ export function useUser(): SessionUser {
 /**
  * Reads the tokens Amplify keeps. `forceRefresh` gets new ones from Cognito,
  * which runs the login trigger again: use it after anything that changes the
- * workspace, role or plan in the token.
+ * user's workspaces, roles or plans. The tab keeps working in its workspace
+ * while the token lists it.
  */
 export async function loadSession(forceRefresh = false): Promise<SessionUser | null> {
   const { tokens } = await fetchAuthSession({ forceRefresh });
@@ -36,16 +59,29 @@ export async function loadSession(forceRefresh = false): Promise<SessionUser | n
     sessionStore.setState({ status: 'signed-out', user: null, reason: null });
     return null;
   }
-  const user = userFromClaims(claims);
+  const user = userFromClaims(claims, chosenWorkspace());
+  rememberWorkspace(user.tenantId);
   sessionStore.setState({ status: 'signed-in', user, reason: null });
   return user;
+}
+
+/**
+ * Works in another of the user's workspaces, in this tab only (other tabs keep
+ * theirs). False if the token doesn't list it: refresh the session first.
+ */
+export function switchWorkspace(tenantId: string): boolean {
+  const { user } = sessionStore.getState();
+  if (!user?.workspaces.some((w) => w.tenantId === tenantId)) return false;
+  rememberWorkspace(tenantId);
+  if (user.tenantId !== tenantId) sessionStore.setState({ status: 'signed-in', user: inWorkspace(user, tenantId), reason: null });
+  return true;
 }
 
 let refreshing: Promise<SessionUser | null> | null = null;
 
 /**
  * New tokens now. Fails when the refresh token was revoked, which the backend
- * does when someone is removed, demoted, or leaves: then the user is signed out.
+ * does when someone is removed or their role changes: then the user is signed out.
  * Calls made at the same time share one refresh.
  */
 export function refreshSession(): Promise<SessionUser | null> {

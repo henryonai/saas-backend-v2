@@ -202,7 +202,7 @@ Resources:
       CorsConfiguration:
         AllowOrigins: [!If [HasCorsOrigin, !Ref CorsOrigin, !Sub "https://${WebDistribution.DomainName}"]]
         AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
-        AllowHeaders: [content-type, authorization]
+        AllowHeaders: [content-type, authorization, x-tenant-id]   # x-tenant-id: the workspace (shared/auth.py)
       DefaultRouteSettings:               # protects the functions (and your bill) from floods
         ThrottlingRateLimit: 50
         ThrottlingBurstLimit: 100
@@ -439,6 +439,7 @@ Resources:
         # One event per method, never ANY: an ANY route also catches the browser's CORS
         # preflight (OPTIONS) and sends it to the JWT authorizer, which answers 401. With no
         # OPTIONS route, API Gateway answers preflights itself (CorsConfiguration).
+        TenantsGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /tenants, Method: GET } }
         TenantsPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /tenants, Method: POST } }
         TenantsAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: GET } }
         UsersGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /users, Method: GET } }

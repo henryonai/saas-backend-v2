@@ -73,10 +73,18 @@ def test_access_tokens_are_rejected(ctx, alice):
     assert ctx.api("GET", "/orders", access_token)[0] == 401
 
 
-def test_workspace_claims_come_all_together(ctx, alice):
-    no_role = {k: v for k, v in alice.items() if k != "role"}
-    assert ctx.api("GET", "/orders", no_role)[0] == 401
-    assert ctx.api("GET", "/orders", {**alice, "role": "superuser"})[0] == 401
+def test_workspaces_claims_we_did_not_write_are_refused(ctx, alice):
+    assert ctx.api("GET", "/orders", {**alice, "workspaces": "not json"})[0] == 401
+    superuser = {**alice, "workspaces": '{"t1": {"role": "superuser", "plan": "free"}}'}
+    assert ctx.api("GET", "/orders", superuser, tenant_id="t1")[0] == 401
+
+
+def test_orders_are_listed_for_the_workspace_the_request_names(ctx, alice):
+    assert ctx.api("POST", "/orders", alice, ORDER)[0] == 201
+    in_two = claims("alice", "t1", "member", workspaces={"t2": ("owner", "free")})
+    assert len(ctx.api("GET", "/orders", in_two, tenant_id="t1")[1]["items"]) == 1
+    assert ctx.api("GET", "/orders", in_two, tenant_id="t2")[1]["items"] == []
+    assert ctx.api("GET", "/orders", alice, tenant_id="t2")[0] == 401   # a workspace alice's token doesn't list
 
 
 def test_plan_limit_comes_from_token(ctx, alice):

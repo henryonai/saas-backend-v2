@@ -9,7 +9,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from accounts.models import Tenant
+from shared.auth import Role
+
+from accounts.models import Member, Tenant
 
 
 # ---------- requests ----------
@@ -42,3 +44,15 @@ class TenantOut(BaseModel):
     @classmethod
     def of(cls, tenant: Tenant) -> "TenantOut":
         return cls.model_validate(tenant.model_dump())
+
+
+class WorkspaceOut(BaseModel):
+    """One of the caller's workspaces, with their role there (for a workspace switcher)."""
+    tenant_id: str
+    name: str
+    role: Role
+    plan: str
+
+    @classmethod
+    def of(cls, tenant: Tenant, member: Member) -> "WorkspaceOut":
+        return cls(tenant_id=tenant.tenant_id, name=tenant.name, role=member.role, plan=tenant.plan)

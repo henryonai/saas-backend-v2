@@ -10,3 +10,5 @@ class AccountsSettings(BaseAppSettings):
     invitation_days: int = 7          # how long an invitation can be accepted
     invites_per_day: int = 20         # per workspace (anti-spam)
     max_pending_invitations_per_email: int = 5  # open invitations one person can have (anti-spam)
+    # Workspaces one user can belong to. The login token lists them all, so keep it modest.
+    max_workspaces_per_user: int = 20

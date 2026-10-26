@@ -2,6 +2,7 @@
 Builds a real AccountService on a fake table with a fake Cognito, and injects
 it into the HTTP app with dependency_overrides. No monkeypatching.
 """
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from testkit.http import call, claims
 from testkit.outbox import outbox_events
 
 LIMITS = InvitationLimits(days=7, per_day=5, pending_per_email=5)
+MAX_WORKSPACES = 3
 
 
 class FakeIdentity:
@@ -32,15 +34,20 @@ class FakeIdentity:
 def ctx():
     table = create_table("accounts-test", with_gsi1=True)
     identity = FakeIdentity()
-    service = AccountService(accounts=AccountRepository(table), identity=identity, invitation_limits=LIMITS)
+    service = AccountService(accounts=AccountRepository(table), identity=identity, invitation_limits=LIMITS,
+                             max_workspaces=MAX_WORKSPACES)
     app.dependency_overrides[get_account_service] = lambda: service
 
-    def login(user_id: str) -> dict:
+    def token(user_id: str) -> dict:
         """What the login trigger adds to the token for this user."""
         event = add_claims({"request": {"userAttributes": {"sub": user_id}}, "response": {}}, service)
         return event["response"]["claimsOverrideDetails"]["claimsToAddOrOverride"]
 
-    yield SimpleNamespace(table=table, service=service, identity=identity, login=login,
+    def login(user_id: str) -> dict:
+        """The workspaces the user's next token lists: {tenant_id: {"role": ..., "plan": ...}}."""
+        return json.loads(token(user_id).get("workspaces", "{}"))
+
+    yield SimpleNamespace(table=table, service=service, identity=identity, token=token, login=login,
                           events=lambda: outbox_events(table),
                           api=lambda *a, **kw: call(handler, *a, **kw))
     app.dependency_overrides.clear()
@@ -63,8 +70,7 @@ def join(ctx, owner):
         assert status == 201
         status, _ = ctx.api("POST", f"/invitations/{owner['tenant_id']}/accept", claims(name))
         assert status == 200
-        token = ctx.login(name)
-        assert token["tenant_id"] == owner["tenant_id"] and token["role"] == role
-        return claims(name, token["tenant_id"], token["role"])
+        assert ctx.login(name)[owner["tenant_id"]]["role"] == role
+        return claims(name, owner["tenant_id"], role)
 
     return _join

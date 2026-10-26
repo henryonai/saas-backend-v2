@@ -1,5 +1,5 @@
 import { config } from '../config';
-import { endSession, getIdToken, refreshSession } from '../auth/session';
+import { endSession, getIdToken, refreshSession, sessionStore } from '../auth/session';
 
 /**
  * A failed call. `status` is the HTTP status (0: the request never got an
@@ -40,6 +40,9 @@ async function send(path: string, options: RequestOptions): Promise<Response> {
     throw new ApiError(401, 'Not signed in');
   }
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  // The workspace this tab works in: the backend checks the token lists it.
+  const tenantId = sessionStore.getState().user?.tenantId;
+  if (tenantId) headers['X-Tenant-Id'] = tenantId;
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   try {
     return await fetch(urlOf(path, options.query), {

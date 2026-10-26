@@ -1,16 +1,18 @@
 import json
+from typing import Annotated
 
 import boto3
 import pytest
+from aws_lambda_powertools.event_handler import Depends
 from aws_lambda_powertools.event_handler.api_gateway import Router
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 from pydantic import ValidationError
 
 from shared import http, outbox
-from shared.auth import CurrentUser
+from shared.auth import CurrentUser, Workspace, get_current_user, user_from_claims, workspaces_in
 from shared.dynamo import ConditionFailed, transact
-from shared.errors import Forbidden, ServiceBusy
+from shared.errors import Forbidden, ServiceBusy, Unauthorized
 from shared.events import Event, EventBridgePublisher
 from shared.ids import sortable_id
 from shared.outbox import outbox_put, relay
@@ -43,6 +45,47 @@ def test_role_check():
     with pytest.raises(Forbidden):
         member.require_role("owner", "admin")
     assert member.require_role("member") == "t1"
+
+
+def test_the_request_picks_one_of_the_workspaces_its_token_lists():
+    token = claims("u1", "t1", "owner", plan="pro", workspaces={"t2": ("member", "free")})
+    assert workspaces_in(token) == {"t1": Workspace("owner", "pro"), "t2": Workspace("member", "free")}
+    in_t1, in_t2 = user_from_claims(token, "t1"), user_from_claims(token, "t2")
+    assert (in_t1.tenant_id, in_t1.role, in_t1.plan) == ("t1", "owner", "pro")
+    assert (in_t2.tenant_id, in_t2.role, in_t2.plan) == ("t2", "member", "free")
+    nowhere = user_from_claims(token)                       # no workspace chosen: none, never a default
+    assert (nowhere.tenant_id, nowhere.role, nowhere.plan) == (None, None, None)
+    with pytest.raises(Forbidden, match="Choose one of your workspaces"):
+        nowhere.require_tenant()
+
+
+def test_a_workspace_the_token_does_not_list_is_refused():
+    token = claims("u1", "t1", "owner")
+    with pytest.raises(Unauthorized, match="refresh"):      # 401: the client refreshes the token once and retries
+        user_from_claims(token, "t2")
+    with pytest.raises(Unauthorized, match="refresh"):
+        user_from_claims(claims("newbie"), "t1")
+
+
+@pytest.mark.parametrize("listed", ["not json", '["t1"]', '{"t1": {"role": "owner"}}',
+                                    '{"t1": {"role": "superuser", "plan": "pro"}}'])
+def test_workspaces_claims_we_did_not_write_are_refused(listed):
+    with pytest.raises(Unauthorized):
+        user_from_claims({**claims("u1"), "workspaces": listed})
+
+
+def test_routes_act_in_the_workspace_named_by_the_x_tenant_id_header():
+    router = Router()
+
+    @router.get("/whoami")
+    def whoami(user: Annotated[CurrentUser, Depends(get_current_user)]):
+        return {"tenant_id": user.require_tenant(), "role": user.role}
+
+    handler = http.create_handler(http.create_app(router, title="Test"))
+    two = claims("u1", "t1", "owner", workspaces={"t2": ("member", "free")})
+    assert call(handler, "GET", "/whoami", two, tenant_id="t2") == (200, {"tenant_id": "t2", "role": "member"})
+    assert call(handler, "GET", "/whoami", two, tenant_id="t3")[0] == 401
+    assert call(handler, "GET", "/whoami", two)[0] == 403    # several workspaces and no header: choose one
 
 
 def test_unknown_plan_falls_back_to_free():

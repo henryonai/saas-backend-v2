@@ -27,7 +27,7 @@ type Ids = { threadId: string; runId: string };
 type Answer = (ids: Ids) => { events: Event[]; status?: number; open?: boolean; drop?: boolean };
 interface Run extends Ids {
   messages: unknown[];
-  forwardedProps: { agent?: string; resume?: { after: number; startedAt: number } };
+  forwardedProps: { agent?: string; tenantId?: string; resume?: { after: number; startedAt: number } };
 }
 interface Sent {
   id: string;
@@ -207,6 +207,7 @@ describe('chatting', () => {
     expect(server.sent).toEqual([expect.objectContaining({ content: 'What did we order?', agent: 'assistant' })]);
     const [run] = server.runs;
     expect(run).toMatchObject({ runId: 'run-1', messages: [] });
+    expect(run.forwardedProps.tenantId).toBe('tenant-1'); // the workspace this tab works in
     expect(router.state.location.pathname).toBe(`/assistant/${run.threadId}`);
     expect(await (await conversationList()).findByText('What did we order?')).toBeInTheDocument();
   });

@@ -5,6 +5,7 @@ const session = vi.hoisted(() => ({
   getIdToken: vi.fn(),
   refreshSession: vi.fn(),
   endSession: vi.fn(),
+  sessionStore: { getState: vi.fn() },
 }));
 vi.mock('../auth/session', () => session);
 vi.mock('../config', () => ({ config: { apiUrl: 'https://api.test' } }));
@@ -19,6 +20,7 @@ beforeEach(() => {
   session.getIdToken.mockReset().mockResolvedValue('id-token');
   session.refreshSession.mockReset().mockResolvedValue({ userId: 'u' });
   session.endSession.mockReset().mockResolvedValue(undefined);
+  session.sessionStore.getState.mockReset().mockReturnValue({ user: { tenantId: 'tenant-1' } });
 });
 
 describe('api', () => {
@@ -30,8 +32,19 @@ describe('api', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('https://api.test/orders?limit=5');
     expect(init?.method).toBe('POST');
-    expect(init?.headers).toMatchObject({ Authorization: 'Bearer id-token', 'Content-Type': 'application/json' });
+    expect(init?.headers).toMatchObject({
+      Authorization: 'Bearer id-token',
+      'X-Tenant-Id': 'tenant-1', // the workspace this tab works in
+      'Content-Type': 'application/json',
+    });
     expect(init?.body).toBe('{"item":"Tea"}');
+  });
+
+  it('names no workspace before the user has one', async () => {
+    session.sessionStore.getState.mockReturnValue({ user: { tenantId: null } });
+    fetchMock.mockResolvedValue(json([]));
+    await api('/invitations');
+    expect(fetchMock.mock.calls[0][1]?.headers).not.toHaveProperty('X-Tenant-Id');
   });
 
   it('returns nothing for 204', async () => {

@@ -14,6 +14,8 @@ import type { components as Orders } from './generated/orders';
 type Sent<T> = Required<T>;
 
 export type Tenant = Sent<Accounts['schemas']['TenantOut']>;
+/** One of the signed-in user's workspaces, with their role there (GET /tenants). */
+export type WorkspaceSummary = Accounts['schemas']['WorkspaceOut'];
 export type TenantCreate = Accounts['schemas']['TenantCreate'];
 export type Member = Sent<Accounts['schemas']['Member']>;
 export type Invitation = Sent<Accounts['schemas']['Invitation']>;

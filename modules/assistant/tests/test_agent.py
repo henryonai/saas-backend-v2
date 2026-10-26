@@ -186,7 +186,7 @@ def test_a_conversation_cut_off_during_a_tool_call_continues(ctx, alice):
     ctx.chat("Hi", alice)
     # As if the client went away, or the microVM stopped, while a tool ran:
     # the checkpoint ends with a tool call that has no result.
-    run = AgentContext(user=user_from_claims(alice), authorization="", session_id=ctx.session)
+    run = AgentContext(user=user_from_claims(alice, "t1"), authorization="", session_id=ctx.session)
     ctx.state.agents["assistant"].update_state(thread_config(run, "assistant"), {"messages": [
         HumanMessage("List my orders"),
         AIMessage("", tool_calls=[{"name": "list_orders", "args": {}, "id": "lost-call"}])]}, as_node="model")
@@ -234,14 +234,18 @@ def test_usage_tool_reports_this_month(ctx, alice):
 def test_requests_without_a_readable_id_token_are_rejected(ctx, alice):
     run_id = ctx.post("Hi", alice)
     for authorization in ("", "Bearer not-a-jwt", ctx.id_token({**alice, "token_use": "access"}),
-                          ctx.id_token({k: v for k, v in alice.items() if k != "role"})):
+                          ctx.id_token({**alice, "workspaces": "not json"})):
         assert ctx.error(ctx.run(run_id, authorization=authorization))["code"] == "UNAUTHORIZED"
     assert ctx.model_calls() == []
 
 
-def test_a_workspace_is_required(ctx):
+def test_a_workspace_is_required(ctx, alice):
     assert ctx.send("Hi", claims("newbie"))[0] == 403
     assert ctx.error(ctx.run(str(uuid4()), claims("newbie")))["code"] == "ACCESS_DENIED"
+    run_id = ctx.post("Hi", alice)
+    assert ctx.error(ctx.run(run_id, alice, tenant_id=None))["code"] == "ACCESS_DENIED"   # none named
+    assert ctx.error(ctx.run(run_id, alice, tenant_id="t2"))["code"] == "UNAUTHORIZED"    # not in the token
+    assert ctx.model_calls() == []
 
 
 def test_invalid_input(ctx, alice):
