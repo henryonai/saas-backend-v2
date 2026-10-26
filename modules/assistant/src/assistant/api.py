@@ -28,8 +28,11 @@ from assistant.schemas import (
     MessagePage,
     MessageRating,
     RunOut,
+    Version,
+    VersionIn,
 )
-from assistant.service import ConversationService, active_run
+from assistant.models import Conversation
+from assistant.service import ConversationService, HistoryPage, active_run
 
 router = Router()
 
@@ -44,9 +47,10 @@ def send_message(thread_id: str, body: MessageIn, user: User, service: Service) 
     """
     Saves the user's message in the conversation (created the first time,
     with the client's threadId) and the run that will answer it. With
-    `replaces`, it takes the place of that earlier message of the user's and
-    everything after it (an edit). 402 at the plan's limit; 429 at the user's
-    hourly limit; 409 while the conversation's previous answer is coming.
+    `replaces`, it is a new version of that earlier message of the user's (an
+    edit), or, with its own id, that message answered again; the old version
+    stays. 402 at the plan's limit; 429 at the user's hourly limit; 409 while
+    the conversation's previous answer is coming.
     """
     run = service.send(user, thread_id, body.id, body.content, body.agent, replaces=body.replaces)
     return Response(status_code=201, content_type=content_types.APPLICATION_JSON,
@@ -72,10 +76,17 @@ def list_conversations(user: User, service: Service,
 @router.get("/assistant/conversations/<thread_id>")
 def get_conversation(thread_id: str, user: User, service: Service) -> ConversationDetail:
     """The conversation and its latest 200 messages; earlier_cursor reads back from there."""
-    conversation, page = service.get(user, thread_id)
-    run = active_run(conversation)
-    return ConversationDetail(**ConversationOut.of(conversation).model_dump(), run_id=run and run.run_id,
-                              messages=page.messages, ratings=page.ratings, earlier_cursor=page.earlier)
+    return _detail(*service.get(user, thread_id))
+
+
+@router.post("/assistant/conversations/<thread_id>/messages/<message_id>/version")
+def show_version(thread_id: str, message_id: str, body: VersionIn, user: User, service: Service) -> ConversationDetail:
+    """
+    Shows another version of a message the conversation shows (an edit, or
+    an answer asked for again), and what followed it: the conversation as it
+    is opened now. 409 while an answer is coming.
+    """
+    return _detail(*service.show_version(user, thread_id, message_id, body.version))
 
 
 @router.get("/assistant/conversations/<thread_id>/messages")
@@ -88,7 +99,8 @@ def earlier_messages(thread_id: str, user: User, service: Service,
     conversation scrolled back.
     """
     page = service.earlier(user, thread_id, before, limit)
-    return MessagePage(messages=page.messages, ratings=page.ratings, earlier_cursor=page.earlier)
+    return MessagePage(messages=page.messages, ratings=page.ratings, versions=_versions(page),
+                       earlier_cursor=page.earlier)
 
 
 @router.patch("/assistant/conversations/<thread_id>/messages/<message_id>")
@@ -108,3 +120,14 @@ def delete_conversation(thread_id: str, user: User, service: Service):
     """Deletes it and its messages; the agents' own copy (their checkpoints) goes in the background."""
     service.delete(user, thread_id)
     return Response(status_code=204)
+
+
+def _detail(conversation: Conversation, page: HistoryPage) -> ConversationDetail:
+    run = active_run(conversation)
+    return ConversationDetail(**ConversationOut.of(conversation).model_dump(), run_id=run and run.run_id,
+                              messages=page.messages, ratings=page.ratings, versions=_versions(page),
+                              earlier_cursor=page.earlier)
+
+
+def _versions(page: HistoryPage) -> dict[str, Version]:
+    return {message_id: Version(index=index, count=count) for message_id, (index, count) in page.versions.items()}

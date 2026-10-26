@@ -46,6 +46,7 @@ from assistant.handler import handler
 from assistant.middleware import INTERRUPTED
 from assistant.models import Run, current_month, iso
 from assistant.purge import process_batch
+from assistant.versions import Tree
 from shared.auth import user_from_claims
 from testkit.http import FakeContext, call, claims
 from testkit.logs import captured_logs
@@ -169,34 +170,166 @@ def sent_to_model(ctx, call: int = 0) -> list[tuple[str, str]]:
     return [(m.type, m.text) for m in ctx.model_calls()[call] if m.type != "system"]
 
 
-def test_editing_a_message_replaces_it_and_everything_after_it(ctx, api, alice):
+def show_version(api, user, message_id: str, version: int) -> tuple[int, dict]:
+    """POST .../messages/{id}/version: "‹ 1/2 ›" on a message."""
+    return api.call("POST", f"/assistant/conversations/{THREAD}/messages/{message_id}/version", user,
+                    body={"version": version})
+
+
+def france_and_germany(ctx, alice) -> None:
+    """q1 Capital of France? Paris. q2 And Germany? Berlin."""
     ctx.script(ctx.answer("Paris."))
     ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice)
     ctx.script(ctx.answer("Berlin."))
     ctx.run(ctx.post("And Germany?", alice, message_id="q2"), alice)
+
+
+FRANCE_AND_GERMANY = [("user", "Capital of France?"), ("assistant", "Paris."), ("user", "And Germany?"),
+                      ("assistant", "Berlin.")]
+
+
+def test_editing_a_message_shows_the_new_version_and_keeps_the_old_one(ctx, api, alice):
+    france_and_germany(ctx, alice)
     ctx.script(ctx.answer("Rome."))
 
     ctx.run(ctx.post("Capital of Italy?", alice, message_id="q3", replaces="q1"), alice)
 
+    conversation = opened(api, alice)
     assert history_of(api, alice) == [("user", "Capital of Italy?"), ("assistant", "Rome.")]
-    assert stored(ctx).message_count == 2
-    assert len([i for i in ctx.table.scan()["Items"] if i["sk"].startswith("MSG#")]) == 2
+    assert conversation["message_count"] == 2 and conversation["versions"] == {"q3": {"index": 2, "count": 2}}
     # The agent went back too: the model was sent the edited message alone.
     assert sent_to_model(ctx) == [("human", "Capital of Italy?")]
+
+    status, first = show_version(api, alice, "q3", 1)
+
+    assert status == 200 and [(m["role"], m["content"]) for m in first["messages"]] == FRANCE_AND_GERMANY
+    assert first["versions"] == {"q1": {"index": 1, "count": 2}} and first["message_count"] == 4
+    assert history_of(api, alice) == FRANCE_AND_GERMANY   # it stays shown
     ctx.script(ctx.answer("Madrid."))
     ctx.chat("And Spain?", alice)
-    assert sent_to_model(ctx) == [("human", "Capital of Italy?"), ("ai", "Rome."), ("human", "And Spain?")]
+    # This version goes on: the agent, whose checkpoint is of the other, starts again from its history.
+    assert sent_to_model(ctx) == [("human", "Capital of France?"), ("ai", "Paris."), ("human", "And Germany?"),
+                                  ("ai", "Berlin."), ("human", "And Spain?")]
+    assert history_of(api, alice)[4:] == [("user", "And Spain?"), ("assistant", "Madrid.")]
+    second = show_version(api, alice, "q1", 2)[1]   # and the edit is still there
+    assert [(m["role"], m["content"]) for m in second["messages"]] == [("user", "Capital of Italy?"),
+                                                                       ("assistant", "Rome.")]
 
 
-def test_asking_for_an_answer_again_replaces_the_old_one(ctx, api, alice):
+def test_asking_for_an_answer_again_shows_the_new_one_and_keeps_the_old_one(ctx, api, alice):
     ctx.script(ctx.answer("Paris."))
     ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice)
     ctx.script(ctx.answer("It's Paris."))
 
     ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice)   # the same message again
 
+    conversation = opened(api, alice)
+    newer = conversation["messages"][1]["id"]
     assert history_of(api, alice) == [("user", "Capital of France?"), ("assistant", "It's Paris.")]
+    assert conversation["versions"] == {newer: {"index": 2, "count": 2}}
     assert sent_to_model(ctx) == [("human", "Capital of France?")]   # not the old answer, not the question twice
+    first = show_version(api, alice, newer, 1)[1]
+    assert [m["content"] for m in first["messages"]] == ["Capital of France?", "Paris."]
+    assert first["versions"] == {first["messages"][1]["id"]: {"index": 1, "count": 2}}
+
+
+def test_any_answer_can_be_asked_for_again(ctx, api, alice):
+    france_and_germany(ctx, alice)
+    ctx.script(ctx.answer("Paris, of course."))
+
+    ctx.run(ctx.post("Capital of France?", alice, message_id="q1", replaces="q1"), alice)
+
+    assert history_of(api, alice) == [("user", "Capital of France?"), ("assistant", "Paris, of course.")]
+    assert sent_to_model(ctx) == [("human", "Capital of France?")]
+    older = show_version(api, alice, opened(api, alice)["messages"][1]["id"], 1)[1]
+    assert [(m["role"], m["content"]) for m in older["messages"]] == FRANCE_AND_GERMANY
+
+
+def test_an_answer_asked_for_again_that_never_came_leaves_the_old_one(ctx, api, alice):
+    ctx.script(ctx.answer("Paris."))
+    ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice)
+    ctx.script()   # the model has no answer: the run fails before it says anything
+
+    assert ctx.error(ctx.run(ctx.post("Capital of France?", alice, message_id="q1"), alice))["code"] \
+        == "INTERNAL_ERROR"
+
+    conversation = opened(api, alice)
+    assert history_of(api, alice) == [("user", "Capital of France?"), ("assistant", "Paris.")]
+    assert conversation["versions"] == {} and conversation["run_id"] is None
+
+
+def test_showing_a_version_takes_one_the_conversation_has(ctx, api, alice):
+    france_and_germany(ctx, alice)
+    ctx.script(ctx.answer("Rome."))
+    ctx.run(ctx.post("Capital of Italy?", alice, message_id="q3", replaces="q1"), alice)
+
+    assert show_version(api, alice, "q3", 3)[0] == 404
+    assert show_version(api, alice, "q1", 1)[0] == 404   # not shown: its version 2 is
+    assert show_version(api, claims("bob", "t1", "member"), "q3", 1)[0] == 404
+    assert show_version(api, alice, "q3", 0)[0] == 422
+    assert show_version(api, alice, "q3", 2)[1]["versions"] == {"q3": {"index": 2, "count": 2}}   # the one shown
+    ctx.post("And Spain?", alice)
+    status, body = show_version(api, alice, "q3", 1)
+    assert status == 409 and "still answering" in body["message"]   # while an answer is coming
+
+
+def test_versions_of_a_version(ctx, api, alice):
+    france_and_germany(ctx, alice)
+    ctx.script(ctx.answer("Rome."))
+    ctx.run(ctx.post("Capital of Italy?", alice, message_id="q3", replaces="q1"), alice)
+    ctx.script(ctx.answer("Vienna."))
+    ctx.run(ctx.post("And Austria?", alice, message_id="q4"), alice)
+    ctx.script(ctx.answer("Bern."))
+    ctx.run(ctx.post("And Switzerland?", alice, message_id="q5", replaces="q4"), alice)
+
+    assert opened(api, alice)["versions"] == {"q3": {"index": 2, "count": 2}, "q5": {"index": 2, "count": 2}}
+    show_version(api, alice, "q3", 1)
+    # Back to the edit: it shows its newest versions on from there.
+    assert [m["content"] for m in show_version(api, alice, "q1", 2)[1]["messages"]][::2] \
+        == ["Capital of Italy?", "And Switzerland?"]
+    assert [m["content"] for m in show_version(api, alice, "q5", 1)[1]["messages"]][::2] \
+        == ["Capital of Italy?", "And Austria?"]
+
+
+def test_a_page_read_back_belongs_to_the_version_shown(ctx, api, alice):
+    a_long_conversation(ctx, alice, 250)   # m1 the question, then the answer
+    cursor = opened(api, alice)["earlier_cursor"]
+    ctx.script(ctx.answer("In short."))
+    ctx.run(ctx.post("Tell me briefly", alice, message_id="m0", replaces="m1"), alice)   # another tab edits m1
+
+    status, body = earlier(api, alice, cursor)
+
+    assert status == 409 and "open it again" in body["message"]
+
+
+def test_a_conversation_saved_before_versions_gets_them(ctx, api, alice):
+    france_and_germany(ctx, alice)
+    ctx.table.update_item(Key={"pk": f"TENANT#t1#USER#alice#CONV#{THREAD}", "sk": "META"},
+                          UpdateExpression="REMOVE #path, branches, rev, heads",
+                          ExpressionAttributeNames={"#path": "path"})
+    assert history_of(api, alice) == FRANCE_AND_GERMANY
+    ctx.script(ctx.answer("Madrid."))
+
+    ctx.chat("And Spain?", alice)
+    assert len(sent_to_model(ctx)) == 5   # its checkpoint goes on: nothing restored
+    ctx.script(ctx.answer("Rome."))
+    ctx.run(ctx.post("Capital of Italy?", alice, message_id="q3", replaces="q1"), alice)
+
+    assert opened(api, alice)["versions"] == {"q3": {"index": 2, "count": 2}}
+    assert [m["content"] for m in show_version(api, alice, "q3", 1)[1]["messages"]][-2:] == ["And Spain?", "Madrid."]
+
+
+def test_an_answer_in_a_newer_version_is_rated(ctx, api, alice):
+    france_and_germany(ctx, alice)
+    ctx.script(ctx.answer("Rome."))
+    ctx.run(ctx.post("Capital of Italy?", alice, message_id="q3", replaces="q1"), alice)
+    answer = opened(api, alice)["messages"][1]["id"]
+
+    assert api.call("PATCH", f"/assistant/conversations/{THREAD}/messages/{answer}", alice,
+                    body={"rating": "up"})[0] == 204
+
+    assert opened(api, alice)["ratings"] == {answer: "up"}
+    assert show_version(api, alice, "q3", 1)[1]["ratings"] == {}
 
 
 def test_only_the_users_own_messages_are_edited_one_answer_at_a_time(ctx, api, alice):
@@ -641,7 +774,8 @@ def start(ctx, thread_id: str, now: str, user_id="alice", tenant_id="t1", expire
     run = Run(run_id=str(uuid4()), message_id=str(uuid4()), prompt=title, agent="assistant", since=now)
     before = ctx.conversations.get(tenant_id, user_id, thread_id, expired=True)
     assert ctx.conversations.add_question(
-        tenant_id, user_id, thread_id, run=run, title=title, at=None, count=before.message_count if before else 0,
+        tenant_id, user_id, thread_id, run=run, title=title, before=before,
+        tree=(before.tree() if before else Tree.load(None, None, 0)).grown(1),
         message={"id": run.message_id, "role": "user", "content": title}, now=now,
         expires_at=int(time.time()) + expires_in, stale_before="9999")
     return run
@@ -1145,7 +1279,7 @@ def test_the_purge_deletes_an_expired_conversation_once_ttl_removes_it(ctx, chec
     # Only TTL's removal of a META counts: not the app's delete, nor an old message's own TTL.
     ignored = stream((meta, None), (message, TTL_SERVICE))
     assert assistant.purge.handler(ignored, FakeContext()) == {"batchItemFailures": []}
-    assert checkpoints.left(mine) != {} and ctx.conversations.messages("t1", "alice", THREAD, 50)
+    assert checkpoints.left(mine) != {} and [i for i in ctx.table.scan()["Items"] if i["pk"] == meta["pk"]]
 
     assert assistant.purge.handler(stream((meta, TTL_SERVICE)), FakeContext()) == {"batchItemFailures": []}
 

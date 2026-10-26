@@ -340,6 +340,9 @@
     "goodAnswer": "Câu trả lời tốt",
     "badAnswer": "Câu trả lời chưa tốt",
     "regenerate": "Tạo lại câu trả lời",
+    "previousVersion": "Phiên bản trước",
+    "nextVersion": "Phiên bản sau",
+    "version": "Phiên bản {{index}}/{{count}}",
     "errorTitle": "Trợ lý không trả lời được",
     "errors": {
       "internal": "Trợ lý gặp sự cố. Vui lòng thử lại.",

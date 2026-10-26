@@ -62,6 +62,7 @@ src/assistant/
 ├── titles.py            names a new conversation from its first message, while the agent answers
 ├── app.py               AgentCore entry point (the SDK's AGUIApp): auth, the run, stop, history, stream
 ├── stop.py              Stop ends the run's model call, and estimates what the call cost
+├── versions.py          a conversation's versions (edits, answers asked for again): the path it shows
 ├── runs.py              this microVM's runs: each runs in a worker thread into a log any request reads
 ├── agui.py              the agent's stream → AG-UI events; Transcript: events → AG-UI messages
 ├── context.py           AgentContext: who the agents work for (runtime context, never in a prompt)
@@ -312,11 +313,12 @@ token (`handler.py`, a Lambda):
 
 | Route | |
 |---|---|
-| `POST /assistant/conversations/{threadId}/messages` `{"id", "content", "agent"?, "replaces"?}` | send, or edit (`replaces`): 201 `{"run_id"}`, 402 at the plan's limit, 429 at the user's hourly limit, 409 while an answer is coming |
+| `POST /assistant/conversations/{threadId}/messages` `{"id", "content", "agent"?, "replaces"?}` | send, edit (`replaces`), or answer again (`replaces` its own id): 201 `{"run_id"}`, 402 at the plan's limit, 429 at the user's hourly limit, 409 while an answer is coming |
 | `POST /assistant/conversations/{threadId}/runs/{runId}/cancel` | stop the answer (204, even after it ended) |
 | `PATCH /assistant/conversations/{threadId}/messages/{messageId}` `{"rating": "up" \| "down" \| null}` | rate an answer, or take the rating back (204) |
+| `POST /assistant/conversations/{threadId}/messages/{messageId}/version` `{"version": n}` | show another version of a message, and what followed it: the conversation as `GET` gives it; 409 while an answer is coming |
 | `GET /assistant/conversations?limit=20&cursor=` | the caller's conversations, most recently used first |
-| `GET /assistant/conversations/{threadId}` | title, `run_id` while an answer is coming, the latest 200 messages as AG-UI messages, `ratings`, and `earlier_cursor` |
+| `GET /assistant/conversations/{threadId}` | title, `run_id` while an answer is coming, the latest 200 messages shown as AG-UI messages, `ratings`, `versions`, and `earlier_cursor` |
 | `GET /assistant/conversations/{threadId}/messages?before=&limit=100` | the messages before those (`before`: their `earlier_cursor`), up to 200, with their ratings and the next `earlier_cursor` (null: the first) |
 | `PATCH /assistant/conversations/{threadId}` `{"title"}` | rename (cut to 80 characters) |
 | `DELETE /assistant/conversations/{threadId}` | delete (204) |
@@ -327,19 +329,30 @@ token (`handler.py`, a Lambda):
   since}`. From then on the conversation has it, whatever the page does: a
   reload a moment later finds the message and the run. One answer at a time
   per conversation (409).
-- **Editing and answering again**, as in ChatGPT and the Vercel chatbot (no
-  branches kept): `replaces` names an earlier message of the user's, and the
-  new one takes its place, with everything after it. The same message id sent
-  again (Try again, Regenerate) replaces itself, so the old answer goes. The
-  history is cut in one conditional update of `META` (`message_count`, which
-  must be what the service read, and no answer coming), then the message is
-  written and what came after it deleted; reads stop at `message_count`, so
-  a delete that fails half way leaves nothing anyone sees. The agent goes
-  back too (`Run.rewind_to`, `app.rewound`): its next run starts from its
-  saved state with that user message and everything after it removed. The
-  user's messages are checkpointed with their AG-UI id, which is how it
-  finds them. Only the agent the message went to goes back; other agents
-  that spoke in the conversation keep their own side of it.
+- **Editing and answering again keep the old version**, as in ChatGPT:
+  `replaces` names an earlier message of the user's, and the new one is a new
+  version of it; the message's own id (or the newest question's id sent
+  again: Try again) answers it again, and the new answer is a new version of
+  the old one. The conversation is a tree, and shows one path through it,
+  with `versions` (`{index, count}`, "‹ 2/3 ›") on each message that has
+  others; `POST .../messages/{id}/version {"version": n}` shows another, and
+  what followed it, along its newest versions from there (`versions.py`).
+  Every message has a place, a branch and a position: branch 0 is the
+  conversation as first written (the `MSG#` keys it always had), each new
+  version starts a branch at its position (`BRANCH#<n>#MSG#` keys). The
+  path is a few segments of branches, on `META` (`path`, `branches`,
+  `message_count`, its length), so reading a page of it is one query per
+  segment, and showing another version changes only `META`, in one
+  conditional update (`rev`, which every change to what it shows moves on).
+  Nothing is deleted: an answer asked for again that came to nothing leaves
+  the old one shown. The agent goes back too (`Run.rewind_to`,
+  `app.rewound`): its next run starts from its saved state with that user
+  message and everything after it removed (the user's messages are
+  checkpointed with their AG-UI id, which is how it finds them). When its
+  checkpoint is of another path (another version was shown, or another agent
+  spoke since: `META.heads`, the `rev` each agent's checkpoint is of), it
+  starts again from the history of the path shown instead (`Run.restore`,
+  `app.restored`), as an agent whose checkpoints expired does.
 - **The run** happens in the conversation's AgentCore microVM (`app.py`,
   `runs.py`). The first request for it starts it, reading the prompt from
   `META.run`; it goes on in a worker thread whatever happens to that request,
@@ -381,7 +394,8 @@ token (`handler.py`, a Lambda):
 - **Long conversations** open at their latest 200 messages, as in ChatGPT
   and Claude, and read back from there a page at a time: Show earlier
   messages sends the page's `earlier_cursor` as `?before=`. The cursor names
-  a position, so messages added meanwhile don't move it.
+  a position on the path shown, so messages added meanwhile don't move it;
+  if another tab showed another version before it since, it answers 409.
 - **A stream that breaks** (the network, AgentCore failing a request) is
   read on from where it was, as OpenAI's background responses
   (`starting_after`) and LangGraph streams (`Last-Event-ID`) do: the page
@@ -404,11 +418,12 @@ token (`handler.py`, a Lambda):
 - **Ratings**: thumbs up or down on an answer, on its last assistant message
   (`rating` on its `MSG#` item); `null` takes it back. Each is logged as
   `Answer rated`, with the workspace, user, conversation, message, rating and
-  agents, for CloudWatch Logs Insights. Editing a message before the answer
-  deletes the answer and its rating.
+  agents, for CloudWatch Logs Insights. A rating stays with its version of
+  the answer.
 - **Stored** in the assistant table, under the user's own keys:
-  `TENANT#<t>#USER#<u>#CONV#<threadId>` with `META` and `MSG#<n>` items, and
-  the index `gsi1` for the list (`repository.py`). On a stack that had the
+  `TENANT#<t>#USER#<u>#CONV#<threadId>` with `META`, `MSG#<n>` and
+  `BRANCH#<b>#MSG#<n>` items (versions), and the index `gsi1` for the list
+  (`repository.py`). On a stack that had the
   assistant before, the deploy that adds `gsi1` finishes before DynamoDB has
   built it, and DynamoDB refuses to read an index it's still building: the
   list answers 500 for the first minutes (about 5 on dev, October 2026) while
@@ -615,8 +630,7 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   not summarized. `SummarizationMiddleware` could keep their gist (its model
   calls would need to count against the token cap too). Each checkpoint holds
   the whole conversation, so a long one writes more with every message.
-- **Conversations**: search, and branches (an edit replaces what came after
-  it; ChatGPT keeps both as a tree).
+- **Conversations**: search.
 - **Ratings with a reason**: a comment on a thumbs down, and an evaluation
   set built from rated answers (AgentCore Evaluations isn't in
   ap-southeast-1 yet).

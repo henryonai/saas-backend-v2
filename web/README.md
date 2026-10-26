@@ -165,6 +165,10 @@ beside the chat (a side panel on a phone) comes from the HTTP API
   expired says so. A long one opens at its latest 200 messages; "Show
   earlier messages" reads back a page at a time (`loadEarlier`, with the
   `earlier_cursor` the API gave), keeping the user's place on screen.
+- Editing a message, or asking for an answer again (Regenerate, on any
+  answer), keeps the old version on the server, as in ChatGPT: "‹ 2/3 ›"
+  under the message (`versions`) shows another, and what followed it
+  (`switchVersion`). A new version is numbered once its answer is in.
 - Rename (a dialog) and delete (a confirmation) are in each item's menu.
   Deleting the open conversation starts a new one.
 

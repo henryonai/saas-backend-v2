@@ -23,6 +23,7 @@ from assistant.repository import (
     earlier_cursor,
     read_earlier_cursor,
 )
+from assistant.versions import Tree
 
 logger = Logger()
 
@@ -117,6 +118,9 @@ class UsageService:
 TITLE_CHARS = 80               # a conversation's title, however it was set
 TOOL_RESULT_CHARS = 10_000     # of each tool result kept for the history (bash cuts its own output to this)
 MESSAGES_SHOWN = 200           # latest messages returned when a conversation is opened (and most per page before them)
+# The most messages an agent that starts again from the history gets (its
+# latest): far more than each model call is sent (factory.MAX_HISTORY_TOKENS).
+RESTORED_MESSAGES = 400
 # AgentCore ends a streaming request after 60 minutes: a run started longer
 # ago isn't answering any more (its runtime stopped before it could say so).
 RUN_LIMIT = timedelta(minutes=60)
@@ -179,32 +183,37 @@ class ConversationLog:
 
     def earlier(self, context: AgentContext, run: Run) -> list[dict]:
         """
-        What the run's agent was told and said in this conversation before
-        the run's message, oldest first: what its checkpoint had, for an agent
-        that has none any more (app.restored). Messages saved before each
-        was marked with its agent (October 2026) count as the main agent's.
+        What the run's agent was told and said in this conversation, on the
+        path it shows, before the run's message, oldest first (its latest
+        RESTORED_MESSAGES, from a user message): what its checkpoint would
+        have, for an agent that has none any more, or whose checkpoint is of
+        another path (app.restored). Messages saved before each was marked
+        with its agent (October 2026) count as the main agent's.
         """
         tenant_id, user_id = context.user.require_tenant(), context.user.user_id
         conversation = self.conversations.get(tenant_id, user_id, context.session_id, expired=True)
         if conversation is None or conversation.message_count <= 1:   # the run's message is its first
             return []
-        said = self.conversations.all_messages(tenant_id, user_id, context.session_id,
-                                               last=conversation.message_count)
+        said = self.conversations.said(tenant_id, user_id, context.session_id, conversation.tree(),
+                                       RESTORED_MESSAGES)
         mine = [message for agent, message in said if (agent or MAIN_AGENT) == run.agent]
         at = next((i for i, m in enumerate(mine) if m.get("role") == "user" and m.get("id") == run.message_id),
                   len(mine))
-        return mine[:at]
+        start = next((i for i, m in enumerate(mine) if m.get("role") == "user"), at)   # what a cut left alone
+        return mine[start:at]
 
-    def record(self, context: AgentContext, run_id: str, messages: list[dict], *, agent: str) -> bool:
+    def record(self, context: AgentContext, run_id: str, messages: list[dict], *, agent: str,
+               checkpointed: bool = False) -> bool:
         """
         After the run (answered, failed, stopped or cut off): the messages it
-        streamed, as `agent`'s, and that it's over. False if the conversation
-        was deleted meanwhile: its answer is not kept.
+        streamed, as `agent`'s, and that it's over. `checkpointed`: the
+        agent's checkpoint has all of it. False if the conversation was
+        deleted meanwhile: its answer is not kept.
         """
         saved = self.conversations.add_answer(
             context.user.require_tenant(), context.user.user_id, context.session_id, run_id,
             [_kept(message) for message in messages], agent=agent, now=now_iso(),
-            expires_at=_expires_at(self.days))
+            expires_at=_expires_at(self.days), checkpointed=checkpointed)
         if not saved:
             logger.info("The conversation was deleted while the agent answered; its answer is not kept")
         return saved
@@ -241,20 +250,24 @@ class SqsPurgeQueue:
 
 @dataclass(frozen=True)
 class HistoryPage:
-    """Some of a conversation's messages, oldest first, with the user's ratings of them."""
+    """Some of the messages a conversation shows, oldest first, with the user's ratings of them."""
     messages: list[dict]
     ratings: dict[str, Rating]
+    # Messages with other versions: which one each is, and of how many ((index from 1, count)), by id.
+    versions: dict[str, tuple[int, int]]
     earlier: str | None   # where the messages before these start (earlier_cursor), or None: these are the first
 
 
 NOT_FOUND = "No such conversation: it was deleted, or it expired."
 STILL_ANSWERING = "The assistant is still answering in this conversation: wait for the answer, or stop it."
+CHANGED = "The conversation shows another version now (changed in another tab): open it again."
 
 
 class ConversationService:
     """
     The user's conversations, for the HTTP API: send a message (or edit one),
-    stop its answer, rate it, list, open, rename, delete.
+    stop its answer, rate it, show another version, list, open, rename,
+    delete.
     """
 
     def __init__(self, conversations: ConversationRepository, purge: PurgeQueue, usage: UsageService, days: int):
@@ -272,11 +285,15 @@ class ConversationService:
         the user's hourly limit); one answer at a time per conversation
         (409). The page then has AgentCore run it.
 
-        The message is the newest, or it takes the place of an earlier
-        message of the user's and everything after it, as in ChatGPT and the
-        Vercel chatbot: `replaces` names the message edited, and the same
-        message sent again (Try again, or the answer asked for again) replaces
-        itself. The agent goes back to before it too (Run.rewind_to).
+        The message is the newest, or, as in ChatGPT, a new version of an
+        earlier message of the user's (`replaces`: an edit): the old version
+        stays, with what came after it, and the conversation shows the new
+        one (versions.py). The same message sent again (`replaces` is its
+        own id, or it is the newest question: Try again, Regenerate) is
+        answered again, and its old answer stays as a version. The agent goes
+        back to before it too (Run.rewind_to), or, when its checkpoints are
+        of another version of the conversation, starts again from the
+        history of this one (Run.restore).
         """
         tenant_id = user.require_tenant()
         if not SESSION_ID.fullmatch(thread_id):
@@ -291,26 +308,67 @@ class ConversationService:
             raise Conflict(STILL_ANSWERING)
         if replaces is None and conversation and conversation.question_id == message_id:
             replaces = message_id
-        position = None
+        tree = conversation.tree() if conversation else Tree.load(None, None, 0)
+        message: dict | None = {"id": message_id, "role": "user", "content": content}
+        position = tree.count + 1
         if replaces is not None:
-            found = conversation and self.conversations.find_message(
-                tenant_id, user.user_id, thread_id, replaces, last=conversation.message_count)
-            if not found or found[1] != "user":
+            found = conversation and self.conversations.find_message(tenant_id, user.user_id, thread_id, replaces,
+                                                                     tree)
+            if not found or found.role != "user":
                 raise NotFound("No such message of yours in this conversation.")
-            position = found[0]
+            position = found.position
+            if replaces == message_id:   # answered again: the message stays, its old answer is a version
+                message, content = None, self._question(user, thread_id, tree, position) or content
+                tree = tree.branched(position + 1) if tree.count > position else tree
+            else:
+                tree = tree.branched(position)
+        if message is not None:
+            tree = tree.grown(1)
         self.usage.start_message(user)
         now = datetime.now(UTC)
+        # The agent's checkpoints are of the conversation as it is (or there are none yet to be wrong).
+        current = conversation is None or conversation.rev is None or conversation.heads.get(agent) == conversation.rev
         first = conversation is None or (position == 1 and conversation.title_source == "message")
         run = Run(run_id=str(uuid4()), message_id=message_id, prompt=content, agent=agent, since=iso(now),
-                  first=first, rewind_to=replaces)
+                  first=first, rewind_to=replaces if current else None, restore=not current)
         saved = self.conversations.add_question(
-            tenant_id, user.user_id, thread_id, run=run, title=first_message_title(content),
-            message={"id": message_id, "role": "user", "content": content}, at=position,
-            count=conversation.message_count if conversation else 0,
-            now=run.since, expires_at=_expires_at(self.days), stale_before=iso(now - RUN_LIMIT))
+            tenant_id, user.user_id, thread_id, message=message, run=run, title=first_message_title(content),
+            before=conversation, tree=tree, now=run.since, expires_at=_expires_at(self.days),
+            stale_before=iso(now - RUN_LIMIT))
         if not saved:
             raise Conflict(STILL_ANSWERING)   # sent from another tab a moment ago
         return run
+
+    def _question(self, user: CurrentUser, thread_id: str, tree: Tree, position: int) -> str | None:
+        """The text of the user's message at `position`, as it was saved: what answering it again answers."""
+        message = self.conversations.message(user.require_tenant(), user.user_id, thread_id, tree.node(position))
+        content = message and message.get("content")
+        return content if isinstance(content, str) else None
+
+    def show_version(self, user: CurrentUser, thread_id: str, message_id: str,
+                     version: int) -> tuple[Conversation, HistoryPage]:
+        """
+        Shows version `version` (from 1) of a message the conversation shows,
+        and what followed it, on its newest versions from there ("‹ 2/3 ›").
+        The conversation as it shows now, as opening it gives it. Not while
+        an answer is coming (409).
+        """
+        tenant_id = user.require_tenant()
+        conversation = self._get(user, thread_id)
+        if active_run(conversation):
+            raise Conflict(STILL_ANSWERING)
+        tree = conversation.tree()
+        found = self.conversations.find_message(tenant_id, user.user_id, thread_id, message_id, tree)
+        if not found:
+            raise NotFound("No such message in this conversation.")
+        try:
+            shown = tree.showing(found.position, version)
+        except IndexError:
+            raise NotFound(f"That message has no version {version}.")
+        if not self.conversations.show(tenant_id, user.user_id, thread_id, shown, before=conversation,
+                                       stale_before=iso(datetime.now(UTC) - RUN_LIMIT)):
+            raise Conflict(CHANGED)
+        return self.get(user, thread_id)
 
     def cancel(self, user: CurrentUser, thread_id: str, run_id: str) -> None:
         """
@@ -337,20 +395,28 @@ class ConversationService:
         """
         The messages before a page already read (`before`: its
         earlier_cursor), as a long conversation is scrolled back: the
-        newest `limit` of them, oldest first.
+        newest `limit` of them, oldest first. 409 if the conversation shows
+        another version of them now (switched in another tab).
         """
         try:
-            position = read_earlier_cursor(before)
+            position, fingerprint = read_earlier_cursor(before)
         except InvalidCursor:
             raise InvalidRequest("Pass the earlier_cursor of the messages you have as ?before=.")
-        return self._page(user, self._get(user, thread_id), limit, before=position)
+        conversation = self._get(user, thread_id)
+        if conversation.tree().fingerprint(position) != fingerprint:
+            raise Conflict(CHANGED)
+        return self._page(user, conversation, limit, before=position)
 
     def _page(self, user: CurrentUser, conversation: Conversation, limit: int,
               before: int | None = None) -> HistoryPage:
-        messages, ratings, first = self.conversations.history(
-            user.require_tenant(), user.user_id, conversation.thread_id, limit, last=conversation.message_count,
-            before=before)
-        return HistoryPage(messages, ratings, earlier_cursor(first) if first and first > 1 else None)
+        tree = conversation.tree()
+        messages, ratings, positions = self.conversations.history(
+            user.require_tenant(), user.user_id, conversation.thread_id, tree, limit, before=before)
+        at = {position: message["id"] for position, message in zip(positions, messages, strict=True)}
+        versions = {at[position]: version for position, version in tree.versions(positions[0], positions[-1]).items()
+                    if position in at} if positions else {}
+        earlier = earlier_cursor(positions[0], tree) if positions and positions[0] > 1 else None
+        return HistoryPage(messages, ratings, versions, earlier)
 
     def rate(self, user: CurrentUser, thread_id: str, message_id: str, rating: Rating | None) -> None:
         """
@@ -359,10 +425,10 @@ class ConversationService:
         like, by agent and workspace.
         """
         conversation = self._get(user, thread_id)
-        found = self.conversations.find_message(user.require_tenant(), user.user_id, thread_id, message_id,
-                                                last=conversation.message_count)
-        if not found or found[1] != "assistant" or not self.conversations.rate(
-                user.require_tenant(), user.user_id, thread_id, found[0], rating):
+        tree = conversation.tree()
+        found = self.conversations.find_message(user.require_tenant(), user.user_id, thread_id, message_id, tree)
+        if not found or found.role != "assistant" or not self.conversations.rate(
+                user.require_tenant(), user.user_id, thread_id, tree.node(found.position), rating):
             raise NotFound("No such answer in this conversation.")
         logger.info("Answer rated", extra={"session_id": thread_id, "message_id": message_id, "rating": rating,
                                            "agents": sorted(conversation.agents)})

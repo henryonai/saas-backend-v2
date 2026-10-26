@@ -1,7 +1,7 @@
-import { BotIcon, PencilIcon, RotateCwIcon, ThumbsDownIcon, ThumbsUpIcon } from 'lucide-react';
+import { BotIcon, ChevronLeftIcon, ChevronRightIcon, PencilIcon, RotateCwIcon, ThumbsDownIcon, ThumbsUpIcon } from 'lucide-react';
 import { type FormEvent, type KeyboardEvent, type ReactNode, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AssistantRating } from '@/shared/api/types';
+import type { AssistantRating, AssistantVersion } from '@/shared/api/types';
 import { Button } from '@/shared/components/ui/button';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { Textarea } from '@/shared/components/ui/textarea';
@@ -14,8 +14,17 @@ import { ToolCall } from './tool-call';
 /** Shown on hover, and always where there is no hover (touch screens), or when focused. */
 const ON_HOVER = 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100';
 
-/** A message of the user's. `onEdit` (none while an answer is coming): it and what follows make way for new text. */
-export function UserTurn({ text, onEdit }: { text: string; onEdit?: (text: string) => void }) {
+/**
+ * A message of the user's. `onEdit` (none while an answer is coming): new
+ * text, a new version of it. `version`: which of its versions it is, and
+ * `onVersion` shows another.
+ */
+export function UserTurn({ text, onEdit, version, onVersion }: {
+  text: string;
+  onEdit?: (text: string) => void;
+  version?: AssistantVersion;
+  onVersion?: (version: number) => void;
+}) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   if (editing && onEdit) {
@@ -35,11 +44,46 @@ export function UserTurn({ text, onEdit }: { text: string; onEdit?: (text: strin
       <div className="max-w-[85%] rounded-2xl bg-primary px-4 py-2 text-sm whitespace-pre-wrap break-words text-primary-foreground">
         {text}
       </div>
-      {onEdit && (
-        <Button variant="ghost" size="icon-sm" className={cn('text-muted-foreground', ON_HOVER)} onClick={() => setEditing(true)} aria-label={t('assistant.edit')} title={t('assistant.edit')}>
-          <PencilIcon />
-        </Button>
-      )}
+      <div className="flex items-center gap-0.5 text-muted-foreground">
+        {onEdit && (
+          <Button variant="ghost" size="icon-sm" className={ON_HOVER} onClick={() => setEditing(true)} aria-label={t('assistant.edit')} title={t('assistant.edit')}>
+            <PencilIcon />
+          </Button>
+        )}
+        {version && <VersionPicker version={version} onShow={onVersion} />}
+      </div>
+    </div>
+  );
+}
+
+/** "‹ 2/3 ›": which version of a message this is, of how many; the arrows show the one before or after it. */
+function VersionPicker({ version, onShow }: { version: AssistantVersion; onShow?: (version: number) => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center text-xs tabular-nums" role="group" aria-label={t('assistant.version', { index: version.index, count: version.count })}>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        disabled={!onShow || version.index <= 1}
+        onClick={() => onShow?.(version.index - 1)}
+        aria-label={t('assistant.previousVersion')}
+        title={t('assistant.previousVersion')}
+      >
+        <ChevronLeftIcon />
+      </Button>
+      <span aria-hidden="true">
+        {version.index}/{version.count}
+      </span>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        disabled={!onShow || version.index >= version.count}
+        onClick={() => onShow?.(version.index + 1)}
+        aria-label={t('assistant.nextVersion')}
+        title={t('assistant.nextVersion')}
+      >
+        <ChevronRightIcon />
+      </Button>
     </div>
   );
 }
@@ -88,15 +132,20 @@ function EditMessage({ text, onCancel, onSend }: { text: string; onCancel: () =>
  * One answer, as it streams: text and tool calls in order. `active`: its run
  * is still going; `thinking`: nothing is streaming right now (the model hasn't
  * started, or a tool just finished). Once it's done: thumbs up or down
- * (`rating`, `onRate`), and on the last answer `onRegenerate`.
+ * (`rating`, `onRate`), `onRegenerate`, and which of its versions it is
+ * (`version`, `onVersion`). Its actions show on hover, except on the
+ * `latest` answer, or one rated or with versions.
  */
-export function AssistantTurn({ turn, active, thinking, rating, onRate, onRegenerate }: {
+export function AssistantTurn({ turn, active, thinking, latest = false, rating, onRate, onRegenerate, version, onVersion }: {
   turn?: Extract<Turn, { role: 'assistant' }>;
   active: boolean;
   thinking: boolean;
+  latest?: boolean;
   rating?: AssistantRating;
   onRate?: (rating: AssistantRating) => void;
   onRegenerate?: () => void;
+  version?: AssistantVersion;
+  onVersion?: (version: number) => void;
 }) {
   const { t } = useTranslation();
   const done = turn && turn.parts.length > 0 && !active;
@@ -116,7 +165,8 @@ export function AssistantTurn({ turn, active, thinking, rating, onRate, onRegene
           </div>
         )}
         {done && onRate && (
-          <div className={cn('-ml-2 flex items-center gap-0.5 text-muted-foreground', !rating && !onRegenerate && ON_HOVER)}>
+          <div className={cn('-ml-2 flex items-center gap-0.5 text-muted-foreground', !rating && !latest && !version && ON_HOVER)}>
+            {version && <VersionPicker version={version} onShow={onVersion} />}
             <RateButton label={t('assistant.goodAnswer')} pressed={rating === 'up'} onClick={() => onRate('up')}>
               <ThumbsUpIcon />
             </RateButton>

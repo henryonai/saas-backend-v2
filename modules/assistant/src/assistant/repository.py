@@ -3,16 +3,20 @@ Assistant table:
   pk = TENANT#<t>                         sk = USAGE#<YYYY-MM>   the workspace's usage that month
   pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = META              a conversation (models.Conversation),
                                                                  with its run while one answers
-  pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = MSG#<000001>      one of its AG-UI messages, in order, up to
-                                                                 META's message_count, with the agent it was
-                                                                 said to or by, and the user's rating of an
-                                                                 answer
+  pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = MSG#<000001>      one of its AG-UI messages, at its position, with
+                                                                 the agent it was said to or by, and the user's
+                                                                 rating of an answer
+  pk = TENANT#<t>#USER#<u>#CONV#<thread>  sk = BRANCH#<0001>#MSG#<000004>   the same, in a version other than
+                                                                 the first (branch 1 from position 4: an edit,
+                                                                 or an answer asked for again, versions.py)
   pk = TENANT#<t>                         sk = USER#<u>#HOUR#<YYYY-MM-DDTHH>  messages a user sent that hour (UTC)
   gsi1pk = TENANT#<t>#USER#<u>#CONVS      gsi1sk = <updated_at>  on META only: the user's list, newest first
 
 The tenant is part of every key, and the user of every conversation key, so
 one workspace never sees another's usage and one user never sees another's
-conversations. Usage expires (TTL) about 13 months after the month started,
+conversations. A conversation's META says which messages it shows: the
+path through its versions (path, branches, message_count), each segment of
+which is one query. Usage expires (TTL) about 13 months after the month started,
 a user's hourly count an hour after its hour.
 A conversation is kept until its user deletes it, or leaves the workspace
 (purge.py). A stack can have it expire instead (CONVERSATION_DAYS), whole,
@@ -26,6 +30,7 @@ import base64
 import json
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
@@ -33,6 +38,7 @@ from botocore.exceptions import ClientError
 from shared.dynamo import is_condition_failure
 
 from assistant.models import Conversation, Rating, Run, TitleSource, Usage
+from assistant.versions import Node, Tree
 
 USAGE_TTL_SECONDS = 400 * 24 * 60 * 60
 
@@ -180,12 +186,13 @@ def _list_pk(tenant_id: str, user_id: str) -> str:
     return f"TENANT#{tenant_id}#USER#{user_id}#CONVS"
 
 
-def _message_sk(position: int) -> str:
-    return f"MSG#{position:06d}"
+def _message_sk(position: int, branch: int = 0) -> str:
+    """A message's key: branch 0, the conversation as first written, has the keys it had before versions."""
+    return f"MSG#{position:06d}" if branch == 0 else f"BRANCH#{branch:04d}#MSG#{position:06d}"
 
 
 def _position(sk: str) -> int:
-    return int(sk.removeprefix("MSG#"))
+    return int(sk.rpartition("MSG#")[2])
 
 
 def _conversation(item: dict) -> Conversation:
@@ -194,6 +201,13 @@ def _conversation(item: dict) -> Conversation:
 
 class InvalidCursor(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class Found:
+    """A message on the path a conversation shows: where it is, and its AG-UI role."""
+    position: int
+    role: str | None
 
 
 class ConversationRepository:
@@ -206,31 +220,35 @@ class ConversationRepository:
     def __init__(self, table):
         self.table = table
 
-    def add_question(self, tenant_id: str, user_id: str, thread_id: str, *, message: dict, run: Run, title: str,
-                     at: int | None, count: int, now: str, expires_at: int | None, stale_before: str) -> bool:
+    def add_question(self, tenant_id: str, user_id: str, thread_id: str, *, message: dict | None, run: Run,
+                     title: str, before: Conversation | None, tree: Tree, now: str, expires_at: int | None,
+                     stale_before: str) -> bool:
         """
         The user's message and the run that will answer it: creates the
-        conversation the first time (titled `title`), adds the message as
-        the newest, or puts it `at` a position in place of the message there
-        and everything after it (edited, or sent again), and sets the run.
-        `count` is the message_count the caller read: False if it changed
-        meanwhile, or while an earlier run, started after `stale_before`, is
-        still answering. `expires_at` None: the conversation is kept.
+        conversation the first time (titled `title`), sets the path it shows
+        from now on (`tree`: the message added at its end, or a new version,
+        versions.py), puts `message` at the path's end (None: it is there
+        already, to be answered again), and sets the run. `before`: the
+        conversation as the caller read it: False if it changed meanwhile,
+        or while an earlier run, started after `stale_before`, is still
+        answering. `expires_at` None: the conversation is kept.
         """
-        position = at if at is not None else count + 1
+        path, branches = tree.dump()
         names = {"#thread": "thread_id", "#title": "title", "#source": "title_source", "#created": "created_at",
                  "#updated": "updated_at", "#expires": "expires_at", "#agents": "agents", "#run": "run",
-                 "#question": "question_id", "#count": "message_count"}
+                 "#question": "question_id", "#count": "message_count", "#path": "path", "#branches": "branches",
+                 "#rev": "rev", "#heads": "heads"}
         values = {":thread": thread_id, ":title": title, ":message": "message", ":now": now,
                   ":list": _list_pk(tenant_id, user_id), ":agents": {run.agent}, ":run": run.model_dump(),
-                  ":question": message["id"], ":stale": stale_before, ":position": position, ":count": count}
+                  ":question": run.message_id, ":stale": stale_before, ":count": tree.count, ":path": path,
+                  ":branches": branches, ":rev": (before.rev or 0) + 1 if before else 1, ":heads": {}}
         expiry, remove = _expiry(expires_at, values)
         update = ("SET #thread = :thread, #title = if_not_exists(#title, :title), "
                   "#source = if_not_exists(#source, :message), #created = if_not_exists(#created, :now), "
-                  f"#updated = :now{expiry}, gsi1pk = :list, gsi1sk = :now, #run = :run, "
-                  f"#question = :question, #count = :position{remove} ADD #agents :agents")
-        condition = ("(attribute_not_exists(#run) OR #run.since < :stale) "
-                     "AND (attribute_not_exists(#count) OR #count = :count)")
+                  f"#updated = :now{expiry}, gsi1pk = :list, gsi1sk = :now, #run = :run, #question = :question, "
+                  "#count = :count, #path = :path, #branches = :branches, #rev = :rev, "
+                  f"#heads = if_not_exists(#heads, :heads){remove} ADD #agents :agents")
+        condition = f"(attribute_not_exists(#run) OR #run.since < :stale) AND {_unchanged(before, values)}"
         try:
             self.table.update_item(
                 Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
@@ -243,22 +261,28 @@ class ConversationRepository:
             if is_condition_failure(e):
                 return False
             raise
-        self._put_messages(tenant_id, user_id, thread_id, [message], position, run.agent)
-        # What came after it is gone from the conversation: message_count says
-        # so already, and reads stop there, so a delete that fails half way
-        # leaves nothing anyone sees, and later messages write over it.
-        self._delete_messages(tenant_id, user_id, thread_id, range(position + 1, count + 1))
+        if message is not None:
+            self._put_messages(tenant_id, user_id, thread_id, [message], tree.node(tree.count), run.agent)
         return True
 
     def add_answer(self, tenant_id: str, user_id: str, thread_id: str, run_id: str, messages: list[dict], *,
-                   agent: str, now: str, expires_at: int | None) -> bool:
+                   agent: str, now: str, expires_at: int | None, checkpointed: bool = False) -> bool:
         """
-        After the run: appends what it streamed (maybe nothing), as `agent`'s,
-        then removes the run, in that order, so whoever finds it answered
-        finds the whole answer. False if the conversation no longer exists
-        (deleted meanwhile).
+        After the run: appends what it streamed (maybe nothing) to the end of
+        the path, as `agent`'s, then removes the run, in that order, so
+        whoever finds it answered finds the whole answer. `checkpointed`: the
+        agent's checkpoint has the conversation as it is now (Conversation.heads).
+        An answer asked for again that came to nothing leaves the one before
+        it shown (Tree.without_empty_tail). False if the conversation no
+        longer exists (deleted meanwhile), or the run isn't its run.
         """
         key = {"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"}
+        item = self.table.get_item(Key=key, ConsistentRead=True).get("Item")
+        if item is None:
+            return False
+        # What it shows doesn't change while the run answers (one at a time): only this run adds to it.
+        conversation = _conversation(item)
+        tree, rev = conversation.tree(), (conversation.rev or 0) + 1
         try:
             if messages:
                 values = {":now": now, ":n": len(messages)}
@@ -272,11 +296,50 @@ class ConversationRepository:
                     ExpressionAttributeValues=values,
                     ReturnValues="UPDATED_NEW",
                 )
-                self._put_messages(tenant_id, user_id, thread_id, messages, int(result["Attributes"]["message_count"]),
-                                   agent)
-            self.table.update_item(Key=key, UpdateExpression="REMOVE #run", ConditionExpression="#run.run_id = :run",
-                                   ExpressionAttributeNames={"#run": "run"},
-                                   ExpressionAttributeValues={":run": run_id})
+                self._put_messages(tenant_id, user_id, thread_id, messages,
+                                   (tree.path[-1][0], int(result["Attributes"]["message_count"])), agent)
+            names, values = {"#run": "run", "#rev": "rev"}, {":run": run_id, ":rev": rev}
+            update = "REMOVE #run SET #rev = :rev"
+            if checkpointed:
+                names["#heads"], values[":heads"] = "heads", {**conversation.heads, agent: rev}
+                update += ", #heads = :heads"
+            if not messages and tree.empty_tail:
+                shown = tree.without_empty_tail()
+                path, branches = shown.dump()
+                names |= {"#path": "path", "#branches": "branches", "#count": "message_count",
+                          "#question": "question_id"}
+                values |= {":path": path, ":branches": branches, ":count": shown.count,
+                           ":question": self.newest_question(tenant_id, user_id, thread_id, shown)}
+                update += ", #path = :path, #branches = :branches, #count = :count, #question = :question"
+            self.table.update_item(Key=key, UpdateExpression=update, ConditionExpression="#run.run_id = :run",
+                                   ExpressionAttributeNames=names, ExpressionAttributeValues=values)
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+        return True
+
+    def show(self, tenant_id: str, user_id: str, thread_id: str, tree: Tree, *, before: Conversation,
+             stale_before: str) -> bool:
+        """
+        Shows another path through the versions (`tree`). False if the
+        conversation changed since `before` was read, or while a run, started
+        after `stale_before`, is answering.
+        """
+        path, branches = tree.dump()
+        values = {":path": path, ":branches": branches, ":count": tree.count, ":rev": (before.rev or 0) + 1,
+                  ":question": self.newest_question(tenant_id, user_id, thread_id, tree), ":stale": stale_before}
+        try:
+            self.table.update_item(
+                Key={"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": "META"},
+                UpdateExpression="SET #path = :path, #branches = :branches, #count = :count, #rev = :rev, "
+                                 "#question = :question",
+                ConditionExpression=f"(attribute_not_exists(#run) OR #run.since < :stale) "
+                                    f"AND {_unchanged(before, values)}",
+                ExpressionAttributeNames={"#path": "path", "#branches": "branches", "#count": "message_count",
+                                          "#rev": "rev", "#question": "question_id", "#run": "run"},
+                ExpressionAttributeValues=values,
+            )
         except ClientError as e:
             if is_condition_failure(e):
                 return False
@@ -299,54 +362,52 @@ class ConversationRepository:
                 return False
             raise
 
-    def _put_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], last: int,
+    def _put_messages(self, tenant_id: str, user_id: str, thread_id: str, messages: list[dict], last: Node,
                       agent: str) -> None:
         """
-        Numbers the messages so that the last one is `last` (the conversation's
-        message_count), each with the agent it was said to or by. No TTL of
-        their own: they go with the conversation.
+        Numbers the messages so that the last one is at `last` (its branch,
+        and the path's new message_count), each with the agent it was said to
+        or by. No TTL of their own: they go with the conversation.
         """
         pk = _conversation_pk(tenant_id, user_id, thread_id)
-        first = last - len(messages) + 1
+        branch, position = last
         with self.table.batch_writer() as batch:
-            for n, message in enumerate(messages, start=first):
-                batch.put_item(Item={"pk": pk, "sk": _message_sk(n), "message": message, "agent": agent})
-
-    def _delete_messages(self, tenant_id: str, user_id: str, thread_id: str, positions: range) -> None:
-        pk = _conversation_pk(tenant_id, user_id, thread_id)
-        with self.table.batch_writer() as batch:
-            for n in positions:
-                batch.delete_item(Key={"pk": pk, "sk": _message_sk(n)})
+            for n, message in enumerate(messages, start=position - len(messages) + 1):
+                batch.put_item(Item={"pk": pk, "sk": _message_sk(n, branch), "message": message, "agent": agent})
 
     def find_message(self, tenant_id: str, user_id: str, thread_id: str, message_id: str,
-                     last: int) -> tuple[int, str] | None:
+                     tree: Tree) -> Found | None:
         """
-        Where the message with this (AG-UI) id is, and its role: (position,
-        role), or None. Looks from the newest back, since messages edited or
-        rated are mostly recent; `last` is the conversation's message_count.
+        The message with this (AG-UI) id on the path the conversation shows,
+        or None. Looks from the newest back, since messages edited or rated
+        are mostly recent.
         """
-        if last < 1:
-            return None
-        params = {
-            "KeyConditionExpression": Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id))
-            & Key("sk").between(_message_sk(1), _message_sk(last)),
-            "ProjectionExpression": "sk, #m.#id, #m.#role",
-            "ExpressionAttributeNames": {"#m": "message", "#id": "id", "#role": "role"},
-            "ScanIndexForward": False,
-            "ConsistentRead": True,
-        }
-        while True:
-            result = self.table.query(**params)
-            for item in result["Items"]:
-                if item["message"].get("id") == message_id:
-                    return _position(item["sk"]), item["message"].get("role")
-            if "LastEvaluatedKey" not in result:
-                return None
-            params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+        projection = {"ProjectionExpression": "sk, #m.#id, #m.#role",
+                      "ExpressionAttributeNames": {"#m": "message", "#id": "id", "#role": "role"}}
+        for position, item in self._path(tenant_id, user_id, thread_id, tree, 1, tree.count, newest_first=True,
+                                         **projection):
+            if item["message"].get("id") == message_id:
+                return Found(position, item["message"].get("role"))
+        return None
 
-    def rate(self, tenant_id: str, user_id: str, thread_id: str, position: int, rating: Rating | None) -> bool:
-        """Sets (or, with None, clears) the user's rating of the message at `position`. False if it's gone."""
-        key = {"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": _message_sk(position)}
+    def newest_question(self, tenant_id: str, user_id: str, thread_id: str, tree: Tree) -> str | None:
+        """The id of the newest user message on the path: the one the same id sent again answers again."""
+        projection = {"ProjectionExpression": "sk, #m.#id, #m.#role",
+                      "ExpressionAttributeNames": {"#m": "message", "#id": "id", "#role": "role"}}
+        for _, item in self._path(tenant_id, user_id, thread_id, tree, 1, tree.count, newest_first=True, **projection):
+            if item["message"].get("role") == "user":
+                return item["message"].get("id")
+        return None
+
+    def message(self, tenant_id: str, user_id: str, thread_id: str, node: Node) -> dict | None:
+        """The message stored at `node` (its branch and position), or None."""
+        item = self.table.get_item(Key={"pk": _conversation_pk(tenant_id, user_id, thread_id),
+                                        "sk": _message_sk(node[1], node[0])}, ConsistentRead=True).get("Item")
+        return item and item["message"]
+
+    def rate(self, tenant_id: str, user_id: str, thread_id: str, node: Node, rating: Rating | None) -> bool:
+        """Sets (or, with None, clears) the user's rating of the message at `node`. False if it's gone."""
+        key = {"pk": _conversation_pk(tenant_id, user_id, thread_id), "sk": _message_sk(node[1], node[0])}
         params = {"UpdateExpression": "REMOVE #rating", "ExpressionAttributeNames": {"#rating": "rating"}}
         if rating is not None:
             params = {"UpdateExpression": "SET #rating = :rating", "ExpressionAttributeNames": {"#rating": "rating"},
@@ -395,58 +456,52 @@ class ConversationRepository:
             return None
         return _conversation(item)
 
-    def messages(self, tenant_id: str, user_id: str, thread_id: str, limit: int,
-                 last: int | None = None) -> list[dict]:
-        """The latest `limit` messages, oldest first: all that were written, even a moment ago."""
-        return self.history(tenant_id, user_id, thread_id, limit, last)[0]
+    def messages(self, tenant_id: str, user_id: str, thread_id: str, limit: int) -> list[dict]:
+        """The latest `limit` messages shown, oldest first: all that were written, even a moment ago."""
+        conversation = self.get(tenant_id, user_id, thread_id, expired=True)
+        return self.history(tenant_id, user_id, thread_id, conversation.tree(), limit)[0] if conversation else []
 
-    def history(self, tenant_id: str, user_id: str, thread_id: str, limit: int, last: int | None = None,
-                before: int | None = None) -> tuple[list[dict], dict[str, Rating], int | None]:
+    def history(self, tenant_id: str, user_id: str, thread_id: str, tree: Tree, limit: int,
+                before: int | None = None) -> tuple[list[dict], dict[str, Rating], list[int]]:
         """
-        The latest `limit` messages, oldest first, the user's ratings of them
-        by message id, and the position of the oldest (None: there are
-        none). `last`: the conversation's message_count, past which nothing
-        belongs to it any more (add_question). `before`: only the messages
-        before this position, for the page before one already read.
+        The latest `limit` messages of the path `tree` shows, oldest first,
+        the user's ratings of them by message id, and each one's position.
+        `before`: only the messages before this position, for the page
+        before one already read.
         """
-        if before is not None:
-            last = min(last, before - 1) if last is not None else before - 1
-        if last is not None and last < 1:
-            return [], {}, None
-        newest = Key("sk").between(_message_sk(1), _message_sk(last)) if last is not None \
-            else Key("sk").begins_with("MSG#")
-        result = self.table.query(
-            KeyConditionExpression=Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id)) & newest,
-            ScanIndexForward=False,
-            Limit=limit,
-            ConsistentRead=True,
-        )
-        items = list(reversed(result["Items"]))
-        first = _position(items[0]["sk"]) if items else None
-        return [item["message"] for item in items], {item["message"]["id"]: item["rating"] for item in items
-                                                      if "rating" in item}, first
+        last = tree.count if before is None else min(tree.count, before - 1)
+        found = list(self._path(tenant_id, user_id, thread_id, tree, max(1, last - limit + 1), last))
+        return ([item["message"] for _, item in found],
+                {item["message"]["id"]: item["rating"] for _, item in found if "rating" in item},
+                [position for position, _ in found])
 
-    def all_messages(self, tenant_id: str, user_id: str, thread_id: str,
-                     last: int) -> list[tuple[str | None, dict]]:
+    def said(self, tenant_id: str, user_id: str, thread_id: str, tree: Tree,
+             limit: int) -> list[tuple[str | None, dict]]:
         """
-        Every message up to `last` (the conversation's message_count), oldest
-        first, with the agent it was said to or by (None: saved before
-        messages had one).
+        The latest `limit` messages of the path `tree` shows, oldest first,
+        with the agent each was said to or by (None: saved before messages
+        had one).
         """
-        if last < 1:
-            return []
-        params = {
-            "KeyConditionExpression": Key("pk").eq(_conversation_pk(tenant_id, user_id, thread_id))
-            & Key("sk").between(_message_sk(1), _message_sk(last)),
-            "ConsistentRead": True,
-        }
-        said = []
-        while True:
-            result = self.table.query(**params)
-            said += [(item.get("agent"), item["message"]) for item in result["Items"]]
-            if "LastEvaluatedKey" not in result:
-                return said
-            params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+        return [(item.get("agent"), item["message"])
+                for _, item in self._path(tenant_id, user_id, thread_id, tree, max(1, tree.count - limit + 1),
+                                          tree.count)]
+
+    def _path(self, tenant_id: str, user_id: str, thread_id: str, tree: Tree, first: int, last: int, *,
+              newest_first: bool = False, **projection) -> Iterator[tuple[int, dict]]:
+        """The path's messages at positions first to last, as (position, item): one query per segment."""
+        pk = _conversation_pk(tenant_id, user_id, thread_id)
+        segments = tree.segments(first, last)
+        for branch, start, end in reversed(segments) if newest_first else segments:
+            params = {"KeyConditionExpression": Key("pk").eq(pk)
+                      & Key("sk").between(_message_sk(start, branch), _message_sk(end, branch)),
+                      "ScanIndexForward": not newest_first, "ConsistentRead": True, **projection}
+            while True:
+                result = self.table.query(**params)
+                for item in result["Items"]:
+                    yield _position(item["sk"]), item
+                if "LastEvaluatedKey" not in result:
+                    break
+                params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
 
     def list(self, tenant_id: str, user_id: str, limit: int,
              cursor: str | None = None) -> tuple[list[Conversation], str | None]:
@@ -499,6 +554,20 @@ class ConversationRepository:
         return deleted
 
 
+def _unchanged(before: Conversation | None, values: dict) -> str:
+    """
+    The condition that the conversation is still as the caller read it
+    (`before`; None: there was none), for an update with these values.
+    """
+    if before is None:
+        return "attribute_not_exists(#count)"
+    if before.rev is None:   # saved before versions: its message_count says
+        values[":before_count"] = before.message_count
+        return "attribute_not_exists(#rev) AND #count = :before_count"
+    values[":before_rev"] = before.rev
+    return "#rev = :before_rev"
+
+
 def _expiry(expires_at: int | None, values: dict) -> tuple[str, str]:
     """
     The parts of an update that set the conversation's TTL to `expires_at`,
@@ -511,20 +580,20 @@ def _expiry(expires_at: int | None, values: dict) -> tuple[str, str]:
     return ", #expires = :expires", ""
 
 
-def earlier_cursor(position: int) -> str:
-    """Where the page before a conversation's messages starts reading back from: before `position`."""
-    return base64.urlsafe_b64encode(json.dumps([position]).encode()).decode().rstrip("=")
+def earlier_cursor(position: int, tree: Tree) -> str:
+    """Where the page before a conversation's messages starts reading back from: before `position`, on this path."""
+    return base64.urlsafe_b64encode(json.dumps([position, tree.fingerprint(position)]).encode()).decode().rstrip("=")
 
 
-def read_earlier_cursor(cursor: str) -> int:
-    """The position an earlier_cursor() names. Raises InvalidCursor."""
+def read_earlier_cursor(cursor: str) -> tuple[int, str]:
+    """The position an earlier_cursor() names, and the path's fingerprint before it. Raises InvalidCursor."""
     try:
-        (position,) = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
-    except (ValueError, TypeError) as e:   # not base64, not JSON, or not one value
+        position, fingerprint = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    except (ValueError, TypeError) as e:   # not base64, not JSON, or not a pair
         raise InvalidCursor(cursor) from e
-    if type(position) is not int or position < 1:
+    if type(position) is not int or position < 1 or not isinstance(fingerprint, str):
         raise InvalidCursor(cursor)
-    return position
+    return position, fingerprint
 
 
 def _cursor(thread_id: str, updated_at: str) -> str:

@@ -56,6 +56,9 @@ function backend(...answers: Answer[]) {
   // A long conversation: the cursor its opening gives, and the page each cursor reads.
   const earlierFrom = new Map<string, string>();
   const earlier = new Map<string, { messages: Message[]; ratings: Record<string, string>; earlier_cursor: string | null }>();
+  // Each conversation's messages with other versions, and what showing one of them shows: `${messageId}/${version}`.
+  const versions = new Map<string, Record<string, { index: number; count: number }>>();
+  const shownVersions = new Map<string, { messages: Message[]; versions: Record<string, { index: number; count: number }> }>();
 
   function keep(threadId: string, title: string, messages: Message[]) {
     const now = new Date().toISOString();
@@ -91,19 +94,31 @@ function backend(...answers: Answer[]) {
     }
     const [rawId, action, rawMessageId] = (path.split('/assistant/conversations/')[1] ?? '').split('/');
     const id = decodeURIComponent(rawId);
-    if (method === 'POST' && action === 'messages') {
+    if (method === 'POST' && action === 'messages' && !rawMessageId) {
       const message: Sent = JSON.parse(String(init?.body));
       sent.push(message);
       const refusal = refusals.shift();
       if (refusal) return json({ message: refusal.message }, refusal.status);
       if (!conversations.has(id)) keep(id, message.content, []);
       const messages = histories.get(id)!;
-      // An edit, or the same message again: it takes the place of that one and everything after it.
+      // An edit, or the same message again: the new version is shown in the place of that one and what came after it.
       const at = messages.findIndex((m) => m.id === (message.replaces ?? message.id));
       if (at >= 0) messages.splice(at);
       messages.push({ id: message.id, role: 'user', content: message.content });
+      if (message.replaces && message.replaces !== message.id) {
+        const count = (versions.get(id)?.[message.replaces]?.count ?? 1) + 1;
+        versions.set(id, { ...versions.get(id), [message.id]: { index: count, count } });
+      }
       running.set(id, `run-${sent.length}`);
       return json({ run_id: running.get(id) }, 201);
+    }
+    if (method === 'POST' && action === 'messages' && path.endsWith('/version')) {
+      const { version } = JSON.parse(String(init?.body));
+      const shown = shownVersions.get(`${decodeURIComponent(rawMessageId)}/${version}`);
+      if (!shown) return json({ message: 'That message has no such version.' }, 404);
+      histories.set(id, [...shown.messages]);
+      versions.set(id, shown.versions);
+      return json({ ...conversations.get(id), run_id: null, messages: shown.messages, ratings: {}, versions: shown.versions, earlier_cursor: null });
     }
     if (method === 'PATCH' && action === 'messages') {
       const { rating } = JSON.parse(String(init?.body));
@@ -117,7 +132,7 @@ function backend(...answers: Answer[]) {
     if (method === 'GET') {
       return json({
         ...conversation, run_id: running.get(id) ?? null, messages: histories.get(id), ratings: ratings.get(id) ?? {},
-        earlier_cursor: earlierFrom.get(id) ?? null,
+        earlier_cursor: earlierFrom.get(id) ?? null, versions: versions.get(id) ?? {},
       });
     }
     if (method === 'PATCH') {
@@ -131,7 +146,7 @@ function backend(...answers: Answer[]) {
     return json({ message: 'Not Found' }, 404);
   }));
   return {
-    runs, sent, calls, conversations, histories, running, keep, ratings, rated, earlierFrom, earlier,
+    runs, sent, calls, conversations, histories, running, keep, ratings, rated, earlierFrom, earlier, versions, shownVersions,
     refuse: (status: number, message: string) => refusals.push({ status, message }),
   };
 }
@@ -342,7 +357,8 @@ describe('chatting', () => {
 
     expect(await screen.findByText("It's Paris.")).toBeInTheDocument();
     expect(screen.queryByText('Paris.')).not.toBeInTheDocument();
-    expect(server.sent[1]).toEqual(server.sent[0]); // the same message: on the server it replaces itself
+    // The same message, answered again: on the server the old answer stays, a version before this one.
+    expect(server.sent[1]).toEqual({ ...server.sent[0], replaces: server.sent[0].id });
     expect(screen.getAllByRole('button', { name: 'Edit message' })).toHaveLength(1); // one question on screen
   });
 
@@ -457,7 +473,7 @@ describe('conversations', () => {
     expect(await screen.findByText('A newer answer.')).toBeInTheDocument();
   });
 
-  it('edits a message: it and what came after make way for the new one and its answer', async () => {
+  it('edits a message: it and what came after make way on screen for the new version and its answer', async () => {
     const server = backend(finished(...text('m5', 'Here are your paid orders.')));
     server.keep(THREAD, 'Order check', history);
     renderAt(`/assistant/${THREAD}`);
@@ -474,6 +490,48 @@ describe('conversations', () => {
     expect(screen.queryByText('You have no orders yet.')).not.toBeInTheDocument();
     expect(server.sent).toEqual([expect.objectContaining({ content: 'Which orders are paid?', replaces: 'u1' })]);
     expect(server.histories.get(THREAD)?.map((m) => m.content)).toEqual(['Which orders are paid?']);
+  });
+
+  it('numbers an edit as the newest version once it is answered, and shows the one before on request', async () => {
+    const server = backend(finished(...text('m5', 'Here are your paid orders.')));
+    server.keep(THREAD, 'Order check', history);
+    server.shownVersions.set(`${'edited'}/1`, { messages: history, versions: { u1: { index: 1, count: 2 } } });
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+    await screen.findByText('You have no orders yet.');
+
+    await user.click(screen.getByRole('button', { name: 'Edit message' }));
+    const editor = screen.getByRole('textbox', { name: 'Your message' });
+    await user.clear(editor);
+    await user.type(editor, 'Which orders are paid?{Enter}');
+    await screen.findByText('Here are your paid orders.');
+
+    expect(await screen.findByRole('group', { name: 'Version 2 of 2' })).toBeInTheDocument();
+    const edited = server.sent[0].id;
+    server.shownVersions.set(`${edited}/1`, { messages: history, versions: { u1: { index: 1, count: 2 } } });
+    await user.click(screen.getByRole('button', { name: 'Previous version' }));
+
+    expect(await screen.findByText('You have no orders yet.')).toBeInTheDocument();
+    expect(screen.queryByText('Here are your paid orders.')).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Version 1 of 2' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previous version' })).toBeDisabled();
+    expect(server.calls).toContain(`POST /assistant/conversations/${THREAD}/messages/${edited}/version`);
+  });
+
+  it('shows the versions an answer has, and asks for any answer again', async () => {
+    const server = backend(finished(...text('m9', 'Nothing yet, still.')));
+    server.keep(THREAD, 'Order check', [...history, { id: 'u2', role: 'user', content: 'And now?' }, { id: 'a3', role: 'assistant', content: 'Still none.' }]);
+    server.versions.set(THREAD, { a1: { index: 2, count: 2 } });
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+    await screen.findByText('Still none.');
+    expect(screen.getByRole('group', { name: 'Version 2 of 2' })).toBeInTheDocument();
+
+    await user.click(screen.getAllByRole('button', { name: 'Regenerate' })[0]); // the first answer
+
+    expect(await screen.findByText('Nothing yet, still.')).toBeInTheDocument();
+    expect(screen.queryByText('Still none.')).not.toBeInTheDocument(); // what came after it makes way
+    expect(server.sent).toEqual([expect.objectContaining({ id: 'u1', content: 'What did we order?', replaces: 'u1' })]);
   });
 
   it('rates an answer, shows the rating when it opens again, and takes it back', async () => {

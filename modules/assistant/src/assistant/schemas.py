@@ -55,8 +55,10 @@ class MessageIn(BaseModel):
     id: str = Field(min_length=1, max_length=100)        # the client's id for it: the history keeps it
     content: str = Field(min_length=1, max_length=4000)
     agent: str = Field(default=MAIN_AGENT, max_length=64)   # an agent's `name` (agents/*.md)
-    # An edit: the id of the user's earlier message this one replaces, with
-    # everything after it. (The same id sent again replaces itself: Try again.)
+    # An edit: the id of the user's earlier message this one is a new
+    # version of; the old one stays, with what came after it. Its own id
+    # (or the newest question's id sent again: Try again) answers it again,
+    # and the old answer stays a version.
     replaces: str | None = Field(default=None, min_length=1, max_length=100)
 
 
@@ -66,6 +68,10 @@ class ConversationRename(BaseModel):
 
 class MessageRating(BaseModel):
     rating: Rating | None   # thumbs up or down; null takes the rating back
+
+
+class VersionIn(BaseModel):
+    version: int = Field(ge=1, le=10_000)   # which version of the message to show, from 1 ("‹ 2/3 ›")
 
 
 # ---------- responses ----------
@@ -87,12 +93,20 @@ class ConversationPage(BaseModel):
     next_cursor: str | None = None  # pass back as ?cursor= to get the next page
 
 
+class Version(BaseModel):
+    index: int   # which version of the message this is, from 1
+    count: int   # of how many: POST .../messages/{id}/version shows another
+
+
 class MessagePage(BaseModel):
     # AG-UI messages (@ag-ui/client's Message: user, assistant with toolCalls,
-    # tool results), oldest first.
+    # tool results), oldest first: the path through the versions shown.
     messages: list[dict[str, Any]]
     # The user's ratings of answers, by the id of the answer's last assistant message.
     ratings: dict[str, Rating] = {}
+    # Messages with other versions, by id: a user message edited, or an
+    # answer's first message for an answer asked for again.
+    versions: dict[str, Version] = {}
     # The messages before these, if there are any: pass it as ?before= to
     # GET /assistant/conversations/{threadId}/messages. None: these are the first.
     earlier_cursor: str | None = None

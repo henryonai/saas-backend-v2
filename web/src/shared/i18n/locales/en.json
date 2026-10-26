@@ -340,6 +340,9 @@
     "goodAnswer": "Good answer",
     "badAnswer": "Bad answer",
     "regenerate": "Regenerate",
+    "previousVersion": "Previous version",
+    "nextVersion": "Next version",
+    "version": "Version {{index}} of {{count}}",
     "errorTitle": "The assistant couldn't answer",
     "errors": {
       "internal": "Something went wrong on the assistant's side. Please try again.",

@@ -55,6 +55,23 @@ export interface paths {
         patch: operations["rename_conversation_assistant_conversations__thread_id__patch"];
         trace?: never;
     };
+    "/assistant/conversations/{thread_id}/messages/{message_id}/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /assistant/conversations/{thread_id}/messages/{message_id}/version */
+        post: operations["show_version_assistant_conversations__thread_id__messages__message_id__version_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assistant/conversations/{thread_id}/messages/{message_id}": {
         parameters: {
             query?: never;
@@ -119,6 +136,13 @@ export interface components {
             ratings: {
                 [key: string]: "up" | "down";
             };
+            /**
+             * Versions
+             * @default {}
+             */
+            versions: {
+                [key: string]: components["schemas"]["Version"];
+            };
             /** Earlier Cursor */
             earlier_cursor?: string | null;
             /** Run Id */
@@ -181,6 +205,13 @@ export interface components {
             ratings: {
                 [key: string]: "up" | "down";
             };
+            /**
+             * Versions
+             * @default {}
+             */
+            versions: {
+                [key: string]: components["schemas"]["Version"];
+            };
             /** Earlier Cursor */
             earlier_cursor?: string | null;
         };
@@ -200,6 +231,18 @@ export interface components {
             loc: (string | number)[];
             /** Error Type */
             type: string;
+        };
+        /** Version */
+        Version: {
+            /** Index */
+            index: number;
+            /** Count */
+            count: number;
+        };
+        /** VersionIn */
+        VersionIn: {
+            /** Version */
+            version: number;
         };
         /** ResponseValidationError */
         ResponseValidationError: {
@@ -400,6 +443,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    show_version_assistant_conversations__thread_id__messages__message_id__version_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationDetail"];
                 };
             };
             /** @description Validation Error */

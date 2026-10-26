@@ -105,10 +105,11 @@ export function requestError(error: unknown): RunError {
 /**
  * Sends the user's message: the server saves it (creating the conversation
  * the first time) with the run that will answer it, and counts it against
- * the plan. `replaces`: an earlier message of the user's that this one takes
- * the place of, with everything after it (an edit); the same id sent again
- * replaces itself (Try again). 402 at the plan's limit; 429 at the user's
- * hourly limit; 409 while the previous answer is coming.
+ * the plan. `replaces`: an earlier message of the user's that this one is a
+ * new version of (an edit; the old one stays, with what followed it); its own
+ * id, or the newest question's sent again, answers it again (Try again,
+ * Regenerate), keeping the old answer as a version. 402 at the plan's limit;
+ * 429 at the user's hourly limit; 409 while the previous answer is coming.
  */
 export function postMessage(threadId: string, message: { id: string; content: string; agent: string; replaces?: string }) {
   return api<AssistantRun>(`/assistant/conversations/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: message });
@@ -147,6 +148,18 @@ export function getEarlierMessages(threadId: string, before: string, signal?: Ab
 
 export function renameConversation(threadId: string, title: string) {
   return api<AssistantConversation>(`/assistant/conversations/${encodeURIComponent(threadId)}`, { method: 'PATCH', body: { title } });
+}
+
+/**
+ * Shows another version of a message (`version`, from 1: an edit, or an
+ * answer asked for again) and what followed it; the conversation as it shows
+ * now. 409 while an answer is coming.
+ */
+export function showVersion(threadId: string, messageId: string, version: number) {
+  return api<AssistantConversationDetail>(
+    `/assistant/conversations/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/version`,
+    { method: 'POST', body: { version } },
+  );
 }
 
 /** Gone at once; the server deletes the agent's own copy in the background. */

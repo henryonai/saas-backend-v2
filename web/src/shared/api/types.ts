@@ -41,5 +41,7 @@ export type AssistantConversationDetail = Omit<Sent<Assistant['schemas']['Conver
 export type AssistantMessagePage = Omit<Sent<Assistant['schemas']['MessagePage']>, 'messages'> & { messages: Message[] };
 /** A sent message's run: AgentCore streams its answer (the AG-UI runId). */
 export type AssistantRun = Sent<Assistant['schemas']['RunOut']>;
+/** Which version of a message one is, of how many (an edit, or an answer asked for again): "‹ 2/3 ›". */
+export type AssistantVersion = Assistant['schemas']['Version'];
 /** The user's thumbs up or down on an answer. */
 export type AssistantRating = NonNullable<Assistant['schemas']['MessageRating']['rating']>;

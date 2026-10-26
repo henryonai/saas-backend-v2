@@ -1,7 +1,7 @@
 import { type BaseEvent, EventType, type Message, type RunFinishedEvent } from '@ag-ui/client';
 import { useStore } from 'zustand';
 import { createStore } from 'zustand/vanilla';
-import type { AssistantConversationDetail, AssistantRating } from '@/shared/api/types';
+import type { AssistantConversationDetail, AssistantRating, AssistantVersion } from '@/shared/api/types';
 import { endSession, getIdToken, refreshSession, sessionStore } from '@/shared/auth/session';
 import {
   AssistantAgent,
@@ -14,6 +14,7 @@ import {
   type RunError,
   requestError,
   runError,
+  showVersion,
 } from './api';
 
 /**
@@ -44,11 +45,14 @@ export interface ConversationState {
    */
   earlier: string | null;
   loadingEarlier: boolean;
+  /** messages with other versions (an edit, an answer asked for again), by id: which one each is, of how many */
+  versions: Record<string, AssistantVersion>;
 }
 
 function fresh(): ConversationState {
   return {
     threadId: crypto.randomUUID(), messages: [], running: false, error: null, tokens: null, ratings: {}, earlier: null, loadingEarlier: false,
+    versions: {},
   };
 }
 
@@ -111,9 +115,10 @@ export async function sendMessage(text: string): Promise<void> {
 }
 
 /**
- * Edits one of the user's messages, as in ChatGPT: it and everything after
- * it make way for the new text, here and on the server, where the agent goes
- * back to before it too, and the new message is answered.
+ * Edits one of the user's messages, as in ChatGPT: the new text is a new
+ * version of it, answered; it and what came after it make way on screen, and
+ * stay on the server as the version before ("‹ 1/2 ›"). The agent goes back
+ * to before it too.
  */
 export async function editMessage(messageId: string, text: string): Promise<void> {
   const prompt = text.trim();
@@ -127,18 +132,36 @@ export async function editMessage(messageId: string, text: string): Promise<void
 }
 
 /**
- * Asks for the last answer again: the newest user message goes out again
- * (counted again), and on the server it takes its own place, so the old
- * answer goes, from the history and from what the agent remembers.
+ * Asks for an answer again (`answerId`: its first message; none: the last
+ * answer). Its question goes out again (counted again) and the new answer is
+ * a new version: the old one, and what came after it, make way on screen and
+ * stay on the server as the version before. The agent forgets them.
  */
-export async function regenerate(): Promise<void> {
+export async function regenerate(answerId?: string): Promise<void> {
   if (conversationStore.getState().running) return;
   const target = currentAgent();
-  const at = lastUserMessage(target.messages);
-  const newest = target.messages[at];
-  if (!newest || typeof newest.content !== 'string') return;
+  const end = answerId ? target.messages.findIndex((message) => message.id === answerId) : target.messages.length;
+  const at = lastUserMessage(target.messages.slice(0, end < 0 ? 0 : end));
+  const question = target.messages[at];
+  if (!question || typeof question.content !== 'string') return;
+  const answered = target.messages.length > at + 1; // else there is no old answer to keep (it failed before writing)
   show(target, target.messages.slice(0, at + 1));
-  await ask(target, newest.id, newest.content);
+  // The last answer: the newest question sent again, which the server answers again, as Try again after a failed send.
+  await ask(target, question.id, question.content, answerId ? question.id : undefined, answered);
+}
+
+/**
+ * Shows another version of a message (`version`, from 1) and what followed
+ * it, as the server keeps it. Throws what failed; nothing changes then.
+ */
+export async function switchVersion(messageId: string, version: number): Promise<void> {
+  if (conversationStore.getState().running) return;
+  const target = currentAgent();
+  const history = await showVersion(target.threadId, messageId, version);
+  show(target, history.messages);
+  update(target, {
+    ratings: { ...history.ratings }, versions: { ...history.versions }, earlier: history.earlier_cursor ?? null, error: null, tokens: null,
+  });
 }
 
 /**
@@ -205,7 +228,7 @@ export function openConversation(threadId: string, history: AssistantConversatio
   agent = new AssistantAgent(threadId, history.messages);
   conversationStore.setState({
     threadId, messages: history.messages, running: false, error: null, tokens: null, ratings: { ...history.ratings },
-    earlier: history.earlier_cursor ?? null, loadingEarlier: false,
+    earlier: history.earlier_cursor ?? null, loadingEarlier: false, versions: { ...history.versions },
   });
   if (history.run_id) void follow(agent, history.run_id);
 }
@@ -224,7 +247,8 @@ export async function loadEarlier(): Promise<void> {
     const page = await getEarlierMessages(target.threadId, earlier);
     if (conversationStore.getState().running) return; // an answer started meanwhile: the button is there again after it
     show(target, [...page.messages, ...target.messages]);
-    update(target, { earlier: page.earlier_cursor ?? null, ratings: { ...page.ratings, ...conversationStore.getState().ratings } });
+    const { ratings, versions } = conversationStore.getState();
+    update(target, { earlier: page.earlier_cursor ?? null, ratings: { ...page.ratings, ...ratings }, versions: { ...page.versions, ...versions } });
   } finally {
     update(target, { loadingEarlier: false });
   }
@@ -237,8 +261,12 @@ sessionStore.subscribe((state, previous) => {
   if (state.status === 'signed-out' || state.user?.tenantId !== previous.user?.tenantId) newConversation();
 });
 
-/** Saves the message with the run that will answer it (the HTTP API), then follows the run. */
-async function ask(target: AssistantAgent, id: string, content: string, replaces?: string): Promise<void> {
+/**
+ * Saves the message with the run that will answer it (the HTTP API), then
+ * follows the run. `newVersion`: its answer is a new version of a message
+ * (an edit, an answer asked for again), which the server numbers.
+ */
+async function ask(target: AssistantAgent, id: string, content: string, replaces?: string, newVersion = replaces !== undefined): Promise<void> {
   update(target, { running: true, error: null, tokens: null });
   let runId: string;
   try {
@@ -248,6 +276,22 @@ async function ask(target: AssistantAgent, id: string, content: string, replaces
     return;
   }
   await follow(target, runId);
+  const state = conversationStore.getState();
+  if (newVersion && state.threadId === target.threadId && !state.error) await numberVersions(target);
+}
+
+/**
+ * After a new version (an edit, an answer asked for again) was answered:
+ * the server numbered it, the newest of its versions. Best effort: the
+ * numbers come with the conversation the next time it opens anyway.
+ */
+async function numberVersions(target: AssistantAgent): Promise<void> {
+  try {
+    const { versions } = await getConversation(target.threadId);
+    update(target, { versions: { ...conversationStore.getState().versions, ...versions } });
+  } catch {
+    // shown when the conversation opens again
+  }
 }
 
 /**
@@ -387,9 +431,9 @@ function lastUserMessage(messages: Message[]): number {
 
 async function showHistory(target: AssistantAgent): Promise<void> {
   try {
-    const { messages, ratings, earlier_cursor } = await getConversation(target.threadId);
+    const { messages, ratings, earlier_cursor, versions } = await getConversation(target.threadId);
     target.setMessages(messages);
-    update(target, { messages, ratings: { ...ratings }, earlier: earlier_cursor ?? null, running: false, error: null });
+    update(target, { messages, ratings: { ...ratings }, earlier: earlier_cursor ?? null, versions: { ...versions }, running: false, error: null });
   } catch (error) {
     update(target, { running: false, error: requestError(error) });
   }

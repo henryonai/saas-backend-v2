@@ -28,6 +28,7 @@ import {
   retry,
   sendMessage,
   stopAnswer,
+  switchVersion,
   useConversation,
 } from './conversation';
 import { refreshConversations, showNewConversation, useConversationHistory } from './hooks';
@@ -172,7 +173,7 @@ function OpenConversation({ threadId }: { threadId: string }) {
 function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, text: string) => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { messages, running, error, tokens, ratings, earlier, loadingEarlier } = useConversation();
+  const { messages, running, error, tokens, ratings, earlier, loadingEarlier, versions } = useConversation();
   const turns = useMemo(() => toTurns(messages), [messages]);
   const last = turns.at(-1);
   const lastPart = last?.role === 'assistant' ? last.parts.at(-1) : undefined;
@@ -201,9 +202,13 @@ function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, 
     void editMessage(messageId, text);
   }
 
-  function answerAgain() {
+  function answerAgain(answerId: string) {
     follow();
-    void regenerate();
+    void regenerate(answerId);
+  }
+
+  function showVersion(messageId: string, version: number) {
+    switchVersion(messageId, version).catch((failure: unknown) => toastError(failure, t));
   }
 
   function showEarlier() {
@@ -242,17 +247,26 @@ function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, 
         ) : (
           turns.map((turn, index) =>
             turn.role === 'user' ? (
-              <UserTurn key={turn.id} text={turn.text} onEdit={running ? undefined : (text) => edit(turn.id, text)} />
+              <UserTurn
+                key={turn.id}
+                text={turn.text}
+                onEdit={running ? undefined : (text) => edit(turn.id, text)}
+                version={versions[turn.id]}
+                onVersion={running ? undefined : (version) => showVersion(turn.id, version)}
+              />
             ) : (
               <AssistantTurn
                 key={turn.id}
                 turn={turn}
                 active={running && index === turns.length - 1}
                 thinking={thinking && index === turns.length - 1}
+                latest={index === turns.length - 1}
                 rating={ratings[turn.answerId]}
                 onRate={(rating) => void rateAnswer(turn.answerId, rating)}
-                // The last answer; after a failed run, the error's Try again does the same.
-                onRegenerate={!running && !error && index === turns.length - 1 ? answerAgain : undefined}
+                // After the last answer's failed run, the error's Try again does the same.
+                onRegenerate={!running && !(error && index === turns.length - 1) ? () => answerAgain(turn.id) : undefined}
+                version={versions[turn.id]}
+                onVersion={running ? undefined : (version) => showVersion(turn.id, version)}
               />
             ),
           )
