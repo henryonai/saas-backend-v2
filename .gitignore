@@ -10,3 +10,6 @@ docs/openapi/
 # Local env overrides
 .env.local
 .env.*.local
+
+# Slipway specs and plans (local)
+.slipway/
