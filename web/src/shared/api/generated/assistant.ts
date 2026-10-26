@@ -89,6 +89,24 @@ export interface paths {
         patch: operations["rate_answer_assistant_conversations__thread_id__messages__message_id__patch"];
         trace?: never;
     };
+    "/assistant/memories/{memory_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /assistant/memories/{memory_id} */
+        delete: operations["delete_memory_assistant_memories__memory_id__delete"];
+        options?: never;
+        head?: never;
+        /** PATCH /assistant/memories/{memory_id} */
+        patch: operations["edit_memory_assistant_memories__memory_id__patch"];
+        trace?: never;
+    };
     "/assistant/conversations": {
         parameters: {
             query?: never;
@@ -104,6 +122,26 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/assistant/memories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /assistant/memories */
+        get: operations["list_memories_assistant_memories_get"];
+        put?: never;
+        /** POST /assistant/memories */
+        post: operations["add_memory_assistant_memories_post"];
+        /** DELETE /assistant/memories */
+        delete: operations["delete_memories_assistant_memories_delete"];
+        options?: never;
+        head?: never;
+        /** PATCH /assistant/memories */
+        patch: operations["set_memory_assistant_memories_patch"];
         trace?: never;
     };
 }
@@ -177,6 +215,38 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** MemoryIn */
+        MemoryIn: {
+            /** Text */
+            text: string;
+        };
+        /** MemoryList */
+        MemoryList: {
+            /** Enabled */
+            enabled: boolean;
+            /** Items */
+            items: components["schemas"]["MemoryOut"][];
+            /** Limit */
+            limit: number;
+        };
+        /** MemoryOut */
+        MemoryOut: {
+            /** Memory Id */
+            memory_id: string;
+            /** Text */
+            text: string;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Thread Id */
+            thread_id?: string | null;
+        };
+        /** MemorySettings */
+        MemorySettings: {
+            /** Enabled */
+            enabled: boolean;
         };
         /** MessageIn */
         MessageIn: {
@@ -528,6 +598,72 @@ export interface operations {
             };
         };
     };
+    delete_memory_assistant_memories__memory_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_memory_assistant_memories__memory_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_conversations_assistant_conversations_get: {
         parameters: {
             query?: {
@@ -547,6 +683,130 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_memories_assistant_memories_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_memory_assistant_memories_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_memories_assistant_memories_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_memory_assistant_memories_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryList"];
                 };
             };
             /** @description Validation Error */

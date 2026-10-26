@@ -4,6 +4,8 @@ import type {
   AssistantConversation,
   AssistantConversationDetail,
   AssistantConversationPage,
+  AssistantMemory,
+  AssistantMemoryList,
   AssistantMessagePage,
   AssistantRating,
   AssistantRun,
@@ -165,6 +167,34 @@ export function showVersion(threadId: string, messageId: string, version: number
 /** Gone at once; the server deletes the agent's own copy in the background. */
 export function deleteConversation(threadId: string) {
   return api<void>(`/assistant/conversations/${encodeURIComponent(threadId)}`, { method: 'DELETE' });
+}
+
+/** What the assistant remembers about the user across conversations, oldest first, and whether memory is on. */
+export function listMemories(signal?: AbortSignal) {
+  return api<AssistantMemoryList>('/assistant/memories', { signal });
+}
+
+/** Something the user tells it to remember. 409 when it has the most it keeps. */
+export function addMemory(text: string) {
+  return api<AssistantMemory>('/assistant/memories', { method: 'POST', body: { text } });
+}
+
+export function editMemory(memoryId: string, text: string) {
+  return api<AssistantMemory>(`/assistant/memories/${encodeURIComponent(memoryId)}`, { method: 'PATCH', body: { text } });
+}
+
+export function deleteMemory(memoryId: string) {
+  return api<void>(`/assistant/memories/${encodeURIComponent(memoryId)}`, { method: 'DELETE' });
+}
+
+/** Forgets everything; memory stays on or off. */
+export function deleteAllMemories() {
+  return api<void>('/assistant/memories', { method: 'DELETE' });
+}
+
+/** Off: the assistant neither sees nor saves memories; what it saved stays until deleted. */
+export function setMemoryEnabled(enabled: boolean) {
+  return api<AssistantMemoryList>('/assistant/memories', { method: 'PATCH', body: { enabled } });
 }
 
 /** The first `data:` line of an SSE body, parsed. */

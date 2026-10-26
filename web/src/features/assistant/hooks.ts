@@ -1,7 +1,18 @@
 import { type InfiniteData, type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { qk } from '@/shared/api/keys';
-import type { AssistantConversation, AssistantConversationPage } from '@/shared/api/types';
-import { deleteConversation, getConversation, listConversations, renameConversation } from './api';
+import type { AssistantConversation, AssistantConversationPage, AssistantMemoryList } from '@/shared/api/types';
+import {
+  addMemory,
+  deleteAllMemories,
+  deleteConversation,
+  deleteMemory,
+  editMemory,
+  getConversation,
+  listConversations,
+  listMemories,
+  renameConversation,
+  setMemoryEnabled,
+} from './api';
 
 const PAGE_SIZE = 30;
 /** The server's limit on a title (service.TITLE_CHARS); a first message is cut to it. */
@@ -90,4 +101,28 @@ function updateList(
   queryClient.setQueryData<ConversationPages>(qk.conversations(), (data) =>
     data && { ...data, pages: data.pages.map((page, index) => ({ ...page, items: change(page.items, index === 0) })) },
   );
+}
+
+/**
+ * What the assistant remembers about the user, read each time the Memory
+ * dialog opens: an answer may have just saved or forgotten something.
+ */
+export function useMemories() {
+  return useQuery({ queryKey: qk.memories(), queryFn: ({ signal }) => listMemories(signal), staleTime: 0 });
+}
+
+/** Adding, editing, deleting memories, and memory on or off: each reads the list again after. */
+export function useMemoryChanges() {
+  const queryClient = useQueryClient();
+  const settled = () => queryClient.invalidateQueries({ queryKey: qk.memories() });
+  return {
+    add: useMutation({ mutationFn: addMemory, onSettled: settled }),
+    edit: useMutation({ mutationFn: ({ memoryId, text }: { memoryId: string; text: string }) => editMemory(memoryId, text), onSettled: settled }),
+    remove: useMutation({ mutationFn: deleteMemory, onSettled: settled }),
+    removeAll: useMutation({ mutationFn: deleteAllMemories, onSettled: settled }),
+    setEnabled: useMutation({
+      mutationFn: setMemoryEnabled,
+      onSuccess: (list: AssistantMemoryList) => queryClient.setQueryData(qk.memories(), list),
+    }),
+  };
 }

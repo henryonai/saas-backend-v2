@@ -15,6 +15,7 @@ import { config } from '@/shared/config';
 import { toastError } from '@/shared/lib/errors';
 import { Composer } from './components/composer';
 import { ConversationList } from './components/conversation-list';
+import { MemoryButton } from './components/memory-dialog';
 import { RunErrorNotice } from './components/run-error';
 import { AssistantTurn, UserTurn } from './components/turn';
 import {
@@ -66,6 +67,7 @@ export function AssistantPage({ threadId }: { threadId?: string }) {
           actions={
             <>
               <ConversationsSheet activeId={threadId} />
+              <MemoryButton />
               {threadId && <NewConversationButton />}
             </>
           }

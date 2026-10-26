@@ -1,6 +1,7 @@
 """
-The HTTP API for the users' conversations with the assistant (/assistant/...),
-a Lambda behind API Gateway like the other modules.
+The HTTP API for the users' conversations with the assistant
+(/assistant/conversations) and what it remembers about them
+(/assistant/memories), a Lambda behind API Gateway like the other modules.
 
 Sending a message starts here, as in ChatGPT: POST .../messages saves it with
 the run that will answer it, and the page then has AgentCore Runtime run it,
@@ -18,12 +19,16 @@ from aws_lambda_powertools.event_handler.openapi.params import Query
 
 from shared.auth import CurrentUser, get_current_user
 
-from assistant.container import get_conversation_service
+from assistant.container import get_conversation_service, get_memory_service
 from assistant.schemas import (
     ConversationDetail,
     ConversationOut,
     ConversationPage,
     ConversationRename,
+    MemoryIn,
+    MemoryList,
+    MemoryOut,
+    MemorySettings,
     MessageIn,
     MessagePage,
     MessageRating,
@@ -32,12 +37,13 @@ from assistant.schemas import (
     VersionIn,
 )
 from assistant.models import Conversation
-from assistant.service import ConversationService, HistoryPage, active_run
+from assistant.service import MAX_MEMORIES, ConversationService, HistoryPage, MemoryService, active_run
 
 router = Router()
 
 User = Annotated[CurrentUser, Depends(get_current_user)]
 Service = Annotated[ConversationService, Depends(get_conversation_service)]
+Memories = Annotated[MemoryService, Depends(get_memory_service)]
 
 
 # ---------- routes ----------
@@ -120,6 +126,53 @@ def delete_conversation(thread_id: str, user: User, service: Service):
     """Deletes it and its messages; the agents' own copy (their checkpoints) goes in the background."""
     service.delete(user, thread_id)
     return Response(status_code=204)
+
+
+# ---------- memories ----------
+
+@router.get("/assistant/memories")
+def list_memories(user: User, memories: Memories) -> MemoryList:
+    """What the assistant remembers about the caller, oldest first, and whether memory is on."""
+    return _memories(memories, user)
+
+
+@router.post("/assistant/memories")
+def add_memory(body: MemoryIn, user: User, memories: Memories) -> Response[MemoryOut]:
+    """The user tells it something to remember. 409 at the most kept."""
+    memory = memories.remember(user, body.text)
+    return Response(status_code=201, content_type=content_types.APPLICATION_JSON,
+                    body=MemoryOut.model_validate(memory.model_dump()).model_dump(mode="json"))
+
+
+@router.patch("/assistant/memories")
+def set_memory(body: MemorySettings, user: User, memories: Memories) -> MemoryList:
+    """Memory on or off: off, agents neither see nor save memories (what is saved stays until deleted)."""
+    memories.set_enabled(user, body.enabled)
+    return _memories(memories, user)
+
+
+@router.patch("/assistant/memories/<memory_id>")
+def edit_memory(memory_id: str, body: MemoryIn, user: User, memories: Memories) -> MemoryOut:
+    return MemoryOut.model_validate(memories.remember(user, body.text, replaces=memory_id).model_dump())
+
+
+@router.delete("/assistant/memories/<memory_id>")
+def delete_memory(memory_id: str, user: User, memories: Memories):
+    memories.forget(user, memory_id)
+    return Response(status_code=204)
+
+
+@router.delete("/assistant/memories")
+def delete_memories(user: User, memories: Memories):
+    """Forgets everything (memory stays on or off)."""
+    memories.forget_all(user)
+    return Response(status_code=204)
+
+
+def _memories(memories: MemoryService, user: CurrentUser) -> MemoryList:
+    enabled, items = memories.read(user)
+    return MemoryList(enabled=enabled, items=[MemoryOut.model_validate(m.model_dump()) for m in items],
+                      limit=MAX_MEMORIES)
 
 
 def _detail(conversation: Conversation, page: HistoryPage) -> ConversationDetail:

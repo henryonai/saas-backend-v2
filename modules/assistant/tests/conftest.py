@@ -20,16 +20,16 @@ from langgraph.checkpoint.memory import InMemorySaver
 from starlette.testclient import TestClient
 
 from assistant.app import create_app
-from assistant.container import get_conversation_service
+from assistant.container import get_conversation_service, get_memory_service
 from assistant.definitions import MAIN_AGENT, load_agents
 from assistant.factory import AgentDeps, build_agents
 from assistant.handler import app as http_app
 from assistant.handler import handler
 from assistant.models import current_month
-from assistant.repository import ConversationRepository, UsageRepository
+from assistant.repository import ConversationRepository, MemoryRepository, UsageRepository
 from assistant.runs import Runs
 from assistant.sandbox import CommandResult
-from assistant.service import ConversationLog, ConversationService, UsageService
+from assistant.service import ConversationLog, ConversationService, MemoryService, UsageService
 from assistant.titles import Titles
 from assistant.tools import make_tools
 from testkit.aws import create_table
@@ -163,7 +163,8 @@ def ctx():
     api, sandbox = FakeApi(), FakeSandbox()
     title_model = TitleModel(calls=[])
     titles = Titles(title_model, history, usage)
-    tools = make_tools(api, usage, sandbox)
+    memories = MemoryService(MemoryRepository(table))
+    tools = make_tools(api, usage, sandbox, memories)
     definitions = load_agents(set(tools))
     models: dict[str, ScriptedModel] = {}
     state = SimpleNamespace(agents=None, checkpointer=InMemorySaver())
@@ -173,12 +174,13 @@ def ctx():
         models[agent] = ScriptedModel(responses=list(responses), calls=[], tools_shown=[], pause=pause)
         state.agents = build_agents(definitions, AgentDeps(
             make_model=lambda d: models.setdefault(d.name, ScriptedModel(responses=[], calls=[], tools_shown=[])),
-            checkpointer=state.checkpointer, usage=usage, tools=tools))
+            checkpointer=state.checkpointer, usage=usage, tools=tools, memories=memories))
 
     # The HTTP API (handler.py) with this table, and the AgentCore Runtime app (app.py) with these agents.
     purges: list[list[str]] = []
     service = ConversationService(conversations, usage=usage, days=0, purge=SimpleNamespace(send=purges.append))
     http_app.dependency_overrides[get_conversation_service] = lambda: service
+    http_app.dependency_overrides[get_memory_service] = lambda: memories
     runs = Runs()
 
     def send(prompt: str, user: dict | None, thread_id: str = SESSION, agent: str | None = None,
@@ -226,7 +228,7 @@ def ctx():
     script()
     # One event loop for every request, as uvicorn has: a run outlives the request that started it.
     with TestClient(create_app(lambda: state.agents, lambda: history, lambda: titles, runs)) as runtime:
-        yield SimpleNamespace(table=table, usage=usage, api=api, sandbox=sandbox, state=state,
+        yield SimpleNamespace(table=table, usage=usage, api=api, sandbox=sandbox, state=state, memories=memories,
                               conversations=conversations, history=history, service=service,
                               title_model=title_model,
                               definitions=definitions, script=script, send=send, post=post, run=run, chat=chat,

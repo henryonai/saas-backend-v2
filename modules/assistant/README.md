@@ -24,6 +24,7 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
                    3. agent.stream(...)   built by factory.py from its Markdown file
                         ├─ UsageMiddleware         tokens of every model call → DynamoDB, stop at the cap
                         ├─ ConversationMiddleware  repair cut-off tool calls; send recent history only
+                        ├─ MemoryMiddleware        what it remembers about the user, in its system prompt
                         ├─ PlanToolsMiddleware     hide tools the plan doesn't include
                         ├─ Model/ToolCallLimit, ToolErrorMiddleware (built-in)
                         ├─ checkpointer      DynamoDBSaver (each agent's side of the conversation;
@@ -57,8 +58,9 @@ src/assistant/
 ├── tools/               the tools agents can name in `tools:` (a registry in __init__.py)
 │   ├── orders.py        list_orders, get_order (the HTTP API, with the user's token)
 │   ├── usage.py         assistant_usage
-│   └── bash.py          bash (the sandbox)
-├── middleware/          one file per middleware (usage, conversation, plan_tools, errors)
+│   ├── bash.py          bash (the sandbox)
+│   └── memory.py        remember, forget (agents with `memory: user`)
+├── middleware/          one file per middleware (usage, conversation, memory, plan_tools, errors)
 ├── titles.py            names a new conversation from its first message, while the agent answers
 ├── app.py               AgentCore entry point (the SDK's AGUIApp): auth, the run, stop, history, stream
 ├── stop.py              Stop ends the run's model call, and estimates what the call cost
@@ -69,8 +71,8 @@ src/assistant/
 ├── schemas.py           what the HTTP API and the AG-UI endpoint accept and return (no AG-UI import)
 ├── checkpoints.py       deletes a thread's checkpoints, as DynamoDBSaver laid them out (boto3 only)
 ├── sandbox.py           AgentCore Code Interpreter adapter: one sandbox per conversation
-├── service.py, repository.py, models.py   usage per workspace; conversations and their history
-├── api.py, handler.py   Lambda: the HTTP API for the users' conversations (sending a message too)
+├── service.py, repository.py, models.py   usage per workspace; conversations and their history; memories
+├── api.py, handler.py   Lambda: the HTTP API for the users' conversations (sending a message too) and memories
 ├── agent_names.py       the agents' names without loading them, for that Lambda
 ├── purge.py             Lambda: what is left of a deleted conversation or a removed member's (SQS), or an
 │                        expired one (stream)
@@ -111,9 +113,10 @@ You are a data analyst working for another agent...
 | `disallowedTools` | Removed from `tools`. |
 | `model` | `inherit` (the stack's `MODEL_ID`), `sonnet`, `opus`, `haiku` (Claude through OpenRouter), an OpenRouter model (`vendor/model`) or a Bedrock model id. |
 | `maxTurns` | Model calls per run, 1 to 50 (default 15). |
+| `memory` | `user`: Claude Code's user scope, here the signed-in user's memories (below). The agent is sent them and gets `remember` and `forget`, which no other agent gets (don't list them in `tools`). |
 | `subagents` | **This app's addition:** the agents this one may delegate to, through the `task` tool. |
 
-Other Claude Code fields (`color`, `memory`, `skills`, `hooks`, ...) are
+Other Claude Code fields (`color`, `skills`, `hooks`, ...) are
 ignored with a warning in the logs. Every file is checked when the agents
 load: a missing field, an unknown tool or subagent, or a bad model fails
 `main.py` at startup and `uv run pytest` (test_definitions.py), not a
@@ -207,8 +210,25 @@ session and agent (`thread_config()`): the client picks the session id, so
 someone sending another user's session id still gets their own conversation,
 and the table, which knows only threads, needs nothing else.
 
-There is no long-term memory across conversations: the agent knows what it
-was told in this conversation, and what the tools return.
+**Memory across conversations** works as ChatGPT's saved memories: short
+facts about the user (a preference, their role, a goal), kept until the user
+deletes them, or leaves the workspace. An agent with `memory: user` (the
+assistant) is sent all of them at the end of its system prompt, read again
+for each model call (`MemoryMiddleware`), and saves one with `remember`
+(`replaces` corrects one) when the user tells it something lasting or asks
+it to, or `forgets` one, as its prompt says; never what a tool or a file
+says, nor passwords, card numbers or health details. Saving one shows in the
+chat as a tool call ("Saved to memory"). The user sees, adds, edits and
+deletes them, or turns memory off: off, agents neither see nor save any
+(the tools are hidden and refuse), and what was saved stays until deleted.
+At most `MAX_MEMORIES` (100) of `MEMORY_CHARS` (500) each, so the prompt
+stays small; the same text again is the same memory. They live in the
+assistant table, one query for all of a user's (`MemoryRepository`), and
+their text is never logged (`Memory saved` and `Memory deleted` lines have
+the id). Each answer is sent them all: no embeddings, no search, nothing the
+user can't see; a template that wants more (search over past chats, or
+recall of the relevant few among thousands) can add DynamoDB vector search
+behind the same tools.
 
 **Tools** call the existing HTTP API with the caller's own token. The API
 checks the tenant and the role as it does for the frontend, no module imports
@@ -322,6 +342,11 @@ token (`handler.py`, a Lambda):
 | `GET /assistant/conversations/{threadId}/messages?before=&limit=100` | the messages before those (`before`: their `earlier_cursor`), up to 200, with their ratings and the next `earlier_cursor` (null: the first) |
 | `PATCH /assistant/conversations/{threadId}` `{"title"}` | rename (cut to 80 characters) |
 | `DELETE /assistant/conversations/{threadId}` | delete (204) |
+| `GET /assistant/memories` | what the assistant remembers about the caller, oldest first: `{enabled, items, limit}` |
+| `POST /assistant/memories` `{"text"}` | the user adds one (201; 409 at 100) |
+| `PATCH /assistant/memories` `{"enabled"}` | memory on or off |
+| `PATCH`, `DELETE /assistant/memories/{memoryId}` | edit one, delete one |
+| `DELETE /assistant/memories` | forget everything (204; on or off stays) |
 
 - **Sending** (`ConversationService.send`) counts the message against the
   plan, then saves it, creating the conversation the first time (titled with
@@ -463,9 +488,10 @@ token (`handler.py`, a Lambda):
 - **A member who leaves** the workspace, or is removed from it, loses their
   conversations there: accounts saves `MemberRemoved` with the removal (one
   transaction), EventBridge puts it on the purge queue, and the worker
-  deletes each of their conversations as a delete would, checkpoints first.
-  Only those last used before the removal: someone invited back keeps what
-  they said since, even if the event came late. The member's ID token works
+  deletes each of their conversations as a delete would, checkpoints first,
+  then what the assistant remembers about them. Only conversations last used
+  before the removal: someone invited back keeps what they said since, even
+  if the event came late. The member's ID token works
   until it expires (up to 15 minutes, as in every module): a conversation
   they use in that time, after the worker ran, is kept.
 
@@ -592,7 +618,8 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   with a TTL and S3 for large checkpoints (AWS's DynamoDB guide for LangGraph).
   The long-term memory that came with Memory (facts and preferences recalled
   before each answer) went with it: those never expired and users couldn't see
-  or delete them (see next steps).
+  or delete them. Saved memories in the assistant table replace it, which
+  users see and delete (Memory across conversations, above).
 - **Isolation.** Pool model: one runtime and one checkpoint table for every
   workspace. Every key includes `"<tenant_id>:<user_id>"` from the verified
   token: a conversation's keys, and the hash that names a checkpoint thread.
@@ -612,10 +639,6 @@ There is no authorizer locally, so the server trusts any token: never expose it.
 - **IAM-enforced isolation**: a token-vending role with tenant session tags
   (ABAC), as in AWS's pool-model post, so a bug can't read another tenant's
   conversations.
-- **Long-term memory across conversations**, if wanted again: `DynamoDBStore`
-  (semantic search on DynamoDB vector indexes, same package) or AgentCore
-  Memory's strategies, with an expiry and a page where users see and delete
-  what is remembered about them.
 - **Tools that change data**: idempotency keys plus `HumanInTheLoopMiddleware`
   (needs a resume flow in the frontend).
 - **Terminal data in and out**: a tool that writes workspace data straight into

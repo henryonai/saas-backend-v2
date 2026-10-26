@@ -20,8 +20,14 @@ from langchain_core.tools import BaseTool
 from assistant.context import AgentContext
 from assistant.definitions import AgentDefinition
 from assistant.delegation import make_task_tool
-from assistant.middleware import ConversationMiddleware, PlanToolsMiddleware, UsageMiddleware, tool_failed
-from assistant.service import UsageService
+from assistant.middleware import (
+    ConversationMiddleware,
+    MemoryMiddleware,
+    PlanToolsMiddleware,
+    UsageMiddleware,
+    tool_failed,
+)
+from assistant.service import MemoryService, UsageService
 from assistant.tools import SANDBOX_TOOLS
 
 # Tool calls in one run, whatever the model decides (maxTurns bounds model calls).
@@ -37,6 +43,7 @@ class AgentDeps:
     checkpointer: Any
     usage: UsageService
     tools: dict[str, BaseTool]   # tools.make_tools()
+    memories: MemoryService
 
 
 def build_agents(definitions: dict[str, AgentDefinition], deps: AgentDeps) -> dict[str, Any]:
@@ -60,6 +67,8 @@ def _build(definition: AgentDefinition, deps: AgentDeps, *, top_level: bool, ext
     middleware = [UsageMiddleware(deps.usage)]
     if top_level:
         middleware.append(ConversationMiddleware(MAX_HISTORY_TOKENS))
+    if definition.memory:
+        middleware.append(MemoryMiddleware(deps.memories))
     middleware.append(PlanToolsMiddleware(deps.usage, SANDBOX_TOOLS))
     middleware += [
         ModelCallLimitMiddleware(run_limit=definition.max_turns, exit_behavior="end"),

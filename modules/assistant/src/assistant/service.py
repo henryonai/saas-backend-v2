@@ -14,10 +14,11 @@ from shared.plans import get_limit
 
 from assistant.agent_names import MAIN_AGENT, agent_names
 from assistant.context import SESSION_ID, AgentContext, actor_of, checkpoint_session
-from assistant.models import Conversation, Rating, Run, Usage, current_month, iso, now_iso
+from assistant.models import Conversation, Memory, Rating, Run, Usage, current_month, iso, now_iso
 from assistant.repository import (
     ConversationRepository,
     InvalidCursor,
+    MemoryRepository,
     UsageLimitReached,
     UsageRepository,
     earlier_cursor,
@@ -113,6 +114,79 @@ class UsageService:
                 "tokens": usage.tokens, "tokens_limit": get_limit(user.plan, TOKENS),
                 "sandbox_sessions": usage.sandbox_sessions,
                 "sandbox_sessions_limit": get_limit(user.plan, SANDBOX_SESSIONS)}
+
+
+MAX_MEMORIES = 100   # a user's memories: an agent with `memory: user` is sent all of them, each message
+MEMORY_CHARS = 500   # each
+
+
+class MemoryService:
+    """
+    What the assistant remembers about each user across conversations, as
+    ChatGPT's saved memories: an agent with `memory: user` (its Markdown
+    file) is sent all of them, and saves, corrects and forgets them with its
+    tools; the user sees, edits and deletes them, or turns memory off (the
+    HTTP API). Kept until the user deletes them, or leaves the workspace.
+    Their text is never logged.
+    """
+
+    def __init__(self, memories: MemoryRepository):
+        self.memories = memories
+
+    def read(self, user: CurrentUser) -> tuple[bool, list[Memory]]:
+        """Whether the user has memory on, and what is remembered, oldest first."""
+        return self.memories.read(user.require_tenant(), user.user_id)
+
+    def remember(self, user: CurrentUser, text: str, *, thread_id: str | None = None, replaces: str | None = None,
+                 by_agent: bool = False) -> Memory:
+        """
+        Saves a memory (`by_agent`: an agent saved it, in conversation
+        `thread_id`; else the user wrote it), or, with `replaces`, writes it
+        over that one. Raises InvalidRequest (empty, too long), Conflict
+        (memory off, for an agent; the user has MAX_MEMORIES) or NotFound
+        (no memory `replaces`). The same text again is the same memory.
+        """
+        tenant_id = user.require_tenant()
+        text = " ".join(text.split())
+        if not text:
+            raise InvalidRequest("Write what to remember.")
+        if len(text) > MEMORY_CHARS:
+            raise InvalidRequest(f"A memory is at most {MEMORY_CHARS} characters: keep it to one fact.")
+        enabled, memories = self.memories.read(tenant_id, user.user_id)
+        if by_agent and not enabled:
+            raise Conflict("Memory is off: the user turned it off, so nothing is saved.")
+        now = now_iso()
+        if replaces is not None:
+            memory = self.memories.edit(tenant_id, user.user_id, replaces, text, now)
+            if memory is None:
+                raise NotFound(f"No memory {replaces!r}.")
+        elif same := next((m for m in memories if m.text.casefold() == text.casefold()), None):
+            return same
+        else:
+            if len(memories) >= MAX_MEMORIES:
+                raise Conflict(f"There are {MAX_MEMORIES} memories, the most kept: delete some first.")
+            memory = Memory(memory_id=uuid4().hex[:8], text=text, created_at=now, updated_at=now,
+                            thread_id=thread_id)
+            self.memories.add(tenant_id, user.user_id, memory)
+        logger.info("Memory saved", extra={"memory_id": memory.memory_id, "by": "agent" if by_agent else "user",
+                                           "session_id": thread_id, "replaced": replaces is not None})
+        return memory
+
+    def forget(self, user: CurrentUser, memory_id: str, *, by_agent: bool = False) -> None:
+        """Deletes one memory. Raises NotFound."""
+        if not self.memories.delete(user.require_tenant(), user.user_id, memory_id):
+            raise NotFound(f"No memory {memory_id!r}.")
+        logger.info("Memory deleted", extra={"memory_id": memory_id, "by": "agent" if by_agent else "user"})
+
+    def forget_all(self, user: CurrentUser) -> int:
+        """Deletes every memory (memory stays on or off)."""
+        deleted = self.memories.delete_all(user.require_tenant(), user.user_id)
+        logger.info("All memories deleted", extra={"memories": deleted})
+        return deleted
+
+    def set_enabled(self, user: CurrentUser, enabled: bool) -> None:
+        """Memory on or off. Off, agents neither see nor save memories; what is saved stays until deleted."""
+        self.memories.set_enabled(user.require_tenant(), user.user_id, enabled)
 
 
 TITLE_CHARS = 80               # a conversation's title, however it was set

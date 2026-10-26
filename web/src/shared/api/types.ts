@@ -43,5 +43,9 @@ export type AssistantMessagePage = Omit<Sent<Assistant['schemas']['MessagePage']
 export type AssistantRun = Sent<Assistant['schemas']['RunOut']>;
 /** Which version of a message one is, of how many (an edit, or an answer asked for again): "‹ 2/3 ›". */
 export type AssistantVersion = Assistant['schemas']['Version'];
+/** Something the assistant remembers about the user across conversations; thread_id: where an agent saved it. */
+export type AssistantMemory = Sent<Assistant['schemas']['MemoryOut']>;
+/** Everything it remembers about the user, and whether memory is on. */
+export type AssistantMemoryList = Omit<Assistant['schemas']['MemoryList'], 'items'> & { items: AssistantMemory[] };
 /** The user's thumbs up or down on an answer. */
 export type AssistantRating = NonNullable<Assistant['schemas']['MessageRating']['rating']>;

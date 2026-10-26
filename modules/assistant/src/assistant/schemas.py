@@ -70,6 +70,14 @@ class MessageRating(BaseModel):
     rating: Rating | None   # thumbs up or down; null takes the rating back
 
 
+class MemoryIn(BaseModel):
+    text: str = Field(min_length=1, max_length=500)   # one fact, as the user wants it remembered
+
+
+class MemorySettings(BaseModel):
+    enabled: bool   # off: agents neither see nor save memories; what is saved stays until deleted
+
+
 class VersionIn(BaseModel):
     version: int = Field(ge=1, le=10_000)   # which version of the message to show, from 1 ("‹ 2/3 ›")
 
@@ -117,6 +125,20 @@ class ConversationDetail(MessagePage, ConversationOut):
     # The run still answering the newest message: its answer isn't in
     # `messages` yet. Send it to AgentCore as the AG-UI runId to follow it.
     run_id: str | None
+
+
+class MemoryOut(BaseModel):
+    memory_id: str
+    text: str
+    created_at: str
+    updated_at: str
+    thread_id: str | None = None   # the conversation an agent saved it in; None: the user wrote it
+
+
+class MemoryList(BaseModel):
+    enabled: bool             # whether agents remember things about the user
+    items: list[MemoryOut]    # oldest first
+    limit: int                # the most kept: an agent with memory is sent them all
 
 
 class RunOut(BaseModel):

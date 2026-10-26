@@ -1296,7 +1296,11 @@ def member_removed(tenant_id: str, user_id: str, occurred_at: str) -> dict:
                        "user_id": user_id, "removed_by": "owner"}}
 
 
-def test_a_removed_members_conversations_go(ctx, checkpoints):
+def test_a_removed_members_conversations_and_memories_go(ctx, checkpoints):
+    alice, bob = claims("alice", "t1", "member"), claims("bob", "t1", "member")
+    for user in (alice, bob):
+        ctx.memories.remember(user_from_claims(user), "Likes short answers")
+    ctx.memories.set_enabled(user_from_claims(alice), False)
     start(ctx, thread(1), "2026-10-24T08:00:00.000Z")
     start(ctx, thread(2), "2026-10-24T09:00:00.000Z", expires_in=-60)   # expired, TTL hasn't removed it yet
     start(ctx, thread(3), "2026-10-24T08:00:00.000Z", user_id="bob")    # someone else's
@@ -1308,10 +1312,13 @@ def test_a_removed_members_conversations_go(ctx, checkpoints):
     message = sqs(member_removed("t1", "alice", "2026-10-24T10:00:00.000000+00:00"))
 
     with captured_logs(assistant.purge.logger) as logs:
-        assert process_batch(message, FakeContext(), checkpoints.purge, ctx.conversations) == {"batchItemFailures": []}
+        assert process_batch(message, FakeContext(), checkpoints.purge, ctx.conversations,
+                             ctx.memories.memories) == {"batchItemFailures": []}
 
     assert {i["pk"] for i in ctx.table.scan()["Items"] if "#CONV#" in i["pk"]} == {
         f"TENANT#t1#USER#alice#CONV#{thread(4)}", f"TENANT#t1#USER#bob#CONV#{thread(3)}"}
+    assert ctx.memories.read(user_from_claims(alice)) == (True, [])   # memories and setting
+    assert len(ctx.memories.read(user_from_claims(bob))[1]) == 1
     assert checkpoints.left(mine) == {} and checkpoints.left(bobs) != {}
     assert [line["conversations"] for line in logs() if line["message"].startswith("Purged a removed")] == [2]
     # Delivered again (at least once): nothing left to do, nothing else goes.

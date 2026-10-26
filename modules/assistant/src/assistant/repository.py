@@ -10,6 +10,9 @@ Assistant table:
                                                                  the first (branch 1 from position 4: an edit,
                                                                  or an answer asked for again, versions.py)
   pk = TENANT#<t>                         sk = USER#<u>#HOUR#<YYYY-MM-DDTHH>  messages a user sent that hour (UTC)
+  pk = TENANT#<t>#USER#<u>#MEMORY         sk = MEM#<id>          something the assistant remembers about the user
+                                                                 (models.Memory)
+  pk = TENANT#<t>#USER#<u>#MEMORY         sk = SETTINGS          whether it remembers anything (enabled)
   gsi1pk = TENANT#<t>#USER#<u>#CONVS      gsi1sk = <updated_at>  on META only: the user's list, newest first
 
 The tenant is part of every key, and the user of every conversation key, so
@@ -19,7 +22,7 @@ path through its versions (path, branches, message_count), each segment of
 which is one query. Usage expires (TTL) about 13 months after the month started,
 a user's hourly count an hour after its hour.
 A conversation is kept until its user deletes it, or leaves the workspace
-(purge.py). A stack can have it expire instead (CONVERSATION_DAYS), whole,
+(purge.py); so are memories. A stack can have it expire instead (CONVERSATION_DAYS), whole,
 some days after its last message: only its META has a TTL (expires_at, moved
 on by every message), so a long conversation never loses its oldest
 messages. When TTL removes the META, the table's stream has the purge worker
@@ -37,7 +40,7 @@ from botocore.exceptions import ClientError
 
 from shared.dynamo import is_condition_failure
 
-from assistant.models import Conversation, Rating, Run, TitleSource, Usage
+from assistant.models import Conversation, Memory, Rating, Run, TitleSource, Usage
 from assistant.versions import Node, Tree
 
 USAGE_TTL_SECONDS = 400 * 24 * 60 * 60
@@ -566,6 +569,96 @@ def _unchanged(before: Conversation | None, values: dict) -> str:
         return "attribute_not_exists(#rev) AND #count = :before_count"
     values[":before_rev"] = before.rev
     return "#rev = :before_rev"
+
+
+def _memory_pk(tenant_id: str, user_id: str) -> str:
+    return f"TENANT#{tenant_id}#USER#{user_id}#MEMORY"
+
+
+class MemoryRepository:
+    """
+    What the assistant remembers about each user: a few dozen small items
+    under one key, read in one query. The tenant and user come from the
+    caller's token.
+    """
+
+    def __init__(self, table):
+        self.table = table
+
+    def read(self, tenant_id: str, user_id: str) -> tuple[bool, list[Memory]]:
+        """Whether the user has memory on, and every memory, oldest first."""
+        params = {"KeyConditionExpression": Key("pk").eq(_memory_pk(tenant_id, user_id)), "ConsistentRead": True}
+        enabled, memories = True, []
+        while True:
+            result = self.table.query(**params)
+            for item in result["Items"]:
+                if item["sk"] == "SETTINGS":
+                    enabled = item.get("enabled", True)
+                elif item["sk"].startswith("MEM#"):
+                    memories.append(Memory.model_validate({k: v for k, v in item.items() if k not in ("pk", "sk")}))
+            if "LastEvaluatedKey" not in result:
+                return enabled, sorted(memories, key=lambda memory: memory.created_at)
+            params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
+    def add(self, tenant_id: str, user_id: str, memory: Memory) -> None:
+        values = {f":{k}": v for k, v in memory.model_dump().items() if v is not None}
+        self.table.update_item(
+            Key={"pk": _memory_pk(tenant_id, user_id), "sk": f"MEM#{memory.memory_id}"},
+            UpdateExpression="SET " + ", ".join(f"#{name[1:]} = {name}" for name in values),
+            ConditionExpression="attribute_not_exists(pk)",
+            ExpressionAttributeNames={f"#{name[1:]}": name[1:] for name in values},
+            ExpressionAttributeValues=values,
+        )
+
+    def edit(self, tenant_id: str, user_id: str, memory_id: str, text: str, now: str) -> Memory | None:
+        """The memory with its new text, or None if there is no such memory."""
+        try:
+            result = self.table.update_item(
+                Key={"pk": _memory_pk(tenant_id, user_id), "sk": f"MEM#{memory_id}"},
+                UpdateExpression="SET #text = :text, #updated = :now",
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeNames={"#text": "text", "#updated": "updated_at"},
+                ExpressionAttributeValues={":text": text, ":now": now},
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as e:
+            if is_condition_failure(e):
+                return None
+            raise
+        return Memory.model_validate({k: v for k, v in result["Attributes"].items() if k not in ("pk", "sk")})
+
+    def delete(self, tenant_id: str, user_id: str, memory_id: str) -> bool:
+        """False if there was no such memory."""
+        try:
+            self.table.delete_item(Key={"pk": _memory_pk(tenant_id, user_id), "sk": f"MEM#{memory_id}"},
+                                   ConditionExpression="attribute_exists(pk)")
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+        return True
+
+    def delete_all(self, tenant_id: str, user_id: str, settings: bool = False) -> int:
+        """Every memory of the user's (and, with `settings`, whether memory was on). Returns how many records."""
+        params = {"KeyConditionExpression": Key("pk").eq(_memory_pk(tenant_id, user_id)),
+                  "ProjectionExpression": "pk, sk"}
+        deleted = 0
+        with self.table.batch_writer() as batch:
+            while True:
+                result = self.table.query(**params)
+                for item in result["Items"]:
+                    if settings or item["sk"] != "SETTINGS":
+                        batch.delete_item(Key={"pk": item["pk"], "sk": item["sk"]})
+                        deleted += 1
+                if "LastEvaluatedKey" not in result:
+                    return deleted
+                params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
+    def set_enabled(self, tenant_id: str, user_id: str, enabled: bool) -> None:
+        self.table.update_item(Key={"pk": _memory_pk(tenant_id, user_id), "sk": "SETTINGS"},
+                               UpdateExpression="SET #enabled = :enabled",
+                               ExpressionAttributeNames={"#enabled": "enabled"},
+                               ExpressionAttributeValues={":enabled": enabled})
 
 
 def _expiry(expires_at: int | None, values: dict) -> tuple[str, str]:

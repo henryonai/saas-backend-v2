@@ -15,4 +15,5 @@ export const qk = {
   notifications: () => ['notifications'] as const,
   conversations: () => ['assistant', 'conversations'] as const,
   conversation: (threadId: string) => ['assistant', 'conversation', threadId] as const,
+  memories: () => ['assistant', 'memories'] as const,
 };

@@ -979,11 +979,13 @@ Resources:
                 Effect: Allow
                 Action: [s3:GetLifecycleConfiguration, s3:PutLifecycleConfiguration]
                 Resource: !GetAtt AssistantCheckpointBucket.Arn
-              # Usage counters, and each conversation's history (service.ConversationLog);
-              # Query reads it back for an agent whose checkpoints expired (app.restored).
+              # Usage counters, each conversation's history (service.ConversationLog), and
+              # what the agents remember about each user (DeleteItem: the forget tool);
+              # Query reads the history back for an agent whose checkpoints expired (app.restored).
               - Sid: Table
                 Effect: Allow
-                Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
+                Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem,
+                         dynamodb:DeleteItem]
                 Resource: !GetAtt AssistantTable.Arn
               - Sid: Sandbox                # assistant/sandbox.py
                 Effect: Allow
@@ -1109,7 +1111,8 @@ Resources:
 
   # The users' conversations (/assistant/conversations): send a message (saved,
   # with the run that will answer it, before AgentCore runs it), stop an
-  # answer, list, reopen, rename, delete. A Lambda behind the HTTP API like
+  # answer, list, reopen, rename, delete; and what the assistant remembers
+  # about each user (/assistant/memories). A Lambda behind the HTTP API like
   # the other modules; the agent writes the answers. Same code as the agent,
   # but only the shared layer: these files never import LangChain (a test checks).
   AssistantApiFunction:
@@ -1127,11 +1130,18 @@ Resources:
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
+              Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem,
+                       dynamodb:DeleteItem]
               Resource: [!GetAtt AssistantTable.Arn, !Sub "${AssistantTable.Arn}/index/gsi1"]
         - SQSSendMessagePolicy: { QueueName: !GetAtt AssistantPurgeQueue.QueueName }
       Events:
         ListGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/conversations, Method: GET } }
+        MemoriesGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/memories, Method: GET } }
+        MemoriesPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/memories, Method: POST } }
+        MemoriesPatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/memories, Method: PATCH } }
+        MemoriesDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/memories, Method: DELETE } }
+        MemoryPatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/memories/{proxy+}", Method: PATCH } }
+        MemoryDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/memories/{proxy+}", Method: DELETE } }
         OneGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: GET } }
         OnePost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: POST } }
         OnePatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: PATCH } }

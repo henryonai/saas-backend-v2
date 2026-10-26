@@ -362,7 +362,31 @@
       "input": "Input",
       "result": "Result",
       "running": "Running",
-      "done": "Done"
+      "done": "Done",
+      "remember": "Saved to memory",
+      "rememberAgain": "Updated a memory",
+      "forget": "Forgot a memory"
+    },
+    "memory": {
+      "title": "Memory",
+      "description": "The assistant remembers what you tell it about yourself, across conversations, and uses it in its answers. Everything it remembers is here for you to change or delete.",
+      "enabled": "Remember things across conversations",
+      "on": "On: it can save and use memories.",
+      "off": "Off: it neither uses nor saves memories. What it saved stays until you delete it.",
+      "addLabel": "Something for the assistant to remember",
+      "addPlaceholder": "Add something to remember, e.g. “I prefer short answers”",
+      "add": "Add",
+      "full": "Memory is full: delete something first",
+      "empty": "Nothing remembered yet. Tell the assistant something about yourself, or add it here.",
+      "listLabel": "What the assistant remembers",
+      "edit": "Edit “{{text}}”",
+      "editLabel": "Edit memory",
+      "delete": "Delete “{{text}}”",
+      "deleteLabel": "Delete memory",
+      "count": "{{count}} of {{limit}}",
+      "forgetAll": "Forget everything",
+      "forgetAllTitle": "Forget everything?",
+      "forgetAllDescription": "Everything the assistant remembers about you is deleted for good. Your conversations stay."
     }
   },
   "upgrade": {

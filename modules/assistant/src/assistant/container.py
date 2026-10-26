@@ -20,8 +20,8 @@ from functools import lru_cache
 import boto3
 
 from assistant.checkpoints import CheckpointPurge
-from assistant.repository import ConversationRepository, UsageRepository
-from assistant.service import ConversationLog, ConversationService, SqsPurgeQueue, UsageService
+from assistant.repository import ConversationRepository, MemoryRepository, UsageRepository
+from assistant.service import ConversationLog, ConversationService, MemoryService, SqsPurgeQueue, UsageService
 from assistant.settings import AssistantSettings, ConversationsApiSettings, PurgeSettings
 
 
@@ -38,6 +38,13 @@ def _table(name: str, region: str | None = None):
 def get_usage_service() -> UsageService:
     settings = get_settings()
     return UsageService(usage=UsageRepository(_table(settings.assistant_table, settings.region)))
+
+
+@lru_cache
+def get_memories() -> MemoryService:
+    """What the assistant remembers about each user (the agents', in the runtime)."""
+    settings = get_settings()
+    return MemoryService(MemoryRepository(_table(settings.assistant_table, settings.region)))
 
 
 @lru_cache
@@ -63,10 +70,12 @@ def get_agents() -> dict:
     settings = get_settings()
     agentcore = boto3.client("bedrock-agentcore", region_name=settings.region)
     usage = get_usage_service()
+    memories = get_memories()
     tools = make_tools(
         api=HttpAppApi(httpx.Client(timeout=10), settings.api_url),
         usage=usage,
         sandbox=AgentCoreSandbox(agentcore, settings.sandbox_id, settings.sandbox_session_seconds),
+        memories=memories,
     )
     models: dict[str, BaseChatModel] = {}
 
@@ -92,6 +101,7 @@ def get_agents() -> dict:
         ),
         usage=usage,
         tools=tools,
+        memories=memories,
     ))
 
 
@@ -115,6 +125,12 @@ def get_conversation_service() -> ConversationService:
 
 
 @lru_cache
+def get_memory_service() -> MemoryService:
+    """For the HTTP API: the user sees, edits and deletes what the assistant remembers."""
+    return MemoryService(MemoryRepository(_table(ConversationsApiSettings().assistant_table)))
+
+
+@lru_cache
 def get_checkpoint_purge() -> CheckpointPurge:
     settings = PurgeSettings()
     return CheckpointPurge(_table(settings.checkpoint_table), boto3.client("s3"), settings.checkpoint_bucket)
@@ -124,3 +140,9 @@ def get_checkpoint_purge() -> CheckpointPurge:
 def get_purged_conversations() -> ConversationRepository:
     """For the purge worker: what is left of the conversations that expired, and a removed member's."""
     return ConversationRepository(_table(PurgeSettings().assistant_table))
+
+
+@lru_cache
+def get_purged_memories() -> MemoryRepository:
+    """For the purge worker: a removed member's memories."""
+    return MemoryRepository(_table(PurgeSettings().assistant_table))

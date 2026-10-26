@@ -8,7 +8,8 @@ Three ways a conversation goes, one Lambda for all:
     (checkpoints.py);
   - its user left the workspace, or was removed from it: accounts publishes
     MemberRemoved, which EventBridge puts on the same queue, and all their
-    conversations there go, messages and threads;
+    conversations there go, messages and threads, and what the assistant
+    remembers about them;
   - expired, on a stack that keeps conversations for a while
     (CONVERSATION_DAYS): DynamoDB's TTL removes its META some days after its
     last message (repository.py), and the assistant table's stream brings
@@ -28,10 +29,10 @@ from aws_lambda_powertools.utilities.batch import BatchProcessor, EventType, pro
 from aws_lambda_powertools.utilities.data_classes.dynamo_db_stream_event import DynamoDBRecord, DynamoDBRecordEventName
 
 from assistant.checkpoints import CheckpointPurge
-from assistant.container import get_checkpoint_purge, get_purged_conversations
+from assistant.container import get_checkpoint_purge, get_purged_conversations, get_purged_memories
 from assistant.context import checkpoint_session
 from assistant.models import iso
-from assistant.repository import ConversationRepository, conversation_of
+from assistant.repository import ConversationRepository, MemoryRepository, conversation_of
 
 logger = Logger()
 
@@ -41,12 +42,13 @@ MEMBER_REMOVED = "MemberRemoved"   # accounts' event, by name (modules never imp
 
 
 def process_batch(event: dict, context, checkpoints: CheckpointPurge,
-                  conversations: ConversationRepository | None = None) -> dict:
+                  conversations: ConversationRepository | None = None,
+                  memories: MemoryRepository | None = None) -> dict:
     """SQS: conversations their users deleted (the HTTP API's), and members removed (EventBridge's)."""
     def record_handler(record) -> None:
         body = json.loads(record.body)
         if body.get("detail-type") == MEMBER_REMOVED:
-            purge_member(body["detail"], checkpoints, conversations)
+            purge_member(body["detail"], checkpoints, conversations, memories)
             return
         threads = body["threads"]
         deleted = sum(checkpoints.delete(thread) for thread in threads)
@@ -58,12 +60,14 @@ def process_batch(event: dict, context, checkpoints: CheckpointPurge,
     )
 
 
-def purge_member(detail: dict, checkpoints: CheckpointPurge, conversations: ConversationRepository) -> None:
+def purge_member(detail: dict, checkpoints: CheckpointPurge, conversations: ConversationRepository,
+                 memories: MemoryRepository | None = None) -> None:
     """
     A member left their workspace, or was removed from it: their
     conversations there go, each as a user's delete would, checkpoints
-    first. Only those last used before then: someone invited back since,
-    whose event came late, keeps what they said since.
+    first, then what the assistant remembers about them. Only conversations
+    last used before then: someone invited back since, whose event came late,
+    keeps what they said since. Memories go whole (they have no time of use).
     """
     tenant_id, user_id = detail["tenant_id"], detail["user_id"]
     until = iso(datetime.fromisoformat(detail["occurred_at"]))   # as the conversations' times are stored
@@ -74,8 +78,9 @@ def purge_member(detail: dict, checkpoints: CheckpointPurge, conversations: Conv
         deleted += sum(checkpoints.delete(thread) for thread in threads)
         conversations.delete(tenant_id, user_id, conversation.thread_id)
         count += 1
+    remembered = memories.delete_all(tenant_id, user_id, settings=True) if memories else 0
     logger.info("Purged a removed member's conversations", extra={"tenant_id": tenant_id, "conversations": count,
-                                                                  "records": deleted})
+                                                                  "records": deleted, "memories": remembered})
 
 
 def process_expired(event: dict, context, checkpoints: CheckpointPurge,
@@ -106,4 +111,4 @@ def handler(event: dict, context) -> dict:
     records = event.get("Records") or [{}]
     if records[0].get("eventSource") == "aws:dynamodb":
         return process_expired(event, context, get_checkpoint_purge(), get_purged_conversations())
-    return process_batch(event, context, get_checkpoint_purge(), get_purged_conversations())
+    return process_batch(event, context, get_checkpoint_purge(), get_purged_conversations(), get_purged_memories())

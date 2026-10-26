@@ -172,6 +172,12 @@ beside the chat (a side panel on a phone) comes from the HTTP API
 - Rename (a dialog) and delete (a confirmation) are in each item's menu.
   Deleting the open conversation starts a new one.
 
+**Memory** (`components/memory-dialog.tsx`, the Memory button beside the
+chat): what the assistant remembers about the user across conversations
+(`/assistant/memories`), read each time it opens, as in ChatGPT's settings:
+memory on or off, add, edit, delete, and Forget everything. When the
+assistant saves one in a chat, its tool call says "Saved to memory".
+
 The AG-UI client (with rxjs) loads with the Assistant page only.
 
 ## Testing a checkout

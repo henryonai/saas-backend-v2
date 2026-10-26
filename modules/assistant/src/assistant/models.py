@@ -1,7 +1,8 @@
 """
 What the assistant module stores: one usage record per workspace and month,
-and each user's conversations with their messages. What its two endpoints
-(the HTTP API and the agent's) accept and return is in schemas.py.
+each user's conversations with their messages, and what it remembers about
+each user. What its two endpoints (the HTTP API and the agent's) accept and
+return is in schemas.py.
 """
 from datetime import UTC, datetime
 from typing import Literal
@@ -63,6 +64,18 @@ class Run(BaseModel):
     # (another version was shown, or another agent spoke since): it starts
     # again from the history of the one shown (app.restored).
     restore: bool = False
+
+
+class Memory(BaseModel):
+    """
+    Something the assistant remembers about a user across conversations, as
+    ChatGPT's saved memories: theirs to see, edit and delete.
+    """
+    memory_id: str
+    text: str
+    created_at: str
+    updated_at: str
+    thread_id: str | None = None   # the conversation an agent saved it in; None: the user wrote it
 
 
 class Conversation(BaseModel):

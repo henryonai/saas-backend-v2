@@ -362,7 +362,31 @@
       "input": "Đầu vào",
       "result": "Kết quả",
       "running": "Đang chạy",
-      "done": "Xong"
+      "done": "Xong",
+      "remember": "Đã lưu vào bộ nhớ",
+      "rememberAgain": "Đã cập nhật một ghi nhớ",
+      "forget": "Đã quên một ghi nhớ"
+    },
+    "memory": {
+      "title": "Bộ nhớ",
+      "description": "Trợ lý ghi nhớ những gì bạn kể về bản thân qua các cuộc trò chuyện và dùng chúng khi trả lời. Mọi điều nó ghi nhớ đều ở đây để bạn sửa hoặc xóa.",
+      "enabled": "Ghi nhớ qua các cuộc trò chuyện",
+      "on": "Bật: trợ lý có thể lưu và dùng các ghi nhớ.",
+      "off": "Tắt: trợ lý không dùng và không lưu ghi nhớ. Những gì đã lưu vẫn còn cho đến khi bạn xóa.",
+      "addLabel": "Điều để trợ lý ghi nhớ",
+      "addPlaceholder": "Thêm điều cần ghi nhớ, ví dụ “Tôi thích câu trả lời ngắn”",
+      "add": "Thêm",
+      "full": "Bộ nhớ đã đầy: hãy xóa bớt trước",
+      "empty": "Chưa ghi nhớ gì. Hãy kể với trợ lý về bản thân bạn, hoặc thêm ở đây.",
+      "listLabel": "Những điều trợ lý ghi nhớ",
+      "edit": "Sửa “{{text}}”",
+      "editLabel": "Sửa ghi nhớ",
+      "delete": "Xóa “{{text}}”",
+      "deleteLabel": "Xóa ghi nhớ",
+      "count": "{{count}} / {{limit}}",
+      "forgetAll": "Quên tất cả",
+      "forgetAllTitle": "Quên tất cả?",
+      "forgetAllDescription": "Mọi điều trợ lý ghi nhớ về bạn sẽ bị xóa vĩnh viễn. Các cuộc trò chuyện vẫn được giữ."
     }
   },
   "upgrade": {
