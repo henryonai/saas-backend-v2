@@ -332,6 +332,7 @@
     "stop": "Stop",
     "thinking": "Thinking…",
     "tokens": "Last answer: {{tokens}} tokens",
+    "earlier": "Show earlier messages",
     "edit": "Edit message",
     "editLabel": "Your message",
     "editSend": "Send",

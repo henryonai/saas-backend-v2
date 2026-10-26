@@ -1,6 +1,7 @@
 import json
 import math
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
@@ -14,7 +15,14 @@ from shared.plans import get_limit
 from assistant.agent_names import MAIN_AGENT, agent_names
 from assistant.context import SESSION_ID, AgentContext, actor_of, checkpoint_session
 from assistant.models import Conversation, Rating, Run, Usage, current_month, iso, now_iso
-from assistant.repository import ConversationRepository, InvalidCursor, UsageLimitReached, UsageRepository
+from assistant.repository import (
+    ConversationRepository,
+    InvalidCursor,
+    UsageLimitReached,
+    UsageRepository,
+    earlier_cursor,
+    read_earlier_cursor,
+)
 
 logger = Logger()
 
@@ -108,7 +116,7 @@ class UsageService:
 
 TITLE_CHARS = 80               # a conversation's title, however it was set
 TOOL_RESULT_CHARS = 10_000     # of each tool result kept for the history (bash cuts its own output to this)
-MESSAGES_SHOWN = 200           # latest messages returned when a conversation is opened
+MESSAGES_SHOWN = 200           # latest messages returned when a conversation is opened (and most per page before them)
 # AgentCore ends a streaming request after 60 minutes: a run started longer
 # ago isn't answering any more (its runtime stopped before it could say so).
 RUN_LIMIT = timedelta(minutes=60)
@@ -231,6 +239,14 @@ class SqsPurgeQueue:
         self.client.send_message(QueueUrl=self.queue_url, MessageBody=json.dumps({"threads": threads}))
 
 
+@dataclass(frozen=True)
+class HistoryPage:
+    """Some of a conversation's messages, oldest first, with the user's ratings of them."""
+    messages: list[dict]
+    ratings: dict[str, Rating]
+    earlier: str | None   # where the messages before these start (earlier_cursor), or None: these are the first
+
+
 NOT_FOUND = "No such conversation: it was deleted, or it expired."
 STILL_ANSWERING = "The assistant is still answering in this conversation: wait for the answer, or stop it."
 
@@ -312,12 +328,29 @@ class ConversationService:
         except InvalidCursor:
             raise InvalidRequest("Pass the next_cursor of the previous page as ?cursor=.")
 
-    def get(self, user: CurrentUser, thread_id: str) -> tuple[Conversation, list[dict], dict[str, Rating]]:
-        """The conversation, its latest messages (AG-UI messages, oldest first) and the user's ratings of them."""
+    def get(self, user: CurrentUser, thread_id: str) -> tuple[Conversation, HistoryPage]:
+        """The conversation, and its latest messages (AG-UI messages, oldest first) with the user's ratings of them."""
         conversation = self._get(user, thread_id)
-        messages, ratings = self.conversations.history(user.require_tenant(), user.user_id, thread_id,
-                                                       MESSAGES_SHOWN, last=conversation.message_count)
-        return conversation, messages, ratings
+        return conversation, self._page(user, conversation, MESSAGES_SHOWN)
+
+    def earlier(self, user: CurrentUser, thread_id: str, before: str, limit: int) -> HistoryPage:
+        """
+        The messages before a page already read (`before`: its
+        earlier_cursor), as a long conversation is scrolled back: the
+        newest `limit` of them, oldest first.
+        """
+        try:
+            position = read_earlier_cursor(before)
+        except InvalidCursor:
+            raise InvalidRequest("Pass the earlier_cursor of the messages you have as ?before=.")
+        return self._page(user, self._get(user, thread_id), limit, before=position)
+
+    def _page(self, user: CurrentUser, conversation: Conversation, limit: int,
+              before: int | None = None) -> HistoryPage:
+        messages, ratings, first = self.conversations.history(
+            user.require_tenant(), user.user_id, conversation.thread_id, limit, last=conversation.message_count,
+            before=before)
+        return HistoryPage(messages, ratings, earlier_cursor(first) if first and first > 1 else None)
 
     def rate(self, user: CurrentUser, thread_id: str, message_id: str, rating: Rating | None) -> None:
         """

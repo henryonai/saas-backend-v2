@@ -686,6 +686,66 @@ def test_opening_a_conversation_returns_its_messages(ctx, api, alice):
                                                                              ("assistant", "Hello Alice!")]
 
 
+def a_long_conversation(ctx, user: dict, messages: int) -> None:
+    """A conversation of `messages` messages, m1 (the user's) to m<messages> (one long answer)."""
+    run_id = ctx.post("Tell me everything", user, message_id="m1")
+    answer = [{"id": f"m{n}", "role": "assistant", "content": f"Part {n}"} for n in range(2, messages + 1)]
+    assert ctx.conversations.add_answer("t1", user["sub"], THREAD, run_id, answer, agent="assistant",
+                                        now=iso(datetime.now(UTC)), expires_at=None)
+
+
+def ids_of(page: dict) -> list[str]:
+    return [m["id"] for m in page["messages"]]
+
+
+def earlier(api, user, cursor: str, limit: int | None = None) -> tuple[int, dict]:
+    """GET .../messages?before=: what a page scrolled back to the top of a long conversation reads."""
+    query = {"before": cursor, **({"limit": str(limit)} if limit else {})}
+    return api.call("GET", f"/assistant/conversations/{THREAD}/messages", user, query=query)
+
+
+def test_a_long_conversation_opens_at_its_latest_messages_and_reads_back_from_there(ctx, api, alice):
+    a_long_conversation(ctx, alice, 450)
+    assert api.call("PATCH", f"/assistant/conversations/{THREAD}/messages/m10", alice, body={"rating": "up"})[0] == 204
+
+    conversation = opened(api, alice)
+    assert ids_of(conversation) == [f"m{n}" for n in range(251, 451)]
+    status, page = earlier(api, alice, conversation["earlier_cursor"], limit=200)
+    assert status == 200 and ids_of(page) == [f"m{n}" for n in range(51, 251)]
+    status, first = earlier(api, alice, page["earlier_cursor"])   # 100 a page unless asked
+    assert ids_of(first) == [f"m{n}" for n in range(1, 51)]
+    assert first["earlier_cursor"] is None and first["ratings"] == {"m10": "up"}
+    assert conversation["ratings"] == {} and page["ratings"] == {}
+
+
+def test_reading_back_starts_where_the_page_is_however_the_conversation_grew(ctx, api, alice):
+    a_long_conversation(ctx, alice, 210)
+    cursor = opened(api, alice)["earlier_cursor"]
+    ctx.script(ctx.answer("More."))
+    ctx.chat("And then?", alice)   # two more messages since the page opened
+
+    assert ids_of(earlier(api, alice, cursor)[1]) == [f"m{n}" for n in range(1, 11)]
+    assert opened(api, alice)["earlier_cursor"] != cursor
+
+
+def test_a_short_conversation_has_nothing_earlier(ctx, api, alice):
+    ctx.script(ctx.answer("Hello!"))
+    ctx.chat("Hi", alice)
+    assert opened(api, alice)["earlier_cursor"] is None
+
+
+def test_reading_back_takes_the_users_own_conversation_and_a_cursor_it_gave(ctx, api, alice):
+    a_long_conversation(ctx, alice, 250)
+    cursor = opened(api, alice)["earlier_cursor"]
+
+    assert earlier(api, claims("bob", "t1", "member"), cursor)[0] == 404
+    for bad in ("not-a-cursor", *(base64.urlsafe_b64encode(raw).decode() for raw in (b'["m1"]', b"[0]"))):
+        status, body = earlier(api, alice, bad)
+        assert status == 400 and "earlier_cursor" in body["message"], bad
+    assert api.call("GET", f"/assistant/conversations/{THREAD}/messages", alice)[0] == 422   # no ?before=
+    assert earlier(api, alice, cursor, limit=201)[0] == 422
+
+
 def test_a_run_that_never_ended_stops_counting_after_an_hour(ctx, api, alice):
     # Its runtime stopped mid-answer (AgentCore ends a stream at 60 minutes) before it could say so.
     for minutes, active in [(59, True), (61, False)]:

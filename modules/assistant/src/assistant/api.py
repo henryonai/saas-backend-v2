@@ -25,6 +25,7 @@ from assistant.schemas import (
     ConversationPage,
     ConversationRename,
     MessageIn,
+    MessagePage,
     MessageRating,
     RunOut,
 )
@@ -70,10 +71,24 @@ def list_conversations(user: User, service: Service,
 
 @router.get("/assistant/conversations/<thread_id>")
 def get_conversation(thread_id: str, user: User, service: Service) -> ConversationDetail:
-    conversation, messages, ratings = service.get(user, thread_id)
+    """The conversation and its latest 200 messages; earlier_cursor reads back from there."""
+    conversation, page = service.get(user, thread_id)
     run = active_run(conversation)
     return ConversationDetail(**ConversationOut.of(conversation).model_dump(), run_id=run and run.run_id,
-                              messages=messages, ratings=ratings)
+                              messages=page.messages, ratings=page.ratings, earlier_cursor=page.earlier)
+
+
+@router.get("/assistant/conversations/<thread_id>/messages")
+def earlier_messages(thread_id: str, user: User, service: Service,
+                     before: Annotated[str, Query(min_length=1, max_length=400)],
+                     limit: Annotated[int, Query(gt=0, le=200)] = 100) -> MessagePage:
+    """
+    The messages before the ones the page has (`before`: their
+    earlier_cursor), newest `limit` of them, oldest first: a long
+    conversation scrolled back.
+    """
+    page = service.earlier(user, thread_id, before, limit)
+    return MessagePage(messages=page.messages, ratings=page.ratings, earlier_cursor=page.earlier)
 
 
 @router.patch("/assistant/conversations/<thread_id>/messages/<message_id>")

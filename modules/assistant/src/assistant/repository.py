@@ -184,6 +184,10 @@ def _message_sk(position: int) -> str:
     return f"MSG#{position:06d}"
 
 
+def _position(sk: str) -> int:
+    return int(sk.removeprefix("MSG#"))
+
+
 def _conversation(item: dict) -> Conversation:
     return Conversation.model_validate({k: v for k, v in item.items() if k not in ("pk", "sk", "gsi1pk", "gsi1sk")})
 
@@ -335,7 +339,7 @@ class ConversationRepository:
             result = self.table.query(**params)
             for item in result["Items"]:
                 if item["message"].get("id") == message_id:
-                    return int(item["sk"].removeprefix("MSG#")), item["message"].get("role")
+                    return _position(item["sk"]), item["message"].get("role")
             if "LastEvaluatedKey" not in result:
                 return None
             params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
@@ -396,15 +400,19 @@ class ConversationRepository:
         """The latest `limit` messages, oldest first: all that were written, even a moment ago."""
         return self.history(tenant_id, user_id, thread_id, limit, last)[0]
 
-    def history(self, tenant_id: str, user_id: str, thread_id: str, limit: int,
-                last: int | None = None) -> tuple[list[dict], dict[str, Rating]]:
+    def history(self, tenant_id: str, user_id: str, thread_id: str, limit: int, last: int | None = None,
+                before: int | None = None) -> tuple[list[dict], dict[str, Rating], int | None]:
         """
-        The latest `limit` messages, oldest first, and the user's ratings of
-        them by message id. `last`: the conversation's message_count, past
-        which nothing belongs to it any more (add_question).
+        The latest `limit` messages, oldest first, the user's ratings of them
+        by message id, and the position of the oldest (None: there are
+        none). `last`: the conversation's message_count, past which nothing
+        belongs to it any more (add_question). `before`: only the messages
+        before this position, for the page before one already read.
         """
+        if before is not None:
+            last = min(last, before - 1) if last is not None else before - 1
         if last is not None and last < 1:
-            return [], {}
+            return [], {}, None
         newest = Key("sk").between(_message_sk(1), _message_sk(last)) if last is not None \
             else Key("sk").begins_with("MSG#")
         result = self.table.query(
@@ -414,8 +422,9 @@ class ConversationRepository:
             ConsistentRead=True,
         )
         items = list(reversed(result["Items"]))
+        first = _position(items[0]["sk"]) if items else None
         return [item["message"] for item in items], {item["message"]["id"]: item["rating"] for item in items
-                                                      if "rating" in item}
+                                                      if "rating" in item}, first
 
     def all_messages(self, tenant_id: str, user_id: str, thread_id: str,
                      last: int) -> list[tuple[str | None, dict]]:
@@ -500,6 +509,22 @@ def _expiry(expires_at: int | None, values: dict) -> tuple[str, str]:
         return "", " REMOVE #expires"
     values[":expires"] = expires_at
     return ", #expires = :expires", ""
+
+
+def earlier_cursor(position: int) -> str:
+    """Where the page before a conversation's messages starts reading back from: before `position`."""
+    return base64.urlsafe_b64encode(json.dumps([position]).encode()).decode().rstrip("=")
+
+
+def read_earlier_cursor(cursor: str) -> int:
+    """The position an earlier_cursor() names. Raises InvalidCursor."""
+    try:
+        (position,) = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    except (ValueError, TypeError) as e:   # not base64, not JSON, or not one value
+        raise InvalidCursor(cursor) from e
+    if type(position) is not int or position < 1:
+        raise InvalidCursor(cursor)
+    return position
 
 
 def _cursor(thread_id: str, updated_at: str) -> str:

@@ -332,6 +332,7 @@
     "stop": "Dừng",
     "thinking": "Đang suy nghĩ…",
     "tokens": "Câu trả lời vừa rồi: {{tokens}} token",
+    "earlier": "Xem các tin nhắn trước",
     "edit": "Sửa tin nhắn",
     "editLabel": "Tin nhắn của bạn",
     "editSend": "Gửi",

@@ -37,6 +37,8 @@ export type AssistantConversation = Sent<Assistant['schemas']['ConversationOut']
 export type AssistantConversationPage = { items: AssistantConversation[]; next_cursor: string | null };
 /** The API sends the messages as plain objects: they are AG-UI messages, as @ag-ui/client assembles them. */
 export type AssistantConversationDetail = Omit<Sent<Assistant['schemas']['ConversationDetail']>, 'messages'> & { messages: Message[] };
+/** Messages before the ones a page has, oldest first; `earlier_cursor` reads further back (null: none left). */
+export type AssistantMessagePage = Omit<Sent<Assistant['schemas']['MessagePage']>, 'messages'> & { messages: Message[] };
 /** A sent message's run: AgentCore streams its answer (the AG-UI runId). */
 export type AssistantRun = Sent<Assistant['schemas']['RunOut']>;
 /** The user's thumbs up or down on an answer. */

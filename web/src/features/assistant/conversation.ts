@@ -7,6 +7,7 @@ import {
   AssistantAgent,
   cancelRun,
   getConversation,
+  getEarlierMessages,
   MAIN_AGENT,
   postMessage,
   rateMessage,
@@ -37,10 +38,18 @@ export interface ConversationState {
   tokens: number | null;
   /** the user's thumbs up or down on answers, by the id of each answer's last assistant message */
   ratings: Record<string, AssistantRating>;
+  /**
+   * A long conversation opens at its latest messages: where the ones before
+   * them start (their earlier_cursor), or null when the page has them all.
+   */
+  earlier: string | null;
+  loadingEarlier: boolean;
 }
 
 function fresh(): ConversationState {
-  return { threadId: crypto.randomUUID(), messages: [], running: false, error: null, tokens: null, ratings: {} };
+  return {
+    threadId: crypto.randomUUID(), messages: [], running: false, error: null, tokens: null, ratings: {}, earlier: null, loadingEarlier: false,
+  };
 }
 
 export const conversationStore = createStore<ConversationState>()(fresh);
@@ -196,8 +205,29 @@ export function openConversation(threadId: string, history: AssistantConversatio
   agent = new AssistantAgent(threadId, history.messages);
   conversationStore.setState({
     threadId, messages: history.messages, running: false, error: null, tokens: null, ratings: { ...history.ratings },
+    earlier: history.earlier_cursor ?? null, loadingEarlier: false,
   });
   if (history.run_id) void follow(agent, history.run_id);
+}
+
+/**
+ * Shows the messages before the oldest on screen, a page at a time (a long
+ * conversation opens at its latest 200). Not while an answer streams: the
+ * client is adding to the messages then. Throws what failed; the button stays.
+ */
+export async function loadEarlier(): Promise<void> {
+  const { earlier, loadingEarlier, running } = conversationStore.getState();
+  if (!earlier || loadingEarlier || running) return;
+  const target = currentAgent();
+  update(target, { loadingEarlier: true });
+  try {
+    const page = await getEarlierMessages(target.threadId, earlier);
+    if (conversationStore.getState().running) return; // an answer started meanwhile: the button is there again after it
+    show(target, [...page.messages, ...target.messages]);
+    update(target, { earlier: page.earlier_cursor ?? null, ratings: { ...page.ratings, ...conversationStore.getState().ratings } });
+  } finally {
+    update(target, { loadingEarlier: false });
+  }
 }
 
 // Nothing from one user or workspace may show in the next, as main.tsx does
@@ -357,9 +387,9 @@ function lastUserMessage(messages: Message[]): number {
 
 async function showHistory(target: AssistantAgent): Promise<void> {
   try {
-    const { messages, ratings } = await getConversation(target.threadId);
+    const { messages, ratings, earlier_cursor } = await getConversation(target.threadId);
     target.setMessages(messages);
-    update(target, { messages, ratings: { ...ratings }, running: false, error: null });
+    update(target, { messages, ratings: { ...ratings }, earlier: earlier_cursor ?? null, running: false, error: null });
   } catch (error) {
     update(target, { running: false, error: requestError(error) });
   }

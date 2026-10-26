@@ -87,15 +87,22 @@ class ConversationPage(BaseModel):
     next_cursor: str | None = None  # pass back as ?cursor= to get the next page
 
 
-class ConversationDetail(ConversationOut):
-    # The run still answering the newest message: its answer isn't in
-    # `messages` yet. Send it to AgentCore as the AG-UI runId to follow it.
-    run_id: str | None
+class MessagePage(BaseModel):
     # AG-UI messages (@ag-ui/client's Message: user, assistant with toolCalls,
-    # tool results), oldest first; the latest 200 of a long conversation.
+    # tool results), oldest first.
     messages: list[dict[str, Any]]
     # The user's ratings of answers, by the id of the answer's last assistant message.
     ratings: dict[str, Rating] = {}
+    # The messages before these, if there are any: pass it as ?before= to
+    # GET /assistant/conversations/{threadId}/messages. None: these are the first.
+    earlier_cursor: str | None = None
+
+
+class ConversationDetail(MessagePage, ConversationOut):
+    """A conversation as it is opened: the latest 200 messages of a long one (earlier_cursor for the rest)."""
+    # The run still answering the newest message: its answer isn't in
+    # `messages` yet. Send it to AgentCore as the AG-UI runId to follow it.
+    run_id: str | None
 
 
 class RunOut(BaseModel):

@@ -99,7 +99,7 @@ API outside React (the billing page's wait for the new plan) calls `api.ts`.
 | Team | `GET /users`, `PATCH /users/{id}/role`, `DELETE /users/{id}`, `GET /users/invitations`, `POST /users/invite`, `DELETE /users/invitations/{email}` |
 | Billing | `GET /billing`, `POST /billing/checkout`, `POST /billing/portal` ("Manage billing") |
 | Notifications (and the bell, every 45 s) | `GET /notifications`, `POST /notifications/{id}/read` |
-| Assistant | sending: `POST /assistant/conversations/{thread_id}/messages`, then the answer from AgentCore's `/invocations` (`AssistantUrl`), AG-UI over SSE; Stop: `POST /assistant/conversations/{thread_id}/runs/{run_id}/cancel`; the list: `GET /assistant/conversations`, `GET`, `PATCH` and `DELETE /assistant/conversations/{thread_id}` |
+| Assistant | sending: `POST /assistant/conversations/{thread_id}/messages`, then the answer from AgentCore's `/invocations` (`AssistantUrl`), AG-UI over SSE; Stop: `POST /assistant/conversations/{thread_id}/runs/{run_id}/cancel`; the list: `GET /assistant/conversations`, `GET`, `PATCH` and `DELETE /assistant/conversations/{thread_id}`; older messages: `GET /assistant/conversations/{thread_id}/messages?before=` |
 
 - **The session is the ID token.** Its claims say who the user is and their
   workspace, role and plan (all three or none). The routes use them to send
@@ -162,7 +162,9 @@ beside the chat (a side panel on a phone) comes from the HTTP API
   its history from the API (on a reload, or from the list), in the same AG-UI
   messages the stream gave, and its answer if one is still coming (`run_id`).
   Sending continues it with that threadId. A conversation that was deleted or
-  expired says so.
+  expired says so. A long one opens at its latest 200 messages; "Show
+  earlier messages" reads back a page at a time (`loadEarlier`, with the
+  `earlier_cursor` the API gave), keeping the user's place on screen.
 - Rename (a dialog) and delete (a confirmation) are in each item's menu.
   Deleting the open conversation starts a new one.
 
@@ -208,7 +210,6 @@ files have the same keys and `{{variables}}`.
 
 ## Not built yet
 
-- Searching the assistant's conversations, and loading messages past the
-  latest 200 of a long one
+- Searching the assistant's conversations
 - Changing the email address, turning on MFA (sign-in already handles an
   authenticator code)

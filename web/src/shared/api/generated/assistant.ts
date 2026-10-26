@@ -8,7 +8,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** GET /assistant/conversations/{thread_id}/messages */
+        get: operations["earlier_messages_assistant_conversations__thread_id__messages_get"];
         put?: never;
         /** POST /assistant/conversations/{thread_id}/messages */
         post: operations["send_message_assistant_conversations__thread_id__messages_post"];
@@ -92,7 +93,10 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** ConversationDetail */
+        /**
+         * ConversationDetail
+         * @description A conversation as it is opened: the latest 200 messages of a long one (earlier_cursor for the rest).
+         */
         ConversationDetail: {
             /** Thread Id */
             thread_id: string;
@@ -104,8 +108,6 @@ export interface components {
             updated_at: string;
             /** Message Count */
             message_count: number;
-            /** Run Id */
-            run_id: string | null;
             /** Messages */
             messages: {
                 [key: string]: unknown;
@@ -117,6 +119,10 @@ export interface components {
             ratings: {
                 [key: string]: "up" | "down";
             };
+            /** Earlier Cursor */
+            earlier_cursor?: string | null;
+            /** Run Id */
+            run_id: string | null;
         };
         /** ConversationOut */
         ConversationOut: {
@@ -162,6 +168,22 @@ export interface components {
             /** Replaces */
             replaces?: string | null;
         };
+        /** MessagePage */
+        MessagePage: {
+            /** Messages */
+            messages: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Ratings
+             * @default {}
+             */
+            ratings: {
+                [key: string]: "up" | "down";
+            };
+            /** Earlier Cursor */
+            earlier_cursor?: string | null;
+        };
         /** MessageRating */
         MessageRating: {
             /** Rating */
@@ -193,6 +215,40 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    earlier_messages_assistant_conversations__thread_id__messages_get: {
+        parameters: {
+            query: {
+                before: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessagePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     send_message_assistant_conversations__thread_id__messages_post: {
         parameters: {
             query?: never;

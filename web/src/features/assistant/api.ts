@@ -4,6 +4,7 @@ import type {
   AssistantConversation,
   AssistantConversationDetail,
   AssistantConversationPage,
+  AssistantMessagePage,
   AssistantRating,
   AssistantRun,
 } from '@/shared/api/types';
@@ -134,6 +135,14 @@ export function listConversations(query: { limit: number; cursor?: string }, sig
 /** A conversation and its messages (the latest 200 of a long one). 404 once deleted or expired. */
 export function getConversation(threadId: string, signal?: AbortSignal) {
   return api<AssistantConversationDetail>(`/assistant/conversations/${encodeURIComponent(threadId)}`, { signal });
+}
+
+/**
+ * The messages before the ones the page has (`before`: their earlier_cursor),
+ * oldest first: a long conversation scrolled back to its top.
+ */
+export function getEarlierMessages(threadId: string, before: string, signal?: AbortSignal) {
+  return api<AssistantMessagePage>(`/assistant/conversations/${encodeURIComponent(threadId)}/messages`, { query: { before }, signal });
 }
 
 export function renameConversation(threadId: string, title: string) {

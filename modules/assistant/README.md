@@ -316,7 +316,8 @@ token (`handler.py`, a Lambda):
 | `POST /assistant/conversations/{threadId}/runs/{runId}/cancel` | stop the answer (204, even after it ended) |
 | `PATCH /assistant/conversations/{threadId}/messages/{messageId}` `{"rating": "up" \| "down" \| null}` | rate an answer, or take the rating back (204) |
 | `GET /assistant/conversations?limit=20&cursor=` | the caller's conversations, most recently used first |
-| `GET /assistant/conversations/{threadId}` | title, `run_id` while an answer is coming, the latest 200 messages as AG-UI messages, and `ratings` |
+| `GET /assistant/conversations/{threadId}` | title, `run_id` while an answer is coming, the latest 200 messages as AG-UI messages, `ratings`, and `earlier_cursor` |
+| `GET /assistant/conversations/{threadId}/messages?before=&limit=100` | the messages before those (`before`: their `earlier_cursor`), up to 200, with their ratings and the next `earlier_cursor` (null: the first) |
 | `PATCH /assistant/conversations/{threadId}` `{"title"}` | rename (cut to 80 characters) |
 | `DELETE /assistant/conversations/{threadId}` | delete (204) |
 
@@ -377,6 +378,10 @@ token (`handler.py`, a Lambda):
   both are added to its checkpoint.
 - **Reloading**: the page reads the conversation; with a `run_id`, it sends
   AgentCore that run and draws it from the start, then live.
+- **Long conversations** open at their latest 200 messages, as in ChatGPT
+  and Claude, and read back from there a page at a time: Show earlier
+  messages sends the page's `earlier_cursor` as `?before=`. The cursor names
+  a position, so messages added meanwhile don't move it.
 - **A stream that breaks** (the network, AgentCore failing a request) is
   read on from where it was, as OpenAI's background responses
   (`starting_after`) and LangGraph streams (`Last-Event-ID`) do: the page
@@ -610,8 +615,7 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   not summarized. `SummarizationMiddleware` could keep their gist (its model
   calls would need to count against the token cap too). Each checkpoint holds
   the whole conversation, so a long one writes more with every message.
-- **Conversations**: older messages of a conversation past 200 (open returns
-  the latest 200), search, and branches (an edit replaces what came after
+- **Conversations**: search, and branches (an edit replaces what came after
   it; ChatGPT keeps both as a tree).
 - **Ratings with a reason**: a comment on a thumbs down, and an evaluation
   set built from rated answers (AgentCore Evaluations isn't in

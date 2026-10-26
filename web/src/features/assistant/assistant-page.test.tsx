@@ -53,6 +53,9 @@ function backend(...answers: Answer[]) {
   const rated: { threadId: string; messageId: string; rating: string | null }[] = [];
   const running = new Map<string, string>();
   const refusals: { status: number; message: string }[] = [];
+  // A long conversation: the cursor its opening gives, and the page each cursor reads.
+  const earlierFrom = new Map<string, string>();
+  const earlier = new Map<string, { messages: Message[]; ratings: Record<string, string>; earlier_cursor: string | null }>();
 
   function keep(threadId: string, title: string, messages: Message[]) {
     const now = new Date().toISOString();
@@ -108,10 +111,14 @@ function backend(...answers: Answer[]) {
       return new Response(null, { status: 204 });
     }
     if (method === 'POST' && action === 'runs') return new Response(null, { status: 204 });
+    if (method === 'GET' && action === 'messages') return json(earlier.get(new URL(url).searchParams.get('before') ?? ''));
     const conversation = conversations.get(id);
     if (!conversation) return json({ message: 'No such conversation: it was deleted, or it expired.' }, 404);
     if (method === 'GET') {
-      return json({ ...conversation, run_id: running.get(id) ?? null, messages: histories.get(id), ratings: ratings.get(id) ?? {} });
+      return json({
+        ...conversation, run_id: running.get(id) ?? null, messages: histories.get(id), ratings: ratings.get(id) ?? {},
+        earlier_cursor: earlierFrom.get(id) ?? null,
+      });
     }
     if (method === 'PATCH') {
       conversation.title = JSON.parse(String(init?.body)).title;
@@ -124,7 +131,7 @@ function backend(...answers: Answer[]) {
     return json({ message: 'Not Found' }, 404);
   }));
   return {
-    runs, sent, calls, conversations, histories, running, keep, ratings, rated,
+    runs, sent, calls, conversations, histories, running, keep, ratings, rated, earlierFrom, earlier,
     refuse: (status: number, message: string) => refusals.push({ status, message }),
   };
 }
@@ -489,6 +496,27 @@ describe('conversations', () => {
       { threadId: THREAD, messageId: 'a2', rating: 'up' },
       { threadId: THREAD, messageId: 'a2', rating: null },
     ]));
+  });
+
+  it('reads a long conversation back from its latest messages, a page at a time', async () => {
+    const server = backend();
+    server.keep(THREAD, 'Order check', history.slice(2)); // it opens at its latest messages
+    server.earlierFrom.set(THREAD, 'c1');
+    server.earlier.set('c1', { messages: history.slice(1, 2), ratings: {}, earlier_cursor: 'c2' });
+    server.earlier.set('c2', { messages: history.slice(0, 1), ratings: {}, earlier_cursor: null });
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+    await screen.findByText('You have no orders yet.');
+    expect(screen.queryByText('Let me check.')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Show earlier messages' }));
+    expect(await screen.findByText('Let me check.')).toBeInTheDocument();
+    expect(screen.getByText('List orders')).toBeInTheDocument(); // its result was on screen already
+    await user.click(screen.getByRole('button', { name: 'Show earlier messages' }));
+
+    expect(await screen.findByText('What did we order?')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show earlier messages' })).not.toBeInTheDocument();
+    expect(server.calls.filter((call) => call === `GET /assistant/conversations/${THREAD}/messages`)).toHaveLength(2);
   });
 
   it("says when a conversation isn't there any more", async () => {
