@@ -385,11 +385,14 @@ so use it on dev, not prod. The test users' logins are saved in
 `.aws-sam/smoke-users.json`.
 
 With the assistant deployed, `uv run scripts/smoke-assistant.py --stack saas-dev`
-checks it the same way, with the stack's real model, AgentCore and S3: a
-conversation over AG-UI, a long one read back, versions, memory, files
-(uploads, attachments the model reads, files it writes, links), and, on a
-workspace it sets to Pro, the sandbox's files. It adds two test users and
-costs a few cents of model tokens.
+checks it the same way, with the stack's real model, AgentCore and S3, and
+after each step reads what the assistant table and the files bucket hold: a
+conversation created, read, renamed, rated and deleted (its checkpoints
+purged), versions and how `META` stores them, a long one read back, memory,
+files (uploads, what S3 refuses, attachments the model reads, files it
+writes, versions, links, deletes), on a workspace it sets to Pro the
+sandbox's files, and a member who leaves (the purge deletes all of theirs).
+It adds three test users and costs a few cents of model tokens.
 
 ## Frontend
 
