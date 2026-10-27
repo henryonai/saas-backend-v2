@@ -116,7 +116,8 @@ class Person:
         self.workspace: str | None = None   # the one they work in: X-Tenant-Id, forwardedProps.tenantId
         self.sign_in()
         if not joins:
-            r = self("POST", "/tenants", json={"name": f"Smoke assistant {name}"})
+            r = self("POST", "/tenants", json={"name": f"Smoke assistant {name}"},
+                     headers={"Idempotency-Key": str(uuid.uuid4())})   # required: a retry can't make a second
             assert r.status_code == 201, show(r)
             self.sign_in()   # the token now lists the workspace
             self.workspace = r.json()["tenant_id"]
@@ -153,7 +154,7 @@ class Person:
 
     def __call__(self, method: str, path: str, **kw) -> requests.Response:
         """As this person, in the workspace they work in (X-Tenant-Id, as a browser tab sends it)."""
-        headers = {"Authorization": f"Bearer {self.token}"}
+        headers = {**kw.pop("headers", {}), "Authorization": f"Bearer {self.token}"}
         if self.workspace:
             headers["X-Tenant-Id"] = self.workspace
         return requests.request(method, API + path, headers=headers, timeout=30, **kw)
