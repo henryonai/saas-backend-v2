@@ -12,7 +12,11 @@ hold (repository.py's data model), printing PASS/FAIL per check:
   conversations (send, open, list, rename, rate, delete, the checkpoints'
   purge); versions (an edit, showing another, the agent following the
   version shown, an answer asked for again, and how META and the branches
-  store them); a long conversation read back past its latest 200 messages;
+  store them); Stop in the middle of an answer (what is kept, the stopped
+  call's tokens counted, the next message going on from it); an answer asked
+  for again that fails before writing anything (the old one shown again, the
+  agent starting again from the history); a long conversation read back past
+  its latest 200 messages;
   memory (add, edit, the agent saving and recalling, memory off, the limit,
   delete, forget everything, and that their text is never logged); files
   (uploads with the presigned POST and what it refuses, the pending tag and
@@ -26,8 +30,9 @@ hold (repository.py's data model), printing PASS/FAIL per check:
 Answers come from the stack's real model, so a check about what it says can
 fail now and then on a model that ignores an instruction: read the detail.
 Uses your AWS credentials to create three test users (one's workspace is set
-to Pro in the accounts table, one joins and leaves another's), and reads the
-tables, the bucket and the logs: run it against dev, not prod. Their logins
+to Pro in the accounts table, one joins and leaves another's), reads the
+tables, the bucket and the logs, and writes to its own conversations' records
+(a long one, and a run made to fail): run it against dev, not prod. Their logins
 go to .aws-sam/smoke-users.json (gitignored), never printed. It costs a few
 cents of model tokens and one sandbox session.
 """
@@ -207,8 +212,8 @@ def logged(group: str, *words: str, timeout: int = 90) -> list[str]:
 
 # ---------- AG-UI ----------
 
-def stream(person: Person, thread: str, run_id: str) -> list[dict]:
-    """One request for the run: every AG-UI event AgentCore sends, as the web app reads them."""
+def stream(person: Person, thread: str, run_id: str, on_event=None) -> list[dict]:
+    """One request for the run: every AG-UI event AgentCore sends, as the web app reads them (on_event after each)."""
     try:
         r = requests.post(AGENT, stream=True, timeout=(10, 300), json={
             "threadId": thread, "runId": run_id, "state": {}, "messages": [], "tools": [], "context": [],
@@ -217,16 +222,21 @@ def stream(person: Person, thread: str, run_id: str) -> list[dict]:
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": thread})
     except requests.RequestException as e:
         return [{"type": "RUN_ERROR", "code": "NETWORK_ERROR", "message": str(e)}]
-    events = [json.loads(line[5:]) for line in r.iter_lines(decode_unicode=True) if line and line.startswith("data:")]
+    events = []
+    for line in r.iter_lines(decode_unicode=True):
+        if line and line.startswith("data:"):
+            events.append(json.loads(line[5:]))
+            if on_event:
+                on_event(events)
     if r.status_code != 200 and not any(e.get("type") == "RUN_ERROR" for e in events):
         events.append({"type": "RUN_ERROR", "code": f"HTTP {r.status_code}", "message": r.text[:300]})
     return events
 
 
-def run(person: Person, thread: str, run_id: str) -> list[dict]:
+def run(person: Person, thread: str, run_id: str, on_event=None) -> list[dict]:
     """The run, followed again while AgentCore can't reach it yet (a session's microVM starting), as the page does."""
     for delay in (2, 4, 8, 16, 0):
-        events = stream(person, thread, run_id)
+        events = stream(person, thread, run_id, on_event)
         error = error_of(events)
         if not error or error["code"] not in ("AGENT_ERROR", "NETWORK_ERROR", "SERVICE_BUSY", "THROTTLING") \
                 and not error["code"].startswith("HTTP 5"):
@@ -469,6 +479,88 @@ check("  stored: the rating on BRANCH#0002#MSG#000006",
 check("a version that doesn't exist -> 404",
       alice("POST", f"/assistant/conversations/{versions}/messages/{new_answer}/version",
             json={"version": 3}).status_code == 404)
+
+# ----- Stop -----
+print("\nStop in the middle of an answer")
+story = new_thread()
+pressed: dict = {}
+
+
+def stop_after_some_text(events: list[dict]) -> None:
+    """Presses Stop once some of the answer has streamed, as the page's Stop button does; notes when the run ends."""
+    if "at" not in pressed and sum(e["type"] == "TEXT_MESSAGE_CONTENT" for e in events) >= 20:
+        pressed["at"] = time.time()
+        pressed["status"] = alice("POST", f"/assistant/conversations/{story}/runs/{pressed['run']}/cancel").status_code
+    if events[-1]["type"] in ("RUN_FINISHED", "RUN_ERROR"):
+        pressed["ended"] = time.time()
+
+
+def tokens_this_month(person: Person) -> int:
+    usage = TABLE.get_item(Key={"pk": f"TENANT#{person.workspace}", "sk": f"USAGE#{datetime.now(UTC):%Y-%m}"},
+                           ConsistentRead=True).get("Item", {})
+    return number(usage.get("tokens")) or 0
+
+
+tokens_before = tokens_this_month(alice)
+r = send(alice, story, "Write a 600-word story about a lighthouse keeper. Plain prose, no title.", id="s1")
+check("send: a long answer asked for", r.status_code == 201, show(r))
+pressed["run"] = r.json()["run_id"] if r.status_code == 201 else "-"
+events = run(alice, story, pressed["run"], on_event=stop_after_some_text) if r.status_code == 201 else []
+streamed = text_of(events)
+check("Stop: POST .../runs/{run_id}/cancel -> 204", pressed.get("status") == 204, pressed.get("status"))
+check("  the run ends with RUN_FINISHED {stopped: true}, within 5 seconds of Stop",
+      bool(events) and events[-1]["type"] == "RUN_FINISHED" and events[-1].get("result", {}).get("stopped") is True
+      and pressed.get("ended", 0) - pressed.get("at", 0) < 5,
+      (events[-1] if events else None, round(pressed.get("ended", 0) - pressed.get("at", 0), 1)))
+check("  only part of the story was written", 0 < len(streamed.split()) < 450, f"{len(streamed.split())} words")
+kept = conversation(alice, story).get("MSG#000002", {}).get("message", {}).get("content")
+check("  stored: the answer kept is exactly what streamed", kept == streamed, (len(kept or ""), len(streamed)))
+settled(alice, story)
+lines = logged(RUNTIME_LOGS, "Assistant answered", pressed["run"])
+fields = json.loads(lines[0]) if lines else {}
+check("  logged: 'Assistant answered', stopped, with the stopped call's tokens estimated",
+      fields.get("stopped") is True and (number(fields.get("output_tokens")) or 0) > 0,
+      {k: fields.get(k) for k in ("stopped", "input_tokens", "output_tokens")})
+check("  stored: they count against the workspace's month (USAGE#<month>)", tokens_this_month(alice) > tokens_before,
+      (tokens_before, tokens_this_month(alice)))
+answered("the next message goes on from what was shown",
+         chat(alice, story, "Continue the story from exactly where it stops. Write only the next sentence."))
+
+# ----- an answer asked for again that fails -----
+print("\nAn answer asked for again that fails before writing anything")
+failing = new_thread()
+answered("c1 answered", chat(alice, failing, "Reply with exactly the word green.", id="c1"))
+before, checkpoints_before = conversation(alice, failing), checkpoints_of(alice, failing)
+r = send(alice, failing, "again", id="c1", replaces="c1")
+check("answer c1 again: saved with its run", r.status_code == 201, show(r))
+# The fault, written straight to the table: before the runtime picks the run up, its agent is gone (as after
+# a deploy that removed it), so the run fails in the runtime before the model writes anything.
+TABLE.update_item(Key={"pk": f"{alice.keys}#CONV#{failing}", "sk": "META"}, UpdateExpression="SET #run.#agent = :gone",
+                  ExpressionAttributeNames={"#run": "run", "#agent": "agent"},
+                  ExpressionAttributeValues={":gone": "removed-agent"})
+events = run(alice, failing, r.json()["run_id"]) if r.status_code == 201 else []
+check("  the run fails with RUN_ERROR, having written nothing", error_of(events) is not None and not text_of(events),
+      error_of(events) or text_of(events)[:120])
+stored = conversation(alice, failing)
+head = stored.get("META", {})
+check("  stored: the empty version is gone: no BRANCH# item, the path back to branch 0, 2 messages, no run",
+      not [k for k in stored if k.startswith("BRANCH#")] and head.get("path") == [[0, 1]]
+      and number(head.get("message_count")) == 2 and head.get("run") is None,
+      {k: head.get(k) for k in ("path", "branches", "message_count", "run")})
+got = opened(alice, failing)
+check("open: the old answer is shown again, with no versions",
+      [m["id"] for m in got["messages"]] == ["c1", before.get("MSG#000002", {}).get("message", {}).get("id")]
+      and not got.get("versions") and got.get("run_id") is None, (got.get("messages"), got.get("versions")))
+heads = {agent: int(rev) for agent, rev in head.get("heads", {}).items()}
+check("  stored: the agent's checkpoint untouched, and heads not moved (the failed run kept nothing)",
+      checkpoints_of(alice, failing) == checkpoints_before and heads.get("assistant") != number(head.get("rev")),
+      {"checkpoints": (checkpoints_before, checkpoints_of(alice, failing)), "heads": heads, "rev": head.get("rev")})
+events = chat(alice, failing, "Repeat your previous reply exactly, nothing else.", id="c2")
+answered("the next message", events)
+check("  answered from what the user sees", "green" in text_of(events).lower(), text_of(events))
+check("  logged: the agent started again from the history",
+      bool(logged(RUNTIME_LOGS, "Restored the agent's side", run_id_of(events) or "-")), run_id_of(events))
+settled(alice, failing)
 
 # ----- a long conversation -----
 print("\nA long conversation (250 messages: the 248 after its first answer written straight to the table)")

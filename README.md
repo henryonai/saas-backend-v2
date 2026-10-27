@@ -412,7 +412,8 @@ With the assistant deployed, `uv run scripts/smoke-assistant.py --stack saas-dev
 checks it the same way, with the stack's real model, AgentCore and S3, and
 after each step reads what the assistant table and the files bucket hold: a
 conversation created, read, renamed, rated and deleted (its checkpoints
-purged), versions and how `META` stores them, a long one read back, memory,
+purged), versions and how `META` stores them, Stop in the middle of an
+answer, an answer asked for again that fails, a long one read back, memory,
 files (uploads, what S3 refuses, attachments the model reads, files it
 writes, versions, links, deletes), on a workspace it sets to Pro the
 sandbox's files, and a member who leaves (the purge deletes all of theirs).
