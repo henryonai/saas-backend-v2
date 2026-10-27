@@ -45,6 +45,21 @@ gates:
 
 deploy:
   workflow: deploy.yml
+  environment: prod   # the GitHub environment that is production
+
+# A branch's live check runs on the dev stack: `ship deploy-branch` deploys it there through
+# deploy.yml, refusing a branch behind main or one that would take dev from another branch.
+live:
+  deploy:
+    workflow: deploy.yml
+    inputs: {environment: dev}
+    environment: dev
+  smoke: uv run scripts/smoke-test.py --stack saas-dev
+  web:
+    setup: cd web && ./scripts/env-from-stack.sh saas-dev
+    start: cd web && pnpm dev --port {port} --strictPort
+    url: http://localhost:{port}
+    sign_in: owner
 
 # The model ship-builder writes each part of a build on; the session reviews and commits it.
 models:
