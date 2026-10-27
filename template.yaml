@@ -106,6 +106,14 @@ Parameters:
       Days the assistant keeps a conversation after its last message. 0 = until its user
       deletes it or leaves the workspace, as in ChatGPT.
 
+# How a deploy moves an API function's traffic to the new code (DeploymentPreference).
+# In prod, 10% for 5 minutes first, rolled back if an alarm fires; dev switches at once.
+# A map, not !If: SAM resolves only Ref and FindInMap in DeploymentPreference.
+Mappings:
+  Rollout:
+    dev: { Type: AllAtOnce }
+    prod: { Type: Canary10Percent5Minutes }
+
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
   UseSes: !And [!Not [!Equals [!Ref EmailSender, ""]], !Not [!Equals [!Ref SesIdentity, ""]]]
@@ -291,6 +299,19 @@ Resources:
     Properties:
       MessageRetentionPeriod: 1209600
 
+  OutboxDLQPolicy:                      # the relay sends with its role; this only refuses plain HTTP
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref OutboxDLQ]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt OutboxDLQ.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+
   AlertsTopic:
     Type: AWS::SNS::Topic
 
@@ -396,6 +417,118 @@ Resources:
       TreatMissingData: notBreaching      # no requests, no data
       AlarmActions: [!Ref AlertsTopic]
 
+  # What rolls a prod deploy back: an API function failed (an uncaught error, which
+  # shared/http.py logs as "Unhandled error" and re-raises, a timeout, or code that
+  # can't load). ApiErrorsAlarm can't be used: it names the HTTP API, whose routes
+  # wait for the new alias, which waits for this alarm. No email: ApiErrorsAlarm
+  # already sends one for the same failures.
+  ApiFunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: An API function failed (CodeDeploy rolls a canary back on this; see "Unhandled error" in the app log group)
+      Metrics:
+        - Id: total
+          Expression: SUM(METRICS())
+          ReturnData: true
+        - { Id: accounts, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref AccountsApiFunction }] } } }
+        - { Id: orders, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref OrdersApiFunction }] } } }
+        - { Id: notifications, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref NotificationsApiFunction }] } } }
+        - { Id: billing, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref BillingApiFunction }] } } }
+        - { Id: webhook, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref BillingWebhookFunction }] } } }
+        - !If
+          - HasAssistant
+          - { Id: assistant, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref AssistantApiFunction }] } } }
+          - !Ref AWS::NoValue
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # no errors, no data
+
+  # Lambda refused to run this stack's request-path functions (the account's
+  # concurrency, which dev and prod share, ran out). Only this stack's functions,
+  # not the account-wide metric, so dev's load can't roll back a prod deploy.
+  # Workers aren't listed: their queues hold the messages and retry them.
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Lambda throttled an API, sign-in or outbox function (see Throttles per function in AWS/Lambda)
+      Metrics:
+        - Id: total
+          Expression: SUM(METRICS())
+          ReturnData: true
+        - { Id: accounts, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref AccountsApiFunction }] } } }
+        - { Id: pretoken, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref AccountsPreTokenFunction }] } } }
+        - { Id: orders, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref OrdersApiFunction }] } } }
+        - { Id: notifications, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref NotificationsApiFunction }] } } }
+        - { Id: billing, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref BillingApiFunction }] } } }
+        - { Id: webhook, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref BillingWebhookFunction }] } } }
+        - { Id: relay, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref OutboxRelayFunction }] } } }
+        - !If
+          - HasAssistant
+          - { Id: assistant, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref AssistantApiFunction }] } } }
+          - !Ref AWS::NoValue
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # no throttles, no data
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A function's p99 duration passed 80% of its timeout for 15 minutes: it is about
+  # to time out (a slow table, Stripe or Bedrock call, or too little memory).
+  # Each line is p99 / the function's Timeout, so update both when a Timeout changes.
+  ApiDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: An API or sign-in function is close to its timeout (see Duration p99 per function in AWS/Lambda)
+      Metrics:
+        - Id: worst
+          Expression: !If
+            - HasAssistant
+            - MAX([accounts / 10000, pretoken / 5000, orders / 10000, notifications / 10000, billing / 10000, webhook / 15000, assistant / 10000])
+            - MAX([accounts / 10000, pretoken / 5000, orders / 10000, notifications / 10000, billing / 10000, webhook / 15000])
+          ReturnData: true
+        - { Id: accounts, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref AccountsApiFunction }] } } }
+        - { Id: pretoken, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref AccountsPreTokenFunction }] } } }
+        - { Id: orders, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref OrdersApiFunction }] } } }
+        - { Id: notifications, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref NotificationsApiFunction }] } } }
+        - { Id: billing, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref BillingApiFunction }] } } }
+        - { Id: webhook, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref BillingWebhookFunction }] } } }
+        - !If
+          - HasAssistant
+          - { Id: assistant, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref AssistantApiFunction }] } } }
+          - !Ref AWS::NoValue
+      EvaluationPeriods: 3
+      Threshold: 0.8
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # no calls, no data
+      AlarmActions: [!Ref AlertsTopic]
+
+  # As ApiDurationAlarm, for the functions that work through queues and streams.
+  # Their messages are retried, so this warns before they reach a dead-letter queue.
+  WorkersDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A worker or the outbox relay is close to its timeout (see Duration p99 per function in AWS/Lambda)
+      Metrics:
+        - Id: worst
+          Expression: !If
+            - HasAssistant
+            - MAX([relay / 60000, subscriptions / 30000, notifications / 30000, purge / 300000])
+            - MAX([relay / 60000, subscriptions / 30000, notifications / 30000])
+          ReturnData: true
+        - { Id: relay, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref OutboxRelayFunction }] } } }
+        - { Id: subscriptions, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref AccountsSubscriptionsFunction }] } } }
+        - { Id: notifications, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref NotificationsWorkerFunction }] } } }
+        - !If
+          - HasAssistant
+          - { Id: purge, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref AssistantPurgeFunction }] } } }
+          - !Ref AWS::NoValue
+      EvaluationPeriods: 3
+      Threshold: 0.8
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # no work, no data
+      AlarmActions: [!Ref AlertsTopic]
+
   # =====================================================================
   # Module: accounts  (/tenants, /users, login trigger, plan listener)
   # =====================================================================
@@ -429,6 +562,10 @@ Resources:
     Properties:
       CodeUri: modules/accounts/src/
       Handler: accounts.handler.handler
+      AutoPublishAlias: live            # rollout: see Mappings.Rollout
+      DeploymentPreference:
+        Type: !FindInMap [Rollout, !Ref Stage, Type]
+        Alarms: [!Ref ApiFunctionErrorsAlarm, !Ref LambdaThrottlesAlarm]
       Environment:
         Variables:
           POWERTOOLS_SERVICE_NAME: accounts
@@ -524,6 +661,12 @@ Resources:
       Queues: [!Ref AccountsQueue]
       PolicyDocument:
         Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt AccountsQueue.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
           - Effect: Allow
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
@@ -537,6 +680,12 @@ Resources:
       Queues: [!Ref AccountsDLQ]
       PolicyDocument:
         Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt AccountsDLQ.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
           - Effect: Allow
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
@@ -612,6 +761,10 @@ Resources:
     Properties:
       CodeUri: modules/orders/src/
       Handler: orders.handler.handler
+      AutoPublishAlias: live            # rollout: see Mappings.Rollout
+      DeploymentPreference:
+        Type: !FindInMap [Rollout, !Ref Stage, Type]
+        Alarms: [!Ref ApiFunctionErrorsAlarm, !Ref LambdaThrottlesAlarm]
       Environment:
         Variables:
           POWERTOOLS_SERVICE_NAME: orders
@@ -648,6 +801,10 @@ Resources:
     Properties:
       CodeUri: modules/notifications/src/
       Handler: notifications.handler.handler
+      AutoPublishAlias: live            # rollout: see Mappings.Rollout
+      DeploymentPreference:
+        Type: !FindInMap [Rollout, !Ref Stage, Type]
+        Alarms: [!Ref ApiFunctionErrorsAlarm, !Ref LambdaThrottlesAlarm]
       Environment:
         Variables:
           POWERTOOLS_SERVICE_NAME: notifications
@@ -694,6 +851,12 @@ Resources:
       Queues: [!Ref NotificationsQueue]
       PolicyDocument:
         Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt NotificationsQueue.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
           - Effect: Allow
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
@@ -707,6 +870,12 @@ Resources:
       Queues: [!Ref NotificationsDLQ]
       PolicyDocument:
         Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt NotificationsDLQ.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
           - Effect: Allow
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
@@ -781,6 +950,10 @@ Resources:
     Properties:
       CodeUri: modules/billing/src/
       Handler: billing.handler.handler
+      AutoPublishAlias: live            # rollout: see Mappings.Rollout
+      DeploymentPreference:
+        Type: !FindInMap [Rollout, !Ref Stage, Type]
+        Alarms: [!Ref ApiFunctionErrorsAlarm, !Ref LambdaThrottlesAlarm]
       Environment:
         Variables:
           POWERTOOLS_SERVICE_NAME: billing
@@ -808,6 +981,10 @@ Resources:
     Properties:
       CodeUri: modules/billing/src/
       Handler: billing.webhook.handler
+      AutoPublishAlias: live            # rollout: see Mappings.Rollout
+      DeploymentPreference:
+        Type: !FindInMap [Rollout, !Ref Stage, Type]
+        Alarms: [!Ref ApiFunctionErrorsAlarm, !Ref LambdaThrottlesAlarm]
       Timeout: 15
       Environment:
         Variables:
@@ -1230,6 +1407,11 @@ Resources:
     Properties:
       CodeUri: modules/assistant/src/
       Handler: assistant.handler.handler
+      AutoPublishAlias: live            # rollout: see Mappings.Rollout
+      DeploymentPreference:
+        Type: !FindInMap [Rollout, !Ref Stage, Type]
+        Alarms: [!Ref ApiFunctionErrorsAlarm, !Ref LambdaThrottlesAlarm]
+        PassthroughCondition: true      # its deployment group exists only with the assistant
       Environment:
         Variables:
           POWERTOOLS_SERVICE_NAME: assistant
@@ -1361,6 +1543,12 @@ Resources:
       Queues: [!Ref AssistantPurgeQueue]
       PolicyDocument:
         Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt AssistantPurgeQueue.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
           - Effect: Allow
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
@@ -1375,6 +1563,12 @@ Resources:
       Queues: [!Ref AssistantPurgeDLQ]
       PolicyDocument:
         Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt AssistantPurgeDLQ.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
           - Effect: Allow
             Principal: { Service: events.amazonaws.com }
             Action: sqs:SendMessage
