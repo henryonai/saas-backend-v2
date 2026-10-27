@@ -97,5 +97,11 @@ security:
     - No token, secret, conversation text or personal data is logged.
     - IAM in template.yaml stays least-privilege, and no change replaces or deletes a table or the user pool.
 
+# The owner's pages: ship-plan reads the project page before the code, and ship-land drafts a
+# work log entry. A copy made with scripts/rename-project.py starts with none.
+artifacts:
+  project: https://app.notion.com/p/404c6f66e650814e83e7de2a824ae0f9
+  work_log: collection://05332792-632b-4102-815b-21cbe2712240
+
 worktrees:
   dir: .claude/worktrees
