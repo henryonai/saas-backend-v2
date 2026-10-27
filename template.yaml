@@ -595,6 +595,8 @@ Resources:
         TenantsGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /tenants, Method: GET } }
         TenantsPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /tenants, Method: POST } }
         TenantsAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: GET } }
+        TenantsAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: POST } }       # restore
+        TenantsAnyDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: DELETE } }   # delete
         UsersGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /users, Method: GET } }
         UsersAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: GET } }
         UsersAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: POST } }

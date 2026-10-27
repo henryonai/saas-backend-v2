@@ -256,12 +256,12 @@ check("checkout with an unknown plan -> 422",
 if STRIPE:
     check("it is Stripe Checkout",
           r.ok and r.json()["checkout_url"].startswith("https://checkout.stripe.com/"), show(r))
-    session = checkout_session(r)
-    check("the session subscribes this workspace to pro and returns to /billing", bool(session)
-          and session.mode == "subscription" and session.client_reference_id == tenant_id
-          and session.customer_email == owner.email and session.success_url.endswith("/billing")
-          and [i.price.id for i in session.line_items.data] == [PRICES["pro"]],
-          session and {"mode": session.mode, "ref": session.client_reference_id, "success": session.success_url})
+    checkout = checkout_session(r)
+    check("the session subscribes this workspace to pro and returns to /billing", bool(checkout)
+          and checkout.mode == "subscription" and checkout.client_reference_id == tenant_id
+          and checkout.customer_email == owner.email and checkout.success_url.endswith("/billing")
+          and [i.price.id for i in checkout.line_items.data] == [PRICES["pro"]],
+          checkout and {"mode": checkout.mode, "ref": checkout.client_reference_id, "success": checkout.success_url})
     check("the checkout page loads", requests.get(r.json()["checkout_url"], timeout=30).ok)
     r = call("POST", "/webhooks/payments", data='{"id": "evt_fake"}',
              headers={"Stripe-Signature": "t=1,v1=bad", "Content-Type": "application/json"})
@@ -457,9 +457,9 @@ if STRIPE:
     summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "cancelled" and b)
     check("GET /billing: free, cancelled", bool(summary) and summary["plan"] == "free",
           summary or owner("GET", "/billing").text)
-    session = checkout_session(owner("POST", "/billing/checkout", json={"plan": "pro"}))
-    check("subscribing again uses the same Stripe customer", bool(session) and session.customer == customer.id,
-          session and session.customer)
+    checkout = checkout_session(owner("POST", "/billing/checkout", json={"plan": "pro"}))
+    check("subscribing again uses the same Stripe customer", bool(checkout) and checkout.customer == customer.id,
+          checkout and checkout.customer)
 else:
     r = send_webhook(webhook_body("payment.failed", tenant_id))
     check("webhook payment.failed", r.ok, show(r))
