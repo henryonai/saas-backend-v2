@@ -167,7 +167,8 @@ the login trigger lists the workspace in the token's `workspaces` claim, with
 their role there and its plan.
 
 **Several workspaces:** a user can belong to up to 20 workspaces
-(`MAX_WORKSPACES_PER_USER`): create more with `POST /tenants`, or accept
+(`MAX_WORKSPACES_PER_USER`): create more with `POST /tenants` (with an
+`Idempotency-Key`, see Operations), or accept
 invitations, without leaving any. `GET /tenants` lists them, and the token
 lists them all. Each request names the workspace it acts in with the
 `X-Tenant-Id` header (the assistant: `forwardedProps.tenantId`), so each
@@ -524,12 +525,14 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
 - **Busy items:** transactions that collide on the same item (for example many
   orders at once in one workspace) are retried; if they keep colliding, the
   API answers 503 and the client should retry.
-- **Retried creates:** `POST /orders` requires an `Idempotency-Key` header (a
-  new UUID per order; without one, 422). Sent again with the same order (after a
-  timeout, a 503 or a double click), it returns the order the first request
-  made instead of making and counting another; the same key with a different
-  order gets 400. The key is saved in the order's own transaction and kept 24
-  hours (`shared/idempotency.py`). The web app's new order dialog sends one.
+- **Retried creates:** `POST /orders` and `POST /tenants` require an
+  `Idempotency-Key` header (a new UUID per order or workspace; without one,
+  422). Sent again with the same request (after a timeout, a 503 or a double
+  click), it returns what the first request made instead of making and
+  counting another; the same key with a different request gets 400. The key
+  is saved in the create's own transaction and kept 24 hours
+  (`shared/idempotency.py`). The web app's new order dialog and create
+  workspace form send one.
   Use the same helper for any create where the server picks the new id; a write
   with a natural key, or a condition on the current state, is safe already.
 - **Rate limits:** the HTTP API allows 50 requests/second (bursts of 100) by

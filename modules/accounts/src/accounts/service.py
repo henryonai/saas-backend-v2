@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from shared.auth import ROLE_ADMIN, ROLE_OWNER, WORKSPACES_CLAIM, CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import Conflict, Forbidden, NotFound, PlanLimitReached, TooManyRequests
+from shared.idempotency import IDEMPOTENCY, fingerprint
 from shared.plans import get_limit
 
 from accounts import events
@@ -45,14 +46,22 @@ class AccountService:
 
     # ---------- tenants ----------
 
-    def create_tenant(self, user: CurrentUser, data: TenantCreate) -> Tenant:
-        """The creator becomes the owner. Their next token lists the new workspace."""
+    def create_tenant(self, user: CurrentUser, data: TenantCreate, idempotency_key: str) -> Tenant:
+        """
+        The creator becomes the owner. Their next token lists the new workspace.
+        A retry with the same Idempotency-Key (a timeout, or opening it failed)
+        returns the workspace the first request made instead of making another.
+        """
         tenant = Tenant(name=data.name, owner_id=user.user_id)
         owner = Member(tenant_id=tenant.tenant_id, user_id=user.user_id,
                        email=user.email.lower(), role=ROLE_OWNER)
+        request = fingerprint(data.model_dump(mode="json"))
         try:
-            self.accounts.create_tenant(tenant, owner, self.max_workspaces)
-        except ConditionFailed:
+            self.accounts.create_tenant(tenant, owner, self.max_workspaces, idempotency=(idempotency_key, request))
+        except ConditionFailed as e:
+            if IDEMPOTENCY in e.failed:   # before the limit: the workspace it made is counted already
+                created = self.accounts.tenant_for_key(user.user_id, idempotency_key, request)
+                return self._tenant(created, consistent=True)
             raise self._too_many_workspaces()
         return tenant
 
@@ -206,8 +215,8 @@ class AccountService:
     def _pending(invitations: list[Invitation]) -> list[Invitation]:
         return [i for i in invitations if not i.expired()]
 
-    def _tenant(self, tenant_id: str) -> Tenant:
-        tenant = self.accounts.get_tenant(tenant_id)
+    def _tenant(self, tenant_id: str, consistent: bool = False) -> Tenant:
+        tenant = self.accounts.get_tenant(tenant_id, consistent)
         if not tenant:
             raise NotFound("Workspace not found")
         return tenant
