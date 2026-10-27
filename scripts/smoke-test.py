@@ -499,8 +499,8 @@ r = carol("POST", "/orders", tenant=other_id, json={"item": "Doomed", "quantity"
 check("an order in Other Co", r.status_code == 201, show(r))
 r = carol("DELETE", "/tenants/me", tenant=other_id, json={"name": "other co"})
 check("deleting needs the exact name -> 400", r.status_code == 400, show(r))
-check("only its owner deletes it -> 403",
-      owner("DELETE", "/tenants/me", json={"name": "Smoke Co"}).status_code == 403)
+check("someone not in it can't delete it -> 401",
+      owner("DELETE", "/tenants/me", tenant=other_id, json={"name": "Other Co"}).status_code == 401)
 r = carol("DELETE", "/tenants/me", tenant=other_id, json={"name": "Other Co"})
 check("DELETE /tenants/me", r.ok and r.json()["status"] == "deleting", show(r))
 check("her new token no longer lists it", other_id not in carol.sign_in().workspaces, carol.workspaces)
