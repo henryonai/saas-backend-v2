@@ -6,7 +6,7 @@
     ]
   },
   "enabledPlugins": {
-    "slipway@slipway": false,
+    "slipway@slipway": true,
     "aws-core@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
