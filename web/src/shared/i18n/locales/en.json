@@ -236,7 +236,8 @@
     "seatsUnlimited": "{{used}} seats used",
     "tabs": {
       "members": "Members",
-      "invitations": "Invitations"
+      "invitations": "Invitations",
+      "activity": "Activity"
     },
     "columns": {
       "email": "Email",
@@ -275,6 +276,28 @@
       "cancelled": "Invitation to {{email}} cancelled.",
       "emptyTitle": "No pending invitations",
       "emptyDescription": "Invitations waiting for an answer show up here."
+    },
+    "activity": {
+      "when": "When",
+      "who": "Who",
+      "what": "What",
+      "system": "The system",
+      "emptyTitle": "No activity yet",
+      "emptyDescription": "Invitations, role changes, plan changes and more show up here.",
+      "events": {
+        "TenantCreated": "Created the workspace {{name}}",
+        "UserInvited": "Invited {{email}} as {{role}}",
+        "InvitationCancelled": "Withdrew the invitation to {{email}}",
+        "MemberJoined": "Joined as {{role}}",
+        "RoleChanged": "Made {{email}} {{role}}",
+        "MemberRemoved": "Removed {{email}}",
+        "TenantDeletionScheduled": "Deleted the workspace",
+        "TenantRestored": "Restored the workspace",
+        "SubscriptionChanged": "The plan became {{plan}} ({{status}})",
+        "PaymentFailed": "A payment failed",
+        "OrderCreated": "Created an order for {{item}}",
+        "ExportRequested": "Started an export of the workspace's data"
+      }
     }
   },
   "billing": {

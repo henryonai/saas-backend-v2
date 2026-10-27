@@ -436,6 +436,7 @@ Resources:
         - { Id: notifications, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref NotificationsApiFunction }] } } }
         - { Id: billing, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref BillingApiFunction }] } } }
         - { Id: webhook, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref BillingWebhookFunction }] } } }
+        - { Id: audit, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref AuditApiFunction }] } } }
         - !If
           - HasAssistant
           - { Id: assistant, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref AssistantApiFunction }] } } }
@@ -463,6 +464,7 @@ Resources:
         - { Id: notifications, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref NotificationsApiFunction }] } } }
         - { Id: billing, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref BillingApiFunction }] } } }
         - { Id: webhook, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref BillingWebhookFunction }] } } }
+        - { Id: audit, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref AuditApiFunction }] } } }
         - { Id: relay, ReturnData: false, MetricStat: { Stat: Sum, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Throttles, Dimensions: [{ Name: FunctionName, Value: !Ref OutboxRelayFunction }] } } }
         - !If
           - HasAssistant
@@ -1005,6 +1007,157 @@ Resources:
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt OrdersDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
+      AlarmActions: [!Ref AlertsTopic]
+
+  # =====================================================================
+  # Module: audit  (/audit, listener: who did what in a workspace)
+  # =====================================================================
+
+  AuditTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # entries older than a year
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  AuditApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/audit/src/
+      Handler: audit.handler.handler
+      AutoPublishAlias: live            # rollout: see Mappings.Rollout
+      DeploymentPreference:
+        Type: !FindInMap [Rollout, !Ref Stage, Type]
+        Alarms: [!Ref ApiFunctionErrorsAlarm, !Ref LambdaThrottlesAlarm]
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: audit
+          AUDIT_TABLE: !Ref AuditTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:Query]   # only reads the log
+              Resource: !GetAtt AuditTable.Arn
+      Events:
+        AuditGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /audit, Method: GET } }
+
+  AuditDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600   # keep failed messages 14 days
+
+  AuditQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 360            # 6x the listener timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AuditDLQ.Arn
+        maxReceiveCount: 5
+
+  # Every event about a workspace: add one here and to AUDITED in audit/service.py to log it.
+  AuditRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source: [saas.app]
+        detail-type: [TenantCreated, UserInvited, InvitationCancelled, MemberJoined, RoleChanged, MemberRemoved,
+                      TenantDeletionScheduled, TenantRestored, SubscriptionChanged, PaymentFailed, OrderCreated,
+                      ExportRequested, TenantDeleted]
+      Targets:
+        - Id: AuditQueue
+          Arn: !GetAtt AuditQueue.Arn
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 3600 }   # as AccountsRule
+          DeadLetterConfig: { Arn: !GetAtt AuditDLQ.Arn }
+
+  AuditQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref AuditQueue]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt AuditQueue.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt AuditQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt AuditRule.Arn }
+
+  AuditDLQPolicy:                       # the rule's undelivered events (DeadLetterConfig above)
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref AuditDLQ]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt AuditDLQ.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt AuditDLQ.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt AuditRule.Arn }
+
+  AuditListenerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/audit/src/
+      Handler: audit.listener.handler
+      Timeout: 60
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: audit
+          AUDIT_TABLE: !Ref AuditTable
+          EXPORTS_BUCKET: !Ref ExportsBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:PutItem, dynamodb:Query, dynamodb:BatchWriteItem]   # writes, exports, purges
+              Resource: !GetAtt AuditTable.Arn
+            - Effect: Allow
+              Action: [s3:PutObject]                            # its part of a workspace's export
+              Resource: !Sub "${ExportsBucket.Arn}/exports/*"
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AuditQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 2 }   # no hurry: a few at a time
+
+  AuditDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Audit entries weren't written (messages in the audit dead-letter queue)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt AuditDLQ.QueueName }]
       Statistic: Maximum
       Period: 300
       EvaluationPeriods: 1
@@ -1970,7 +2123,7 @@ Resources:
                 "${ApiErrorsAlarm.Arn}","${AccountsPreTokenErrorsAlarm.Arn}","${LambdaThrottlesAlarm.Arn}",
                 "${ApiDurationAlarm.Arn}","${WorkersDurationAlarm.Arn}","${OutboxLagAlarm.Arn}","${OutboxDLQAlarm.Arn}",
                 "${AccountsDLQAlarm.Arn}","${NotificationsDLQAlarm.Arn}","${OrdersDLQAlarm.Arn}","${BillingDLQAlarm.Arn}",
-                "${AccountsPurgeDLQAlarm.Arn}"]}},
+                "${AccountsPurgeDLQAlarm.Arn}","${AuditDLQAlarm.Arn}"]}},
               {"type":"metric","x":0,"y":3,"width":12,"height":6,"properties":{"title":"API requests and errors","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
                 ["AWS/ApiGateway","Count","ApiId","${HttpApi}",{"label":"requests"}],
                 ["AWS/ApiGateway","4xx","ApiId","${HttpApi}",{"label":"4xx"}],

@@ -6,6 +6,7 @@ requires-python = "==3.13.*"
 members = [
     "saas-accounts",
     "saas-assistant",
+    "saas-audit",
     "saas-backend",
     "saas-billing",
     "saas-notifications",
@@ -2052,6 +2053,25 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "saas-shared", editable = "layers/shared" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "saas-testkit", editable = "testkit" }]
+
+[[package]]
+name = "saas-audit"
+version = "0.1.0"
+source = { editable = "modules/audit" }
+dependencies = [
+    { name = "saas-shared" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "saas-testkit" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "saas-shared", editable = "layers/shared" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "saas-testkit", editable = "testkit" }]

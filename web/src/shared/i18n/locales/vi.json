@@ -236,7 +236,8 @@
     "seatsUnlimited": "Đã dùng {{used}} chỗ",
     "tabs": {
       "members": "Thành viên",
-      "invitations": "Lời mời"
+      "invitations": "Lời mời",
+      "activity": "Hoạt động"
     },
     "columns": {
       "email": "Email",
@@ -275,6 +276,28 @@
       "cancelled": "Đã hủy lời mời gửi tới {{email}}.",
       "emptyTitle": "Không có lời mời đang chờ",
       "emptyDescription": "Các lời mời đang chờ trả lời sẽ hiện ở đây."
+    },
+    "activity": {
+      "when": "Khi nào",
+      "who": "Ai",
+      "what": "Việc gì",
+      "system": "Hệ thống",
+      "emptyTitle": "Chưa có hoạt động",
+      "emptyDescription": "Lời mời, thay đổi vai trò, thay đổi gói và nhiều việc khác sẽ hiện ở đây.",
+      "events": {
+        "TenantCreated": "Đã tạo không gian làm việc {{name}}",
+        "UserInvited": "Đã mời {{email}} làm {{role}}",
+        "InvitationCancelled": "Đã rút lời mời gửi {{email}}",
+        "MemberJoined": "Đã tham gia với vai trò {{role}}",
+        "RoleChanged": "Đã đổi vai trò của {{email}} thành {{role}}",
+        "MemberRemoved": "Đã xóa {{email}}",
+        "TenantDeletionScheduled": "Đã xóa không gian làm việc",
+        "TenantRestored": "Đã khôi phục không gian làm việc",
+        "SubscriptionChanged": "Gói đổi thành {{plan}} ({{status}})",
+        "PaymentFailed": "Một lần thanh toán thất bại",
+        "OrderCreated": "Đã tạo đơn hàng {{item}}",
+        "ExportRequested": "Đã bắt đầu xuất dữ liệu không gian làm việc"
+      }
     }
   },
   "billing": {

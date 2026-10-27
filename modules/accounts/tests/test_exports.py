@@ -22,7 +22,7 @@ def requested(ctx) -> dict:
 def test_an_owner_exports_the_workspace_and_downloads_it_once_every_module_wrote_its_part(ctx, owner, join):
     join("bob")
     status, job = ctx.api("POST", "/exports/workspace", owner)
-    assert status == 202 and job["status"] == "running" and job["parts"] == ["accounts", "orders", "billing"]
+    assert status == 202 and job["status"] == "running" and job["parts"] == ["accounts", "orders", "billing", "audit"]
     detail = requested(ctx)
     assert (detail["kind"], detail["owner_id"], detail["tenant_ids"]) == ("workspace", owner["tenant_id"],
                                                                            [owner["tenant_id"]])
@@ -38,9 +38,10 @@ def test_an_owner_exports_the_workspace_and_downloads_it_once_every_module_wrote
     assert latest["files"] == {}
 
     billing = object_created(part_key("workspace", owner["tenant_id"], job["job_id"], "billing"))
-    deliver(ctx, billing, billing)                                                    # delivered twice
+    audit = object_created(part_key("workspace", owner["tenant_id"], job["job_id"], "audit"))
+    deliver(ctx, billing, billing, audit)                                             # one delivered twice
     _, latest = ctx.api("GET", "/exports/workspace", owner)
-    assert latest["status"] == "done" and set(latest["files"]) == {"accounts", "orders", "billing"}
+    assert latest["status"] == "done" and set(latest["files"]) == {"accounts", "orders", "billing", "audit"}
     assert [e["type"] for e in ctx.events()].count("ExportReady") == 1
 
 

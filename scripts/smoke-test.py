@@ -449,8 +449,8 @@ stripe_api.v1.customers.delete(customer.id)   # test mode: leave nothing behind 
 
 print("Exports")
 r = owner("POST", "/exports/workspace")
-check("POST /exports/workspace", r.status_code == 202 and r.json()["parts"] == ["accounts", "orders", "billing"],
-      show(r))
+check("POST /exports/workspace",
+      r.status_code == 202 and r.json()["parts"] == ["accounts", "orders", "billing", "audit"], show(r))
 started = time.time()
 job = wait_for(lambda: (j := owner("GET", "/exports/workspace").json()) and j["status"] == "done" and j)
 check("every module wrote its part, and the export is done", bool(job),

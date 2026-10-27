@@ -107,10 +107,10 @@ def test_invite_creates_pending_invitation_and_fat_event(ctx, owner):
     assert status == 201 and invitation["email"] == "bob@example.com" and invitation["role"] == "admin"
     assert seats(ctx, owner) == 1     # a seat is taken only when accepted
 
-    [event] = ctx.events()
-    assert event["type"] == "UserInvited"
+    [event] = [e for e in ctx.events() if e["type"] == "UserInvited"]
     assert event["detail"]["tenant_name"] == "Acme"
     assert event["detail"]["invited_by"] == "alice@example.com"
+    assert (event["detail"]["actor_id"], event["detail"]["actor_email"]) == ("alice", "alice@example.com")
 
     _, pending = ctx.api("GET", "/users/invitations", owner)
     assert [i["email"] for i in pending] == ["bob@example.com"]
@@ -353,3 +353,25 @@ def test_tenants_are_isolated(ctx, owner, join):
 def test_openapi_lists_routes():
     paths = json.loads(app.get_openapi_json_schema())["paths"]
     assert "/users/invite" in paths and "/invitations/{tenant_id}/accept" in paths
+
+
+def test_every_change_of_access_is_an_event_with_who_did_it(ctx, owner, join):
+    bob = join("bob")
+    ctx.api("PATCH", "/users/bob/role", owner, {"role": "admin"})
+    ctx.api("POST", "/users/invite", owner, {"email": "carol@example.com"})
+    ctx.api("DELETE", "/users/invitations/carol%40example.com", owner)
+    ctx.api("POST", "/users/invite", owner, {"email": "dave@example.com"})
+    ctx.api("POST", f"/invitations/{owner['tenant_id']}/decline", claims("dave"))
+    ctx.api("DELETE", "/users/bob", owner)
+    ctx.api("DELETE", "/tenants/me", owner, {"name": "Acme"})
+    ctx.api("POST", f"/tenants/{owner['tenant_id']}/restore", claims("alice"))
+    assert bob
+
+    happened = [(e["type"], e["detail"].get("actor_id")) for e in ctx.events()]
+    assert happened == [
+        ("TenantCreated", "alice"), ("UserInvited", "alice"), ("MemberJoined", "bob"), ("RoleChanged", "alice"),
+        ("UserInvited", "alice"), ("InvitationCancelled", "alice"), ("UserInvited", "alice"),
+        ("InvitationCancelled", "dave"), ("MemberRemoved", "alice"), ("TenantDeletionScheduled", "alice"),
+        ("TenantRestored", "alice")]
+    removed = next(e["detail"] for e in ctx.events() if e["type"] == "MemberRemoved")
+    assert (removed["user_id"], removed["email"]) == ("bob", "bob@example.com")
