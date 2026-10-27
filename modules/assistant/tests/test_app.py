@@ -12,9 +12,12 @@ def sse_events(response) -> list[dict]:
 
 
 def run_input(ctx, run_id: str) -> dict:
-    """What an AG-UI client (@ag-ui/client's HttpAgent) sends: here, the run the HTTP API gave the message."""
+    """
+    What an AG-UI client (@ag-ui/client's HttpAgent) sends: here, the run the
+    HTTP API gave the message, in the workspace the page is in.
+    """
     return {"threadId": ctx.session, "runId": run_id, "state": {}, "tools": [], "context": [],
-            "forwardedProps": {}, "messages": [{"id": "m1", "role": "user", "content": "Hi"}]}
+            "forwardedProps": {"tenantId": "t1"}, "messages": [{"id": "m1", "role": "user", "content": "Hi"}]}
 
 
 def test_invocations_stream_agui_events(ctx, alice):

@@ -35,18 +35,28 @@ def test_api_does_not_expose_internal_tenant_fields(ctx, owner):
     assert stored.subscription_revision == 3   # still stored, just not part of the API
 
 
-def test_cannot_create_second_workspace(ctx, owner):
-    status, _ = ctx.api("POST", "/tenants", claims("alice"), {"name": "Another"})
-    assert status == 409
+def test_a_user_can_create_several_workspaces_up_to_the_limit(ctx, owner):
+    status, beta = ctx.api("POST", "/tenants", claims("alice"), {"name": "beta"})
+    assert status == 201
+    assert set(ctx.login("alice")) == {owner["tenant_id"], beta["tenant_id"]}
+
+    _, mine = ctx.api("GET", "/tenants", claims("alice"))      # no X-Tenant-Id needed
+    assert [(w["name"], w["role"], w["plan"]) for w in mine] == [("Acme", "owner", "free"), ("beta", "owner", "free")]
+
+    assert ctx.api("POST", "/tenants", claims("alice"), {"name": "Gamma"})[0] == 201   # 3 of MAX_WORKSPACES
+    status, body = ctx.api("POST", "/tenants", claims("alice"), {"name": "Delta"})
+    assert status == 409 and "at most 3" in body["message"]
 
 
-def test_one_workspace_per_user_even_for_simultaneous_requests(ctx):
+def test_the_workspace_limit_holds_for_simultaneous_requests(ctx):
     # Both requests passed every check; the conditional write lets only one win.
     repo = ctx.service.accounts
     first, second = Tenant(name="First", owner_id="bob"), Tenant(name="Second", owner_id="bob")
-    repo.create_tenant(first, Member(tenant_id=first.tenant_id, user_id="bob", email="b@x.com", role="owner"))
-    with pytest.raises(ConditionFailed):
-        repo.create_tenant(second, Member(tenant_id=second.tenant_id, user_id="bob", email="b@x.com", role="owner"))
+    repo.create_tenant(first, Member(tenant_id=first.tenant_id, user_id="bob", email="b@x.com", role="owner"), 1)
+    with pytest.raises(ConditionFailed) as error:
+        repo.create_tenant(second, Member(tenant_id=second.tenant_id, user_id="bob", email="b@x.com", role="owner"), 1)
+    assert error.value.failed == {"workspaces"}
+    assert list(ctx.login("bob")) == [first.tenant_id]
 
 
 def test_no_workspace_yet_is_blocked(ctx):
@@ -82,7 +92,7 @@ def test_invited_person_chooses_to_accept(ctx, owner):
 
     status, tenant = ctx.api("POST", f"/invitations/{owner['tenant_id']}/accept", claims("bob"))
     assert status == 200 and tenant["name"] == "Acme"
-    assert ctx.login("bob") == {"tenant_id": owner["tenant_id"], "role": "admin", "plan": "free"}
+    assert ctx.login("bob") == {owner["tenant_id"]: {"role": "admin", "plan": "free"}}
     assert ctx.api("GET", "/users/invitations", owner)[1] == []
     assert seats(ctx, owner) == 2
 
@@ -114,16 +124,54 @@ def test_expired_invitation_cannot_be_accepted(ctx, owner):
     assert invite(ctx, owner, "bob") == 201   # can be invited again
 
 
-def test_member_of_another_workspace_must_leave_before_accepting(ctx, owner, join):
+def test_a_member_of_one_workspace_can_join_another(ctx, owner, join):
     _, other = ctx.api("POST", "/tenants", claims("zoe"), {"name": "Zoe Inc"})
-    zoe_owner = claims("zoe", other["tenant_id"], "owner")
-    invite(ctx, zoe_owner, "bob")
+    invite(ctx, claims("zoe", other["tenant_id"], "owner"), "bob")
+    join("bob")
+
+    assert ctx.api("POST", f"/invitations/{other['tenant_id']}/accept", claims("bob"))[0] == 200
+    assert ctx.login("bob") == {owner["tenant_id"]: {"role": "member", "plan": "free"},
+                                other["tenant_id"]: {"role": "member", "plan": "free"}}
+    assert seats(ctx, owner) == 2                                   # still in Acme too
+
+
+def test_accepting_an_invitation_to_a_workspace_you_are_in_is_refused(ctx, owner, join):
+    join("bob")
+    # An invitation that slipped in anyway (the invite check and the accept race).
+    ctx.service.accounts.invite(Invitation(tenant_id=owner["tenant_id"], tenant_name="Acme",
+                                           email="bob@example.com", role="admin",
+                                           invited_by="alice@example.com", expires_at=int(time.time()) + 3600),
+                                event=Event("UserInvited", owner["tenant_id"]), invites_per_day=100)
+    status, body = ctx.api("POST", f"/invitations/{owner['tenant_id']}/accept", claims("bob"))
+    assert status == 409 and "already in this workspace" in body["message"]
+    assert ctx.login("bob")[owner["tenant_id"]]["role"] == "member"   # unchanged
+    assert seats(ctx, owner) == 2
+
+
+def test_each_request_acts_in_the_workspace_it_names(ctx, owner, join):
+    _, other = ctx.api("POST", "/tenants", claims("zoe"), {"name": "Zoe Inc"})
+    invite(ctx, claims("zoe", other["tenant_id"], "owner"), "bob")
+    join("bob")
+    ctx.api("POST", f"/invitations/{other['tenant_id']}/accept", claims("bob"))
+    bob = claims("bob", owner["tenant_id"], "member", workspaces={other["tenant_id"]: ("member", "free")})
+
+    in_acme = ctx.api("GET", "/users", bob, tenant_id=owner["tenant_id"])[1]
+    in_zoe = ctx.api("GET", "/users", bob, tenant_id=other["tenant_id"])[1]
+    assert sorted(u["email"] for u in in_acme) == ["alice@example.com", "bob@example.com"]
+    assert sorted(u["email"] for u in in_zoe) == ["bob@example.com", "zoe@example.com"]
+    assert ctx.api("GET", "/users", bob)[0] == 403                  # two workspaces, none named
+    assert ctx.api("GET", "/users", claims("bob", owner["tenant_id"], "member"),
+                   tenant_id=other["tenant_id"])[0] == 401          # an older token that doesn't list Zoe Inc
+
+
+def test_leaving_keeps_the_session_and_the_other_workspaces(ctx, owner, join):
+    _, other = ctx.api("POST", "/tenants", claims("bob"), {"name": "Bob's shop"})
     bob = join("bob")
 
-    status, body = ctx.api("POST", f"/invitations/{other['tenant_id']}/accept", claims("bob"))
-    assert status == 409 and "Leave" in body["message"]
-    assert ctx.api("DELETE", "/users/bob", bob)[0] == 204          # bob leaves Acme
-    assert ctx.api("POST", f"/invitations/{other['tenant_id']}/accept", claims("bob"))[0] == 200
+    assert ctx.api("DELETE", "/users/bob", bob)[0] == 204           # bob leaves Acme
+    assert ctx.identity.signed_out == []                            # still signed in
+    assert list(ctx.login("bob")) == [other["tenant_id"]]           # his next token drops Acme
+    assert [w["name"] for w in ctx.api("GET", "/tenants", claims("bob"))[1]] == ["Bob's shop"]
     assert seats(ctx, owner) == 1
 
 
@@ -200,10 +248,10 @@ def test_change_role_and_remove_sign_the_user_out(ctx, owner, join):
     join("bob")
     status, bob = ctx.api("PATCH", "/users/bob/role", owner, {"role": "admin"})
     assert status == 200 and bob["role"] == "admin"
-    assert ctx.login("bob")["role"] == "admin"
+    assert ctx.login("bob")[owner["tenant_id"]]["role"] == "admin"
 
     assert ctx.api("DELETE", "/users/bob", owner)[0] == 204
-    assert ctx.identity.signed_out == ["bob", "bob"]
+    assert ctx.identity.signed_out == ["bob", "bob"]               # removed by someone else: signed out
     assert len(ctx.api("GET", "/users", owner)[1]) == 1
     assert seats(ctx, owner) == 1
     assert ctx.login("bob") == {}
@@ -216,6 +264,7 @@ def test_removing_a_member_or_leaving_publishes_member_removed(ctx, owner, join)
     assert ctx.api("DELETE", "/users/bob", owner)[0] == 204
     assert ctx.api("DELETE", "/users/carol", carol)[0] == 204   # leaves
     assert ctx.api("DELETE", "/users/bob", owner)[0] == 404     # gone already: no second event
+    assert ctx.identity.signed_out == ["bob"]                   # removed; carol left, so keeps her session
 
     removed = [e["detail"] for e in ctx.events() if e["type"] == "MemberRemoved"]
     assert sorted((d["user_id"], d["removed_by"]) for d in removed) == [("bob", "alice"), ("carol", "carol")]
@@ -227,7 +276,7 @@ def test_demoted_admin_cannot_use_old_token_to_promote_themselves(ctx, owner, jo
     ctx.api("PATCH", "/users/bob/role", owner, {"role": "member"})
 
     assert ctx.api("PATCH", "/users/bob/role", bob_old_token, {"role": "admin"})[0] == 403
-    assert ctx.login("bob")["role"] == "member"
+    assert ctx.login("bob")[owner["tenant_id"]]["role"] == "member"
 
 
 def test_removed_admin_cannot_use_old_token(ctx, owner, join):

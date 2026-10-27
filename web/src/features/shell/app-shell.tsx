@@ -1,8 +1,6 @@
 import { Link, Outlet, useMatchRoute } from '@tanstack/react-router';
 import { BellIcon, BotIcon, CreditCardIcon, FolderIcon, LayoutDashboardIcon, PackageIcon, UsersIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useUser } from '@/shared/auth/session';
-import { BrandMark } from '@/shared/components/brand';
 import { Badge } from '@/shared/components/ui/badge';
 import {
   Sidebar,
@@ -20,11 +18,9 @@ import {
   SidebarRail,
   SidebarTrigger,
 } from '@/shared/components/ui/sidebar';
-import { Skeleton } from '@/shared/components/ui/skeleton';
-import { getPlan } from '@/shared/lib/plans';
 import { useNotifications } from '../notifications/hooks';
 import { NotificationBell } from '../notifications/components/notification-bell';
-import { useTenant } from '../workspace/hooks';
+import { WorkspaceSwitcher } from '../workspace/workspace-switcher';
 import { UserMenu } from './components/user-menu';
 
 const NAV = [
@@ -61,8 +57,6 @@ export function AppShell() {
 
 function AppSidebar() {
   const { t } = useTranslation();
-  const { plan } = useUser();
-  const tenant = useTenant();
   const matchRoute = useMatchRoute();
   // shares the bell's query (and its polling)
   const unread = (useNotifications().data ?? []).filter((item) => !item.read).length;
@@ -70,19 +64,7 @@ function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild>
-              <Link to="/">
-                <BrandMark />
-                <span className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-semibold">{tenant.data?.name ?? <Skeleton className="h-4 w-24" />}</span>
-                  <span className="truncate text-xs text-muted-foreground">{t('nav.plan', { plan: getPlan(plan).name })}</span>
-                </span>
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+        <WorkspaceSwitcher />
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>

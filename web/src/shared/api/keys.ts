@@ -1,9 +1,10 @@
 /**
- * TanStack Query keys. The whole cache is cleared when the user's workspace
- * changes (main.tsx), so keys don't carry the tenant id.
+ * TanStack Query keys. The whole cache is cleared when the tab switches to
+ * another workspace (main.tsx), so keys don't carry the tenant id.
  */
 export const qk = {
   tenant: () => ['tenant'] as const,
+  workspaces: () => ['workspaces'] as const,
   orders: () => ['orders'] as const,
   orderList: () => ['orders', 'list'] as const,
   recentOrders: () => ['orders', 'recent'] as const,

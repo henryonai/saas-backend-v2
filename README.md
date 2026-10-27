@@ -47,6 +47,7 @@ saas-backend-v2/
 │   ├── check-assistant-data.py # the assistant's table against its data model (read-only)
 │   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
 │   ├── replay-outbox.py        # publish saved events again after an outage
+│   ├── migrate-memberships.py  # once, for stacks from before users had several workspaces
 │   └── rename-project.py       # give a new copy of the template its own name
 ├── layers/shared/              # package "saas-shared"
 │   ├── pyproject.toml          # powertools, pydantic, pydantic-settings
@@ -99,14 +100,16 @@ saas-backend-v2/
 4. **Routes get what they need through `Depends()`**: the current user and
    the service. Workers, webhooks and triggers call the container directly.
 5. **Only `container.py` reads settings.** Everything else gets plain values.
-6. **`tenant_id` comes from the login token, never from the request.**
-   Request schemas never contain it.
+6. **The workspace comes from the login token, never from the request body.**
+   The token lists every workspace the user belongs to; a request only picks
+   one of them (the `X-Tenant-Id` header), and `get_current_user` refuses
+   any other. Request schemas never contain `tenant_id`.
 7. **Each module defines the events it publishes in its `events.py`**, and
    saves them with the change, never sends them directly. The repository
    writes the event into its table in the same transaction (the outbox), and
    the relay publishes it. No change without its event, no event without its change.
 8. **Rules that must survive concurrent requests are DynamoDB conditions**
-   (plan limits, one workspace per user, allowed status changes), not
+   (plan limits, workspaces per user, allowed status changes), not
    "read, check, then write" code.
 9. **Listeners expect repeats and late arrivals.** They skip events they have
    seen (`event_id`) and ignore older versions (`revision`).
@@ -160,7 +163,16 @@ Delivery is at least once and not in order, hence rule 9.
 
 **Sign-up:** user signs up in Cognito (verifies their email) → `POST /tenants`
 creates the workspace and makes them `owner` → frontend refreshes the token →
-the login trigger adds `tenant_id`, `role` and `plan`.
+the login trigger lists the workspace in the token's `workspaces` claim, with
+their role there and its plan.
+
+**Several workspaces:** a user can belong to up to 20 workspaces
+(`MAX_WORKSPACES_PER_USER`): create more with `POST /tenants`, or accept
+invitations, without leaving any. `GET /tenants` lists them, and the token
+lists them all. Each request names the workspace it acts in with the
+`X-Tenant-Id` header (the assistant: `forwardedProps.tenantId`), so each
+browser tab can work in a different one. A workspace the token doesn't list
+(joined after the token was issued) gets 401: refresh the token and retry.
 
 **Invite:** an owner or admin (with a verified email) calls `POST /users/invite`
 → a pending invitation is saved (valid 7 days; at most 20 sent per workspace
@@ -172,7 +184,8 @@ left; then refresh the token) or `.../decline`. Nobody joins a workspace
 without accepting, and nobody gets a login they didn't ask for. Admins see
 pending invitations at `GET /users/invitations` and cancel one with
 `DELETE /users/invitations/<email>`. A member leaves with
-`DELETE /users/<their own id>` (needed before joining another workspace).
+`DELETE /users/<their own id>`: they stay signed in, and their next token no
+longer lists that workspace.
 
 **Upgrade:** owner calls `POST /billing/checkout` → pays on the provider's page
 (Stripe Checkout; a subscriber who changes plan gets Stripe's confirm page) →
@@ -186,14 +199,16 @@ carries the new plan. The frontend should refresh the token after checkout.
 ## Security model
 
 - **Tokens:** the frontend sends the Cognito **ID token** (it carries the
-  custom claims). Access tokens are rejected (401), and so are tokens whose
-  workspace claims (`tenant_id`, `role`, `plan`) are not all present or all
-  absent. ID tokens last **15 minutes**; refresh tokens 30 days.
+  custom `workspaces` claim) and the workspace it works in (`X-Tenant-Id`).
+  Access tokens are rejected (401), and so are a `workspaces` claim the
+  login trigger didn't write and a workspace the token doesn't list. ID
+  tokens last **15 minutes**; refresh tokens 30 days.
 - **Roles change immediately where it matters:** the accounts module checks
   the caller's role in its own table, not in the token, for everything it
-  does. Removing or demoting someone also signs them out (refresh tokens
-  revoked). Other modules trust the token, so there a change applies within
-  15 minutes. Shorten `IdTokenValidity` if that is too long for you.
+  does. Removing someone or changing their role also signs them out of every
+  workspace (refresh tokens revoked); someone who leaves stays signed in.
+  Other modules trust the token, so there a change applies within 15
+  minutes. Shorten `IdTokenValidity` if that is too long for you.
 - **Emails are verified:** users can't switch their email to an address they
   haven't verified, and inviting or accepting an invitation needs a verified
   email. The invitation email quotes the workspace name (typed by the inviter)
@@ -358,6 +373,15 @@ sam deploy --config-env dev \
 
 Once per AWS account, for the assistant's traces:
 `./scripts/enable-transaction-search.sh <region>` (see modules/assistant/README.md).
+
+A stack deployed before users could belong to several workspaces keeps each
+user's workspace in a `MEMBERSHIP` item. Move them once, around the first
+deploy with the new code (a new stack doesn't need this):
+
+```bash
+uv run python scripts/migrate-memberships.py copy --stack saas-dev      # before deploying
+uv run python scripts/migrate-memberships.py cleanup --stack saas-dev   # after
+```
 
 Outputs: `ApiUrl`, `UserPoolId`, `UserPoolClientId` (for the React app),
 `WebhookUrl` (for the payment provider), `EventBusName`, `AlertsTopicArn`,

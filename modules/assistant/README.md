@@ -166,12 +166,15 @@ details the main conversation doesn't need: analysis, reports, research.
    comes from the token. Limits live in `shared/plans.py`
    (`assistant_messages_per_user_hour`: Free 20, Pro 60, Business 120;
    `assistant_messages_per_month`, `assistant_tokens_per_month`).
-2. When AgentCore gets the run (`app.invoke()`), the token's claims become a
+2. When AgentCore gets the run (`app.invoke()`), the token's claims and the
+   run's `forwardedProps.tenantId` (the workspace the page works in) become a
    `CurrentUser` with `shared.auth.user_from_claims`, the same rules as every
-   HTTP route (ID tokens only, workspace claims all or none). AgentCore
-   verified the signature, issuer, audience and `token_use` already, and
-   forwards the `Authorization` header (`RequestHeaderAllowlist`). The run is
-   looked up under that user's own keys.
+   HTTP route's `X-Tenant-Id` (ID tokens only, a workspace the token lists).
+   AgentCore verified the signature, issuer, audience and `token_use`
+   already, and forwards the `Authorization` header
+   (`RequestHeaderAllowlist`; it passes on no custom headers, hence the
+   body). The run is looked up under that user's own keys, and the tools call
+   the HTTP API with the same token and workspace.
 
 **While it runs**, in middleware (`middleware/`, in the order `factory.py` sets):
 
@@ -631,7 +634,8 @@ Against the dev stack's tables and bucket (your AWS credentials; the values in
 uv run python modules/assistant/main.py   # serves http://localhost:8080/invocations
 curl -N localhost:8080/invocations -H "Authorization: Bearer <a JWT with your claims>" \
   -H "Content-Type: application/json" \
-  -d '{"threadId": "<a UUID>", "runId": "r1", "messages": [{"id": "m1", "role": "user", "content": "Hi"}]}'
+  -d '{"threadId": "<a UUID>", "runId": "r1", "forwardedProps": {"tenantId": "<a tenant id in the token>"},
+       "messages": [{"id": "m1", "role": "user", "content": "Hi"}]}'
 ```
 
 There is no authorizer locally, so the server trusts any token: never expose it.
