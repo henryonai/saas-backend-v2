@@ -85,6 +85,9 @@ saas-backend-v2/
 │    modules/assistant's chat runs on AgentCore Runtime: app.py, with its
 │    agents as Markdown files in src/assistant/agents/; its handler.py serves
 │    the users' conversations on the HTTP API)
+├── docs/
+│   ├── data-model.md           # every table: keys, indexes, TTLs, streams, access patterns
+│   └── openapi/                # generated: each module's OpenAPI document
 ├── testkit/                    # package "saas-testkit": test helpers and fakes (not deployed)
 ├── web/                        # the React app (see web/README.md)
 ├── template.yaml               # one section per module
@@ -132,6 +135,10 @@ and returns models; `api.py` turns models into response schemas. When a
 response is identical to a model, the route returns the model; add an `...Out`
 schema as soon as they differ (e.g. `TenantOut` hides internal bookkeeping
 fields such as `subscription_revision`).
+
+**Where data lives:** [`docs/data-model.md`](docs/data-model.md) shows every
+table on one page: keys, indexes, TTLs, streams and which query serves which
+route. Each `repository.py` starts with its own key design; change both together.
 
 ## How modules talk to each other
 
