@@ -33,4 +33,5 @@ def get_account_service() -> AccountService:
             pending_per_email=settings.max_pending_invitations_per_email,
         ),
         max_workspaces=settings.max_workspaces_per_user,
+        deletion_days=settings.tenant_deletion_days,
     )

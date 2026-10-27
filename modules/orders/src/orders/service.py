@@ -21,6 +21,11 @@ class OrderService:
     def __init__(self, orders: OrderRepository):
         self.orders = orders
 
+    def handle_event(self, event_type: str, detail: dict) -> None:
+        """Events from other modules (listener.py)."""
+        if event_type == "TenantDeleted":   # accounts' event, by name
+            self.orders.delete_tenant(detail["tenant_id"])
+
     def create_order(self, user: CurrentUser, data: OrderCreate, idempotency_key: str) -> Order:
         """
         A retry of the same request with the same Idempotency-Key (a timeout,

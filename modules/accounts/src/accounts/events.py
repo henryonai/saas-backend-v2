@@ -7,10 +7,11 @@ payloads only by adding fields. The README's events table lists every event.
 """
 from shared.events import Event
 
-from accounts.models import Invitation
+from accounts.models import Invitation, Tenant
 
 USER_INVITED = "UserInvited"
 MEMBER_REMOVED = "MemberRemoved"
+TENANT_DELETED = "TenantDeleted"
 
 
 def user_invited(invitation: Invitation) -> Event:
@@ -29,3 +30,13 @@ def member_removed(tenant_id: str, user_id: str, removed_by: str) -> Event:
     admin removed them: the assistant deletes their conversations there.
     """
     return Event(MEMBER_REMOVED, tenant_id, {"user_id": user_id, "removed_by": removed_by})
+
+
+def tenant_deleted(tenant: Tenant, user_ids: list[str]) -> Event:
+    """
+    The workspace's grace period ended and the purge job is removing it: every
+    module deletes what it keeps for it. `user_ids` are its members at that
+    moment (the owner included), for modules that key data by user.
+    """
+    return Event(TENANT_DELETED, tenant.tenant_id,
+                 {"name": tenant.name, "owner_id": tenant.owner_id, "user_ids": user_ids})

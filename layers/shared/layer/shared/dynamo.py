@@ -7,7 +7,9 @@ afterwards (two requests at the same time could both pass the read).
 """
 import random
 import time
+from collections.abc import Callable
 
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from shared.errors import ServiceBusy
@@ -58,3 +60,22 @@ def transact(table, **operations: dict | None) -> None:
 def is_condition_failure(error: ClientError) -> bool:
     """True if a single-item write failed because of its ConditionExpression."""
     return error.response["Error"]["Code"] == "ConditionalCheckFailedException"
+
+
+def delete_partition(table, pk: str, keep: Callable[[str], bool] = lambda sk: False) -> int:
+    """
+    Deletes every item under `pk` whose sort key `keep` doesn't keep, and
+    returns how many. Safe to run again: what it deleted is gone (a purge
+    that timed out continues where it stopped).
+    """
+    keys, start = [], {}
+    while True:
+        result = table.query(KeyConditionExpression=Key("pk").eq(pk), ProjectionExpression="pk, sk", **start)
+        keys += [{"pk": i["pk"], "sk": i["sk"]} for i in result["Items"] if not keep(i["sk"])]
+        if "LastEvaluatedKey" not in result:
+            break
+        start = {"ExclusiveStartKey": result["LastEvaluatedKey"]}
+    with table.batch_writer() as batch:
+        for key in keys:
+            batch.delete_item(Key=key)
+    return len(keys)

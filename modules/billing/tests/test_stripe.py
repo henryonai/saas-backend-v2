@@ -11,18 +11,21 @@ from types import SimpleNamespace
 
 import pytest
 import stripe
+from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError
 
 from shared.dynamo import ConditionFailed
 
 from billing.container import get_billing_service
 from billing.handler import app, handler
+from billing.listener import process_batch as process_listener
 from billing.repository import SubscriptionRepository
 from billing.service import BillingService
 from billing.stripe_provider import StripeConfig, StripePaymentProvider
 from billing.webhook import process_webhook
 from testkit.aws import create_table
-from testkit.http import call, claims
+from testkit.http import FakeContext, call, claims
 from testkit.outbox import outbox_events
+from testkit.sqs import sqs_event, with_event_ids
 
 SECRET = "whsec_test"
 CONFIG = StripeConfig(prices={"pro": "price_pro", "business": "price_business"},
@@ -41,7 +44,7 @@ class FakeStripe:
         self.v1 = SimpleNamespace(
             checkout=SimpleNamespace(sessions=sessions("checkout", "https://checkout.stripe.test/c")),
             billing_portal=SimpleNamespace(sessions=sessions("portal", "https://billing.stripe.test/p")),
-            subscriptions=SimpleNamespace(retrieve=self._retrieve),
+            subscriptions=SimpleNamespace(retrieve=self._retrieve, cancel=self._cancel),
         )
 
     def _record(self, kind, params, url):
@@ -52,6 +55,11 @@ class FakeStripe:
     def _retrieve(self, subscription_id):
         self._check()
         return stripe.Subscription.construct_from(self.subscriptions[subscription_id], "sk_test")
+
+    def _cancel(self, subscription_id):
+        self._check()
+        self.calls.append(("cancel", {"subscription": subscription_id}))
+        self.subscriptions[subscription_id]["status"] = "canceled"
 
     def _check(self):
         if self.down:
@@ -88,7 +96,8 @@ def ctx():
         event = {"headers": {"Stripe-Signature": sign(raw)}, "body": raw, "isBase64Encoded": False}
         return process_webhook(event, service)["statusCode"]
 
-    yield SimpleNamespace(stripe=fake, webhook=webhook, table=table, api=lambda *a, **kw: call(handler, *a, **kw),
+    yield SimpleNamespace(stripe=fake, webhook=webhook, table=table, service=service,
+                          api=lambda *a, **kw: call(handler, *a, **kw),
                           event_types=lambda: [e["type"] for e in outbox_events(table)])
     app.dependency_overrides.clear()
 
@@ -231,3 +240,24 @@ def test_the_current_plan_cant_be_bought_again(ctx, owner):
     ctx.stripe.subscribe(status="active", price="price_pro")
     ctx.webhook("customer.subscription.created")
     assert ctx.api("POST", "/billing/checkout", owner, {"plan": "pro"})[0] == 409
+
+
+def test_purging_a_deleted_workspace_cancels_its_stripe_subscription_once(ctx, owner):
+    ctx.stripe.subscribe(status="active")
+    ctx.webhook()
+    deleted = ("TenantDeleted", with_event_ids({"tenant_id": "t1", "user_ids": ["alice"]}))
+    ctx.stripe.down = True
+    with pytest.raises(BatchProcessingError):                              # SQS delivers it again later
+        process_listener(sqs_event(deleted), FakeContext(), ctx.service)
+    assert billing(ctx, owner)["status"] == "active"                       # nothing changed yet
+    ctx.stripe.down = False
+
+    assert process_listener(sqs_event(deleted, deleted), FakeContext(), ctx.service) == {"batchItemFailures": []}
+    assert [call for call in ctx.stripe.calls if call[0] == "cancel"] == [("cancel", {"subscription": "sub_1"})]
+    stored = ctx.table.get_item(Key={"pk": "TENANT#t1", "sk": "SUBSCRIPTION"})["Item"]
+    assert (stored["status"], stored["plan"], stored["owner_email"]) == ("cancelled", "free", "")
+    assert stored["expires_at"] > stored["deleted_at"]
+
+    types = ctx.event_types()
+    assert ctx.webhook() == 200                                            # Stripe's "canceled" arrives late
+    assert ctx.event_types() == types                                      # and changes nothing

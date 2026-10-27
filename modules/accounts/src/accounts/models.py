@@ -4,6 +4,7 @@ the service returns them. What the API accepts and returns is in schemas.py.
 """
 import time
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -13,6 +14,12 @@ from shared.auth import Role
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+# active; deleting: its owner deleted it, and it can be restored until delete_after;
+# purging: the purge job is removing it (purge.py). Items saved before deletion
+# existed have no status, which reads as active.
+TenantStatus = Literal["active", "deleting", "purging"]
 
 
 class Tenant(BaseModel):
@@ -25,6 +32,12 @@ class Tenant(BaseModel):
     subscription_revision: int = 0  # billing's revision of the plan copied here
     seats_used: int = 1  # members, limited by the plan
     created_at: str = Field(default_factory=now_iso)
+    status: TenantStatus = "active"
+    delete_after: int | None = None  # epoch seconds: when the purge job may remove it (deleting only)
+
+    @property
+    def active(self) -> bool:
+        return self.status == "active"
 
 
 class Member(BaseModel):

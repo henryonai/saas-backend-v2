@@ -3,7 +3,16 @@ import { useNavigate } from '@tanstack/react-router';
 import { qk } from '@/shared/api/keys';
 import type { TenantCreate } from '@/shared/api/types';
 import { refreshSession, switchWorkspace } from '@/shared/auth/session';
-import { acceptInvitation, createTenant, declineInvitation, getTenant, listReceivedInvitations, listWorkspaces } from './api';
+import {
+  acceptInvitation,
+  createTenant,
+  declineInvitation,
+  deleteTenant,
+  getTenant,
+  listReceivedInvitations,
+  listWorkspaces,
+  restoreTenant,
+} from './api';
 
 export function useTenant() {
   return useQuery({
@@ -37,6 +46,23 @@ export function useCreateTenant() {
   return useMutation({
     mutationFn: ({ body, idempotencyKey }: { body: TenantCreate; idempotencyKey: string }) =>
       createTenant(body, idempotencyKey),
+  });
+}
+
+export function useDeleteTenant() {
+  return useMutation({ mutationFn: deleteTenant });
+}
+
+/** Restores a deleted workspace, then works in it in this tab. */
+export function useRestoreTenant() {
+  const queryClient = useQueryClient();
+  const goTo = useGoToWorkspace();
+  return useMutation({
+    mutationFn: restoreTenant,
+    onSuccess: async (tenant) => {
+      await queryClient.invalidateQueries({ queryKey: qk.workspaces() });
+      await goTo(tenant.tenant_id);
+    },
   });
 }
 

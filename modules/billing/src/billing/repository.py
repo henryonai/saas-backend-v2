@@ -1,6 +1,7 @@
 """
 Billing table:
-  pk = TENANT#<tenant_id>   sk = SUBSCRIPTION   subscription
+  pk = TENANT#<tenant_id>   sk = SUBSCRIPTION   subscription (once its workspace is purged: deleted_at,
+                                                and TTL removes it after DELETED_KEEP_SECONDS)
   pk = OUTBOX#<event_id>    sk = OUTBOX         events to publish (shared/outbox.py)
 """
 from shared.dynamo import transact
@@ -8,6 +9,9 @@ from shared.events import Event
 from shared.outbox import outbox_put
 
 from billing.models import Subscription
+
+# How long a purged workspace's subscription stays, ignoring the provider's webhooks.
+DELETED_KEEP_SECONDS = 90 * 24 * 3600
 
 
 def _key(tenant_id: str) -> dict:
@@ -23,6 +27,20 @@ class SubscriptionRepository:
         if not item:
             return None
         return Subscription.model_validate({k: v for k, v in item.items() if k not in ("pk", "sk")})
+
+    def mark_deleted(self, tenant_id: str, now: int) -> None:
+        """
+        The workspace was purged: the subscription is cancelled and forgets
+        its owner; TTL removes it later. Creates the record if there was none.
+        """
+        self.table.update_item(
+            Key=_key(tenant_id),
+            UpdateExpression=("SET tenant_id = :t, #p = :free, #s = :cancelled, deleted_at = :now, "
+                              "expires_at = :expires, owner_id = :none, owner_email = :none"),
+            ExpressionAttributeNames={"#p": "plan", "#s": "status"},
+            ExpressionAttributeValues={":t": tenant_id, ":free": "free", ":cancelled": "cancelled", ":now": now,
+                                       ":expires": now + DELETED_KEEP_SECONDS, ":none": ""},
+        )
 
     def save_owner(self, tenant_id: str, owner_id: str, owner_email: str) -> None:
         """Creates the record if missing; never overwrites plan, status or revision."""

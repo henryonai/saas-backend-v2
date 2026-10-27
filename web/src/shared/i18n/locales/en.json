@@ -66,7 +66,26 @@
     "createDescription": "You become its owner, and keep your other workspaces. Each browser tab can work in a different one.",
     "invitations": "Invitations ({{count}})",
     "invitationsDescription": "Joining a workspace keeps the ones you're in. Only accept invitations from people you know.",
-    "openFailed": "Couldn't open that workspace. Reload the page, then choose it from the switcher."
+    "openFailed": "Couldn't open that workspace. Reload the page, then choose it from the switcher.",
+    "delete": {
+      "title": "Delete this workspace",
+      "description": "Its orders, members, notifications, assistant conversations and files are deleted, and its subscription is cancelled. You can restore it for a while first.",
+      "open": "Delete workspace",
+      "confirmTitle": "Delete {{workspace}}?",
+      "confirmDescription": "Everyone loses access to it now. You can restore it from the workspace switcher until it is deleted for good; then its data is gone and its subscription is cancelled.",
+      "typeName": "Type {{workspace}} to confirm",
+      "submit": "Delete workspace",
+      "done": "{{workspace}} was deleted. You can restore it until {{date}}."
+    },
+    "deleted": {
+      "open": "Deleted workspaces ({{count}})",
+      "title": "Deleted workspaces",
+      "description": "Their owner can restore them until they are deleted for good.",
+      "until": "Can be restored until {{date}}",
+      "purging": "Being deleted for good",
+      "restore": "Restore",
+      "restored": "{{workspace}} was restored."
+    }
   },
   "auth": {
     "backToSignIn": "Back to sign in",

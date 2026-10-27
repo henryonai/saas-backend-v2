@@ -25,3 +25,6 @@ class Subscription(BaseModel):
     plan_event_id: str = ""
     status_changed_at: int = 0
     status_event_id: str = ""
+    # When its workspace was purged (epoch seconds; 0: it wasn't). Then the record
+    # stays a while, so the provider's late webhooks can't bring it back.
+    deleted_at: int = 0

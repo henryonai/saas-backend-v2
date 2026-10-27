@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { useUser } from '@/shared/auth/session';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card';
 import { CreateWorkspaceForm } from './components/create-workspace-form';
+import { DeletedWorkspaces } from './components/deleted-workspaces';
 import { InvitationList } from './components/invitation-list';
 
 /**
@@ -18,6 +19,7 @@ export function WelcomePage() {
         <h1 className="text-2xl font-semibold tracking-tight">{t('welcome.title')}</h1>
         <p className="text-sm text-muted-foreground">{t('welcome.description', { email })}</p>
       </div>
+      <DeletedWorkspaces />
       <Card>
         <CardHeader>
           <CardTitle>{t('welcome.invitations.title')}</CardTitle>

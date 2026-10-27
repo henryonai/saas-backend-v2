@@ -11,14 +11,23 @@ with that (verified) email. Nobody is added to a workspace without saying yes.
 
 A user can belong to several workspaces (up to max_workspaces). The login
 token lists them all, and each request names the one it acts in (shared/auth.py).
+
+Deleting a workspace takes two steps. Its owner deletes it: it becomes
+"deleting", leaves every member's next token, and the owner can restore it
+for deletion_days. Then the purge job (purge.py) removes it: it publishes
+TenantDeleted, so every module deletes what it keeps for it, and removes the
+memberships and the workspace's own items here.
 """
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+
+from aws_lambda_powertools import Logger
 
 from shared.auth import ROLE_ADMIN, ROLE_OWNER, WORKSPACES_CLAIM, CurrentUser
 from shared.dynamo import ConditionFailed
-from shared.errors import Conflict, Forbidden, NotFound, PlanLimitReached, TooManyRequests
+from shared.errors import Conflict, Forbidden, InvalidRequest, NotFound, PlanLimitReached, TooManyRequests
 from shared.idempotency import IDEMPOTENCY, fingerprint
 from shared.plans import get_limit
 
@@ -26,7 +35,9 @@ from accounts import events
 from accounts.identity import IdentityProvider
 from accounts.models import Invitation, Member, Tenant
 from accounts.repository import AccountRepository
-from accounts.schemas import InviteRequest, TenantCreate
+from accounts.schemas import InviteRequest, TenantCreate, TenantDelete
+
+logger = Logger(child=True)
 
 @dataclass(frozen=True)
 class InvitationLimits:
@@ -38,11 +49,12 @@ class InvitationLimits:
 
 class AccountService:
     def __init__(self, accounts: AccountRepository, identity: IdentityProvider,
-                 invitation_limits: InvitationLimits, max_workspaces: int):
+                 invitation_limits: InvitationLimits, max_workspaces: int, deletion_days: int = 7):
         self.accounts = accounts
         self.identity = identity
         self.limits = invitation_limits
         self.max_workspaces = max_workspaces   # workspaces one user can belong to
+        self.deletion_days = deletion_days     # how long a deleted workspace can be restored
 
     # ---------- tenants ----------
 
@@ -69,8 +81,69 @@ class AccountService:
         return self._tenant(self._caller(user).tenant_id)
 
     def my_workspaces(self, user: CurrentUser) -> list[tuple[Tenant, Member]]:
-        """Every workspace the caller belongs to, by name, as stored now."""
+        """
+        Every workspace the caller belongs to, by name, as stored now. Deleted
+        ones still waiting to be purged are listed (with their status), so their
+        owner can restore them.
+        """
         return sorted(self.accounts.workspaces_of(user.user_id), key=lambda w: w[0].name.lower())
+
+    def delete_tenant(self, user: CurrentUser, data: TenantDelete) -> Tenant:
+        """
+        The owner deletes the workspace, typing its name to confirm. It leaves
+        every member's next token (the app refreshes the owner's at once; others'
+        within 15 minutes), and can be restored until delete_after.
+        """
+        tenant = self._tenant(self._caller(user, ROLE_OWNER).tenant_id)
+        if data.name != tenant.name:
+            raise InvalidRequest("Type the workspace's name exactly as it is to delete it")
+        delete_after = int(time.time()) + self.deletion_days * 24 * 3600
+        if not self.accounts.schedule_deletion(tenant.tenant_id, delete_after):
+            raise Conflict("This workspace is being deleted already")
+        return tenant.model_copy(update={"status": "deleting", "delete_after": delete_after})
+
+    def restore_tenant(self, user: CurrentUser, tenant_id: str) -> Tenant:
+        """
+        Its owner restores a deleted workspace before it is purged. Named in
+        the path, since the token no longer lists it. The app then refreshes the token.
+        """
+        member = self.accounts.get_member(tenant_id, user.user_id)
+        if not member:
+            raise NotFound("Workspace not found")
+        if member.role != ROLE_OWNER:
+            raise Forbidden("Only the workspace's owner can restore it")
+        if not self.accounts.restore(tenant_id):
+            raise Conflict("This workspace isn't waiting to be deleted")
+        return self._tenant(tenant_id, consistent=True)
+
+    def purge_due(self, now: int, time_left: Callable[[], float], margin: float = 60) -> list[str]:
+        """
+        The purge job: removes every workspace whose grace period has ended, while
+        more than `margin` seconds are left. One stopped half way is finished on
+        the next run (each step can run again). Returns the ids it finished.
+        """
+        purged = []
+        for tenant_id in self.accounts.due_for_purge(now):
+            if time_left() < margin:
+                break   # the next run continues
+            if self._purge(tenant_id):
+                purged.append(tenant_id)
+        return purged
+
+    def _purge(self, tenant_id: str) -> bool:
+        tenant = self.accounts.get_tenant(tenant_id, consistent=True)
+        if not tenant or tenant.active:
+            return False   # gone already, or restored
+        members = self.accounts.list_members(tenant_id)
+        if tenant.status == "deleting":
+            try:
+                self.accounts.start_purge(tenant_id, events.tenant_deleted(tenant, [m.user_id for m in members]))
+            except ConditionFailed:
+                return False   # restored just now
+        removed = sum(self.accounts.purge_member(tenant_id, m.user_id) for m in members)
+        items = self.accounts.purge_rest(tenant_id)
+        logger.info("Purged a deleted workspace", extra={"tenant_id": tenant_id, "members": removed, "items": items})
+        return True
 
     # ---------- members ----------
 
@@ -111,6 +184,8 @@ class AccountService:
         if not user.email_verified:
             raise Forbidden("Verify your email address before inviting people")
         tenant = self._tenant(tenant_id)
+        if not tenant.active:
+            raise Conflict("This workspace is being deleted")
 
         email = data.email.lower()
         members = self.accounts.list_members(tenant_id)
@@ -157,6 +232,8 @@ class AccountService:
         if not invitation or invitation.expired():
             raise NotFound("Invitation not found or expired")
         tenant = self._tenant(tenant_id)
+        if not tenant.active:
+            raise NotFound("This workspace is being deleted")
         member = Member(tenant_id=tenant_id, user_id=user.user_id, email=email, role=invitation.role)
         try:
             self.accounts.accept_invitation(invitation, member, get_limit(tenant.plan, "max_users"),
@@ -184,7 +261,7 @@ class AccountService:
         the user has no workspace yet.
         """
         workspaces = {tenant.tenant_id: {"role": member.role, "plan": tenant.plan}
-                      for tenant, member in self.accounts.workspaces_of(user_id)}
+                      for tenant, member in self.accounts.workspaces_of(user_id) if tenant.active}
         return {WORKSPACES_CLAIM: json.dumps(workspaces, separators=(",", ":"))} if workspaces else {}
 
     def apply_subscription_change(self, tenant_id: str, plan: str, status: str, revision: int) -> None:

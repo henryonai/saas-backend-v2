@@ -6,6 +6,7 @@ import { Badge } from '@/shared/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { formatNumber } from '@/shared/lib/format';
 import { getPlan } from '@/shared/lib/plans';
+import { DeleteWorkspace } from '../workspace/components/delete-workspace';
 import { useTenant } from '../workspace/hooks';
 import { useSentInvitations } from './hooks';
 import { InvitationsTab } from './components/invitations-tab';
@@ -47,6 +48,9 @@ export function TeamPage() {
           <InvitationsTab />
         </TabsContent>
       </Tabs>
+      <div className="mt-8">
+        <DeleteWorkspace />
+      </div>
     </>
   );
 }

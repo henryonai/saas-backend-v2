@@ -146,7 +146,8 @@ fields such as `subscription_revision`).
 | Event | Published by | Used by |
 |---|---|---|
 | `UserInvited` | accounts | notifications (invitation email) |
-| `MemberRemoved` | accounts | assistant (deletes the member's conversations, memories and files in that workspace) |
+| `MemberRemoved` | accounts | assistant (deletes the member's conversations, memories and files in that workspace), notifications (deletes their notifications there) |
+| `TenantDeleted` (with `user_ids`, the members) | accounts' purge job | every module deletes what it keeps for the workspace: orders, notifications, the assistant's conversations, memories, files and usage; billing cancels the subscription |
 | `OrderCreated` | orders | notifications (in-app) |
 | `SubscriptionChanged` (with `revision`) | billing | accounts (plan copy), notifications |
 | `PaymentFailed` | billing | notifications |
@@ -187,6 +188,19 @@ pending invitations at `GET /users/invitations` and cancel one with
 `DELETE /users/invitations/<email>`. A member leaves with
 `DELETE /users/<their own id>`: they stay signed in, and their next token no
 longer lists that workspace.
+
+**Delete a workspace:** its owner calls `DELETE /tenants/me` with
+`{"name": "<its name>"}` (typed again to confirm) → the workspace is
+`deleting`: every member's next token leaves it out (the owner's app refreshes
+at once; others' tokens within 15 minutes), `GET /tenants` still lists it with
+its `status` and `delete_after`, and its owner can bring it back with
+`POST /tenants/<tenant_id>/restore` until `TenantDeletionDays` (7; dev: 0)
+have passed → the hourly purge job (`accounts/purge.py`) finds it in a sparse
+index, publishes `TenantDeleted` with its members, and removes the
+memberships and the workspace's own items → each module deletes its data (see
+the events table); billing cancels the Stripe subscription now, without a
+refund, and keeps a tombstone for 90 days so Stripe's late webhooks can't bring
+it back. A purge that fails half way is finished by the next run.
 
 **Upgrade:** owner calls `POST /billing/checkout` → pays on the provider's page
 (Stripe Checkout; a subscriber who changes plan gets Stripe's confirm page) →
@@ -547,15 +561,24 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
     timeout per function; when you change a `Timeout`, change it in the alarm too.
   - `ApiFunctionErrorsAlarm` sends no email (`ApiErrorsAlarm` does): it is what
     rolls a prod deploy back.
-  - Messages in any dead-letter queue (accounts, notifications, outbox, the
-    assistant's purge). For accounts, notifications and the purge's
-    `MemberRemoved` these are events the
+  - Messages in any dead-letter queue (accounts, orders, billing,
+    notifications, outbox, the purge job, the assistant's purge). For
+    accounts, orders, billing, notifications and the assistant purge's
+    `MemberRemoved` and `TenantDeleted` these are events the
     worker failed 5 times, or that EventBridge couldn't deliver to the queue
     within an hour (their `ERROR_CODE` message attribute says why): fix the
     cause and move the messages back with SQS "Start DLQ redrive". The outbox
     queue only says which stream records the relay could not publish within
     an hour; republish those events from the table (they are kept 7 days):
     `uv run python scripts/replay-outbox.py --table <table> --bus <EventBusName> --since <time>`.
+- **Scheduled jobs:** EventBridge Scheduler (`ScheduleV2` in `template.yaml`)
+  invokes the job's function asynchronously; Lambda retries a failed run
+  twice, and a run that still fails, or a schedule that couldn't start one,
+  lands in the job's dead-letter queue, which has an alarm. A job starts from
+  what is stored, so the next run continues where a failed one stopped, and it
+  stops before its timeout. `AccountsPurgeFunction` (hourly, purges deleted
+  workspaces) is the example to copy; run one now with
+  `aws lambda invoke --function-name <its name> out.json`.
 - **Busy items:** transactions that collide on the same item (for example many
   orders at once in one workspace) are retried; if they keep colliding, the
   API answers 503 and the client should retry.

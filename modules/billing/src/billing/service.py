@@ -16,6 +16,8 @@ leaves plan and status as they are only moves those markers (and the
 revision): it publishes nothing, so the many updates Stripe sends don't
 notify anyone again. Listeners only compare revisions, so gaps are fine.
 """
+import time
+
 from aws_lambda_powertools import Logger
 
 from shared.auth import ROLE_OWNER, CurrentUser
@@ -63,6 +65,9 @@ class BillingService:
             return
 
         current = self.subscriptions.get(event.tenant_id) or Subscription(tenant_id=event.tenant_id)
+        if current.deleted_at:
+            logger.info("Webhook for a deleted workspace skipped", extra={"event_id": event.event_id})
+            return
         newer = {field: value for field, value in change.items() if self._is_newer(event, current, field)}
         if not newer:
             logger.info("Old or repeated webhook skipped", extra={"event_id": event.event_id})
@@ -90,6 +95,22 @@ class BillingService:
             # Another webhook for this tenant was saved in the meantime. Fail
             # with a 5xx so the provider retries; the retry sees the newer state.
             raise ServiceBusy("Subscription changed during processing, retry later")
+
+    def handle_event(self, event_type: str, detail: dict) -> None:
+        """Events from other modules (listener.py)."""
+        if event_type == "TenantDeleted":   # accounts' event, by name
+            self.delete_tenant(detail["tenant_id"])
+
+    def delete_tenant(self, tenant_id: str) -> None:
+        """
+        A deleted workspace was purged: its paid subscription ends now, and its
+        record ignores the provider's webhooks until TTL removes it. Cancelling
+        first, so a failure (Stripe unreachable) is retried with nothing changed yet.
+        """
+        sub = self.subscriptions.get(tenant_id)
+        if sub and not sub.deleted_at:
+            self.provider.cancel(sub)
+        self.subscriptions.mark_deleted(tenant_id, int(time.time()))
 
     @staticmethod
     def _fields_for(event: BillingEvent) -> dict | None:

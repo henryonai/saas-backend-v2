@@ -38,6 +38,9 @@ class PaymentProvider(Protocol):
     def create_checkout(self, sub: Subscription, plan: str, customer_email: str) -> str: ...
     def create_portal(self, sub: Subscription) -> str: ...
     def parse_webhook(self, headers: dict, raw_body: str) -> BillingEvent: ...
+    def cancel(self, sub: Subscription) -> None:
+        """Ends the workspace's paid subscription now (its workspace was deleted). Safe to repeat."""
+        ...
 
 
 class DevPaymentProvider:
@@ -53,6 +56,9 @@ class DevPaymentProvider:
 
     def create_portal(self, sub: Subscription) -> str:
         raise InvalidRequest("The development payment provider has no billing portal")
+
+    def cancel(self, sub: Subscription) -> None:
+        pass   # nothing is charged
 
     def sign(self, raw_body: str) -> str:
         return hmac.new(self.webhook_secret().encode(), raw_body.encode(), hashlib.sha256).hexdigest()

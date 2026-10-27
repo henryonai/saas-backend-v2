@@ -73,9 +73,19 @@ class NotificationService:
         self._notify_owner(d, "Payment failed",
                            "We couldn't process your payment. Please update your payment method.")
 
+    def _on_member_removed(self, d: dict) -> None:
+        # They can't open this workspace any more, so its notifications go too.
+        self.notifications.delete_all(d["tenant_id"], d["user_id"])
+
+    def _on_tenant_deleted(self, d: dict) -> None:
+        for user_id in d["user_ids"]:
+            self.notifications.delete_all(d["tenant_id"], user_id)
+
     HANDLERS = {
         "OrderCreated": _on_order_created,
         "UserInvited": _on_user_invited,
         "SubscriptionChanged": _on_subscription_changed,
         "PaymentFailed": _on_payment_failed,
+        "MemberRemoved": _on_member_removed,
+        "TenantDeleted": _on_tenant_deleted,
     }

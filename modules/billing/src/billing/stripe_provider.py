@@ -121,6 +121,19 @@ class StripePaymentProvider:
                 "return_url": self.return_url,
             }).url
 
+    def cancel(self, sub: Subscription) -> None:
+        """
+        Cancels the Stripe subscription now, without a refund for the rest of
+        the period (change that here if you prorate). The customer and its
+        invoices stay in Stripe.
+        """
+        if not sub.subscription_id:
+            return
+        with stripe_errors("cancel the subscription"):
+            current = self.client().v1.subscriptions.retrieve(sub.subscription_id)
+            if current.status not in ("canceled", "incomplete_expired"):
+                self.client().v1.subscriptions.cancel(sub.subscription_id)
+
     def parse_webhook(self, headers: dict, raw_body: str) -> BillingEvent:
         signature = {k.lower(): v for k, v in headers.items()}.get("stripe-signature", "")
         try:

@@ -103,3 +103,24 @@ def test_email_failure_is_retried_without_duplicating_the_in_app_notification(ct
     ctx.deliver("PaymentFailed", event)   # third receive succeeds
     assert len(ctx.email.sent) == 1
     assert len(notes(ctx)) == 1
+
+
+def order_for(user_id: str, tenant_id: str = "t1") -> dict:
+    return with_event_ids({"tenant_id": tenant_id, "user_id": user_id, "order_id": "o1", "item": "Book"})
+
+
+def test_a_member_who_leaves_loses_their_notifications_in_that_workspace_only(ctx):
+    bob, bob_elsewhere = claims("bob", "t1", "member"), claims("bob", "t2", "owner")
+    for detail in (order_for("bob"), order_for("bob", "t2"), order_created()):
+        ctx.deliver("OrderCreated", detail)
+    ctx.deliver("MemberRemoved", with_event_ids({"tenant_id": "t1", "user_id": "bob", "removed_by": "alice"}))
+    assert notes(ctx, bob) == []
+    assert len(notes(ctx, bob_elsewhere)) == 1 and len(notes(ctx)) == 1
+
+
+def test_a_purged_workspace_loses_every_members_notifications(ctx):
+    for detail in (order_for("bob"), order_created(), order_for("alice", "t2")):
+        ctx.deliver("OrderCreated", detail)
+    ctx.deliver("TenantDeleted", with_event_ids({"tenant_id": "t1", "user_ids": ["alice", "bob"]}))
+    assert notes(ctx) == [] and notes(ctx, claims("bob", "t1", "member")) == []
+    assert len(notes(ctx, claims("alice", "t2", "owner"))) == 1

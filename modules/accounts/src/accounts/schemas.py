@@ -11,12 +11,17 @@ from pydantic import BaseModel, Field
 
 from shared.auth import Role
 
-from accounts.models import Member, Tenant
+from accounts.models import Member, Tenant, TenantStatus
 
 
 # ---------- requests ----------
 
 class TenantCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class TenantDelete(BaseModel):
+    """The workspace's name, typed again to confirm."""
     name: str = Field(min_length=1, max_length=100)
 
 
@@ -40,6 +45,8 @@ class TenantOut(BaseModel):
     subscription_status: str
     seats_used: int
     created_at: str
+    status: TenantStatus
+    delete_after: int | None = None   # deleting: epoch seconds until which its owner can restore it
 
     @classmethod
     def of(cls, tenant: Tenant) -> "TenantOut":
@@ -52,7 +59,10 @@ class WorkspaceOut(BaseModel):
     name: str
     role: Role
     plan: str
+    status: TenantStatus = "active"   # deleting: only its owner may restore it; the token doesn't list it
+    delete_after: int | None = None
 
     @classmethod
     def of(cls, tenant: Tenant, member: Member) -> "WorkspaceOut":
-        return cls(tenant_id=tenant.tenant_id, name=tenant.name, role=member.role, plan=tenant.plan)
+        return cls(tenant_id=tenant.tenant_id, name=tenant.name, role=member.role, plan=tenant.plan,
+                   status=tenant.status, delete_after=tenant.delete_after)

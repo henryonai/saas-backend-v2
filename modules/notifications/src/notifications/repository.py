@@ -6,7 +6,7 @@ Notifications table:
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from shared.dynamo import is_condition_failure
+from shared.dynamo import delete_partition, is_condition_failure
 
 from notifications.models import Notification
 
@@ -34,6 +34,10 @@ class NotificationRepository:
             if is_condition_failure(e):
                 return False
             raise
+
+    def delete_all(self, tenant_id: str, user_id: str) -> int:
+        """Deletes every notification of the user in the workspace. Safe to repeat."""
+        return delete_partition(self.table, _pk(tenant_id, user_id))
 
     def list(self, tenant_id: str, user_id: str, limit: int) -> list[Notification]:
         result = self.table.query(

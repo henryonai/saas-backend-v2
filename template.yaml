@@ -98,6 +98,13 @@ Parameters:
       Network for the assistant's terminal. SANDBOX = no internet (AWS says S3 stays reachable,
       but the sandbox has no AWS role). PUBLIC = internet (pip install, curl), so the model's
       commands could also send data out.
+  TenantDeletionDays:
+    Type: Number
+    Default: 7
+    MinValue: 0
+    Description: >-
+      Days the owner of a deleted workspace can restore it before the purge job removes
+      it and its data in every module. 0 = at the next hourly run.
   AssistantConversationDays:
     Type: Number
     Default: 0
@@ -508,17 +515,20 @@ Resources:
   WorkersDurationAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: A worker or the outbox relay is close to its timeout (see Duration p99 per function in AWS/Lambda)
+      AlarmDescription: A worker, listener, the purge job or the outbox relay is close to its timeout (see Duration p99 per function in AWS/Lambda)
       Metrics:
         - Id: worst
           Expression: !If
             - HasAssistant
-            - MAX([relay / 60000, subscriptions / 30000, notifications / 30000, purge / 300000])
-            - MAX([relay / 60000, subscriptions / 30000, notifications / 30000])
+            - MAX([relay / 60000, subscriptions / 30000, notifications / 30000, tenantpurge / 300000, orderslistener / 60000, billinglistener / 30000, purge / 300000])
+            - MAX([relay / 60000, subscriptions / 30000, notifications / 30000, tenantpurge / 300000, orderslistener / 60000, billinglistener / 30000])
           ReturnData: true
         - { Id: relay, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref OutboxRelayFunction }] } } }
         - { Id: subscriptions, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref AccountsSubscriptionsFunction }] } } }
         - { Id: notifications, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref NotificationsWorkerFunction }] } } }
+        - { Id: tenantpurge, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref AccountsPurgeFunction }] } } }
+        - { Id: orderslistener, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref OrdersListenerFunction }] } } }
+        - { Id: billinglistener, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref BillingListenerFunction }] } } }
         - !If
           - HasAssistant
           - { Id: purge, ReturnData: false, MetricStat: { Stat: p99, Period: 300, Metric: { Namespace: AWS/Lambda, MetricName: Duration, Dimensions: [{ Name: FunctionName, Value: !Ref AssistantPurgeFunction }] } } }
@@ -570,6 +580,7 @@ Resources:
         Variables:
           POWERTOOLS_SERVICE_NAME: accounts
           ACCOUNTS_TABLE: !Ref AccountsTable
+          TENANT_DELETION_DAYS: !Ref TenantDeletionDays
           USER_POOL_ID: !Ref UserPool
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }
@@ -734,6 +745,69 @@ Resources:
       TreatMissingData: notBreaching      # an idle queue sends no data
       AlarmActions: [!Ref AlertsTopic]
 
+  # A scheduled job (the pattern for every one): EventBridge Scheduler invokes the
+  # function asynchronously; Lambda retries a failed run twice. A run that still
+  # fails, and a schedule that couldn't invoke the function, go to the job's
+  # dead-letter queue, which has an alarm. Each run starts from what is stored,
+  # so the next one continues a failed or unfinished run.
+  # This one purges deleted workspaces whose grace period has ended (accounts/purge.py).
+  AccountsPurgeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/accounts/src/
+      Handler: accounts.purge.handler
+      Timeout: 300                      # stops a minute before, and the next run continues
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: accounts
+          ACCOUNTS_TABLE: !Ref AccountsTable
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }   # the index, members, the workspace's items
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
+        DestinationConfig:
+          OnFailure: { Type: SQS, Destination: !GetAtt AccountsPurgeDLQ.Arn }
+      Events:
+        Hourly:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 hour)
+            RetryPolicy: { MaximumRetryAttempts: 3, MaximumEventAgeInSeconds: 3600 }
+            DeadLetterConfig: { Arn: !GetAtt AccountsPurgeDLQ.Arn }   # SAM lets the schedule send to it
+
+  AccountsPurgeDLQ:                     # runs that failed 3 times, and schedules that couldn't start one
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  AccountsPurgeDLQPolicy:               # Lambda and the schedule send with their roles; this only refuses plain HTTP
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref AccountsPurgeDLQ]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt AccountsPurgeDLQ.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+
+  AccountsPurgeDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The workspace purge job failed 3 times in a row (see accounts.purge in the app log group; the next hourly run retries)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt AccountsPurgeDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
+      AlarmActions: [!Ref AlertsTopic]
+
   # =====================================================================
   # Module: orders  (/orders)
   # The sample module: copy it to start your own, remove it once you don't need
@@ -776,6 +850,110 @@ Resources:
         OrdersPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /orders, Method: POST } }
         OrdersAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/orders/{proxy+}", Method: GET } }
         OrdersAnyPatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/orders/{proxy+}", Method: PATCH } }
+
+  # A deleted workspace is purged (accounts' TenantDeleted): its orders go.
+  OrdersDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600   # keep failed messages 14 days
+
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 360            # 6x the listener timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrdersDLQ.Arn
+        maxReceiveCount: 5
+
+  OrdersRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source: [saas.app]
+        detail-type: [TenantDeleted]
+      Targets:
+        - Id: OrdersQueue
+          Arn: !GetAtt OrdersQueue.Arn
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 3600 }   # as AccountsRule
+          DeadLetterConfig: { Arn: !GetAtt OrdersDLQ.Arn }
+
+  OrdersQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref OrdersQueue]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt OrdersQueue.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt OrdersQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt OrdersRule.Arn }
+
+  OrdersDLQPolicy:                    # the rule's undelivered events (DeadLetterConfig above)
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref OrdersDLQ]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt OrdersDLQ.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt OrdersDLQ.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt OrdersRule.Arn }
+
+  OrdersListenerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/orders/src/
+      Handler: orders.listener.handler
+      Timeout: 60
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: orders
+          ORDERS_TABLE: !Ref OrdersTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:Query, dynamodb:BatchWriteItem]   # deletes a purged workspace's orders
+              Resource: !GetAtt OrdersTable.Arn
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrdersQueue.Arn
+            BatchSize: 1                # one workspace per run: a retry repeats only that one
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 2 }   # no hurry: a few at a time
+
+  OrdersDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A purged workspace's orders weren't deleted (messages in the orders dead-letter queue)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt OrdersDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
+      AlarmActions: [!Ref AlertsTopic]
 
   # =====================================================================
   # Module: notifications  (/notifications, SQS worker)
@@ -837,7 +1015,7 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [OrderCreated, UserInvited, SubscriptionChanged, PaymentFailed]
+        detail-type: [OrderCreated, UserInvited, SubscriptionChanged, PaymentFailed, MemberRemoved, TenantDeleted]
       Targets:
         - Id: NotificationsQueue
           Arn: !GetAtt NotificationsQueue.Arn
@@ -1012,6 +1190,120 @@ Resources:
             Path: /webhooks/payments
             Method: POST
             Auth: { Authorizer: NONE }   # provider calls this; signature is checked in code
+
+  # A deleted workspace is purged (accounts' TenantDeleted): its Stripe subscription is cancelled.
+  BillingDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600   # keep failed messages 14 days
+
+  BillingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 180            # 6x the listener timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt BillingDLQ.Arn
+        maxReceiveCount: 5
+
+  BillingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source: [saas.app]
+        detail-type: [TenantDeleted]
+      Targets:
+        - Id: BillingQueue
+          Arn: !GetAtt BillingQueue.Arn
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 3600 }   # as AccountsRule
+          DeadLetterConfig: { Arn: !GetAtt BillingDLQ.Arn }
+
+  BillingQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref BillingQueue]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt BillingQueue.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt BillingQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt BillingRule.Arn }
+
+  BillingDLQPolicy:                    # the rule's undelivered events (DeadLetterConfig above)
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref BillingDLQ]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt BillingDLQ.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt BillingDLQ.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt BillingRule.Arn }
+
+  BillingListenerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/billing/src/
+      Handler: billing.listener.handler
+      Timeout: 30
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: billing
+          BILLING_TABLE: !Ref BillingTable
+          PAYMENT_WEBHOOK_SECRET_PARAM: !Ref PaymentWebhookSecretParam   # not read: the settings expect it
+          APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
+          PAYMENT_PROVIDER: !Ref PaymentProvider
+          STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParam
+          STRIPE_CONFIG_PARAM: !Ref StripeConfigParam
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:UpdateItem]   # the subscription, then its tombstone
+              Resource: !GetAtt BillingTable.Arn
+            - Effect: Allow
+              Action: [ssm:GetParameter]                        # Stripe's key, to cancel the subscription
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParam}"
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeConfigParam}"
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt BillingQueue.Arn
+            BatchSize: 1                # one workspace per run: a retry repeats only that one
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 2 }   # no hurry: a few at a time
+
+  BillingDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A purged workspace's subscription wasn't cancelled (messages in the billing dead-letter queue; check Stripe)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt BillingDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
+      AlarmActions: [!Ref AlertsTopic]
 
   # =====================================================================
   # Web app (web/): a private S3 bucket behind CloudFront.
@@ -1520,8 +1812,9 @@ Resources:
             MaximumRetryAttempts: 5
             DestinationConfig: { OnFailure: { Destination: !GetAtt AssistantPurgeDLQ.Arn } }
 
-  # A member who left a workspace, or was removed (accounts' MemberRemoved):
-  # the purge worker deletes their conversations there.
+  # A member who left a workspace, or was removed (accounts' MemberRemoved), and a
+  # deleted workspace being purged (TenantDeleted): the purge worker deletes their
+  # conversations there.
   AssistantMembersRule:
     Type: AWS::Events::Rule
     Condition: HasAssistant
@@ -1529,7 +1822,7 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [MemberRemoved]
+        detail-type: [MemberRemoved, TenantDeleted]
       Targets:
         - Id: AssistantPurgeQueue
           Arn: !GetAtt AssistantPurgeQueue.Arn
@@ -1607,7 +1900,8 @@ Resources:
               {"type":"alarm","x":0,"y":0,"width":24,"height":3,"properties":{"title":"Alarms","alarms":[
                 "${ApiErrorsAlarm.Arn}","${AccountsPreTokenErrorsAlarm.Arn}","${LambdaThrottlesAlarm.Arn}",
                 "${ApiDurationAlarm.Arn}","${WorkersDurationAlarm.Arn}","${OutboxLagAlarm.Arn}","${OutboxDLQAlarm.Arn}",
-                "${AccountsDLQAlarm.Arn}","${NotificationsDLQAlarm.Arn}"]}},
+                "${AccountsDLQAlarm.Arn}","${NotificationsDLQAlarm.Arn}","${OrdersDLQAlarm.Arn}","${BillingDLQAlarm.Arn}",
+                "${AccountsPurgeDLQAlarm.Arn}"]}},
               {"type":"metric","x":0,"y":3,"width":12,"height":6,"properties":{"title":"API requests and errors","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
                 ["AWS/ApiGateway","Count","ApiId","${HttpApi}",{"label":"requests"}],
                 ["AWS/ApiGateway","4xx","ApiId","${HttpApi}",{"label":"4xx"}],
@@ -1624,7 +1918,10 @@ Resources:
                 ["AWS/Lambda","Errors","FunctionName","${BillingWebhookFunction}",{"label":"payment webhook"}],
                 ["AWS/Lambda","Errors","FunctionName","${OutboxRelayFunction}",{"label":"outbox relay"}],
                 ["AWS/Lambda","Errors","FunctionName","${AccountsSubscriptionsFunction}",{"label":"plan listener"}],
-                ["AWS/Lambda","Errors","FunctionName","${NotificationsWorkerFunction}",{"label":"notifications worker"}]]}},
+                ["AWS/Lambda","Errors","FunctionName","${NotificationsWorkerFunction}",{"label":"notifications worker"}],
+                ["AWS/Lambda","Errors","FunctionName","${OrdersListenerFunction}",{"label":"orders listener"}],
+                ["AWS/Lambda","Errors","FunctionName","${BillingListenerFunction}",{"label":"billing listener"}],
+                ["AWS/Lambda","Errors","FunctionName","${AccountsPurgeFunction}",{"label":"workspace purge job"}]]}},
               {"type":"metric","x":12,"y":9,"width":12,"height":6,"properties":{"title":"Lambda concurrency (whole account) and throttles","region":"${AWS::Region}","period":60,"view":"timeSeries","metrics":[
                 ["AWS/Lambda","ConcurrentExecutions",{"stat":"Maximum","label":"running at once, account (dev and prod)"}],
                 ["AWS/Lambda","Throttles",{"stat":"Sum","label":"throttles, account"}]]}},
@@ -1633,7 +1930,12 @@ Resources:
                 ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${NotificationsQueue.QueueName}",{"label":"notifications"}],
                 ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${AccountsDLQ.QueueName}",{"label":"accounts DLQ"}],
                 ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${NotificationsDLQ.QueueName}",{"label":"notifications DLQ"}],
-                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${OutboxDLQ.QueueName}",{"label":"outbox DLQ"}]]}},
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${OutboxDLQ.QueueName}",{"label":"outbox DLQ"}],
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${OrdersQueue.QueueName}",{"label":"orders"}],
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${BillingQueue.QueueName}",{"label":"billing"}],
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${OrdersDLQ.QueueName}",{"label":"orders DLQ"}],
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${BillingDLQ.QueueName}",{"label":"billing DLQ"}],
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${AccountsPurgeDLQ.QueueName}",{"label":"purge job DLQ"}]]}},
               {"type":"metric","x":12,"y":15,"width":12,"height":6,"properties":{"title":"Events","region":"${AWS::Region}","period":300,"view":"timeSeries","metrics":[
                 ["saas-${Stage}","EventsPublished","service","outbox-relay",{"stat":"Sum","label":"published"}],
                 ["AWS/Lambda","IteratorAge","FunctionName","${OutboxRelayFunction}",{"stat":"Maximum","label":"oldest waiting (ms)","yAxis":"right"}]]}}

@@ -4,7 +4,9 @@ The only code that touches the accounts table. The table is injected
 
 Key design:
   pk                  sk                  what
-  TENANT#<tenant_id>  PROFILE             tenant (seats_used = members)
+  TENANT#<tenant_id>  PROFILE             tenant (seats_used = members). While it is deleted
+                                          (status deleting or purging): gsi1 DELETING /
+                                          <delete_after>#<tenant_id>, which the purge job reads
   TENANT#<tenant_id>  USER#<user_id>      member
   TENANT#<tenant_id>  INVITE#<email>      invitation (gsi1: EMAIL#<email>; removed by TTL when expired)
   TENANT#<tenant_id>  INVITES_SENT#<day>  invitations sent that day (rate limit, expires)
@@ -23,7 +25,7 @@ import time
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from shared.dynamo import ConditionFailed, is_condition_failure, transact
+from shared.dynamo import ConditionFailed, delete_partition, is_condition_failure, transact
 from shared.events import Event
 from shared.idempotency import idempotency_put, replay
 from shared.outbox import outbox_put
@@ -32,6 +34,7 @@ from accounts.models import Invitation, Member, Tenant
 
 KEY_FIELDS = ("pk", "sk", "gsi1pk", "gsi1sk")
 DAY_SECONDS = 24 * 60 * 60
+DELETING = "DELETING"   # gsi1pk of workspaces waiting to be purged (a sparse index: only those)
 
 
 def _clean(item: dict) -> dict:
@@ -152,6 +155,95 @@ class AccountRepository:
             if is_condition_failure(e):
                 return False
             raise
+
+    # ---------- deleting a workspace ----------
+
+    def schedule_deletion(self, tenant_id: str, delete_after: int) -> bool:
+        """Marks an active workspace deleting until delete_after. False if it isn't active."""
+        try:
+            self.table.update_item(
+                Key=_profile(tenant_id),
+                UpdateExpression="SET #st = :deleting, delete_after = :at, gsi1pk = :index, gsi1sk = :due",
+                ConditionExpression="attribute_exists(pk) AND (attribute_not_exists(#st) OR #st = :active)",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":deleting": "deleting", ":active": "active", ":at": delete_after,
+                                           ":index": DELETING, ":due": f"{delete_after:012d}#{tenant_id}"},
+            )
+            return True
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+
+    def restore(self, tenant_id: str) -> bool:
+        """Makes a deleting workspace active again. False if it isn't deleting (or already purging)."""
+        try:
+            self.table.update_item(
+                Key=_profile(tenant_id),
+                UpdateExpression="SET #st = :active REMOVE delete_after, gsi1pk, gsi1sk",
+                ConditionExpression="#st = :deleting",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":deleting": "deleting", ":active": "active"},
+            )
+            return True
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+
+    def due_for_purge(self, now: int) -> list[str]:
+        """Workspaces whose grace period has ended (and ones a purge left unfinished), oldest first."""
+        ids, start = [], {}
+        while True:
+            result = self.table.query(
+                IndexName="gsi1",
+                KeyConditionExpression=Key("gsi1pk").eq(DELETING) & Key("gsi1sk").lte(f"{now:012d}~"),
+                **start,
+            )
+            ids += [item["gsi1sk"].split("#", 1)[1] for item in result["Items"]]
+            if "LastEvaluatedKey" not in result:
+                return ids
+            start = {"ExclusiveStartKey": result["LastEvaluatedKey"]}
+
+    def start_purge(self, tenant_id: str, event: Event) -> None:
+        """
+        deleting -> purging, and saves TenantDeleted, in one transaction: the
+        event is published once, however often the purge is retried. Raises
+        ConditionFailed({"tenant"}) if it isn't deleting (restored, or purging already).
+        """
+        transact(
+            self.table,
+            tenant={"Update": {
+                "Key": _profile(tenant_id),
+                "UpdateExpression": "SET #st = :purging",
+                "ConditionExpression": "#st = :deleting",
+                "ExpressionAttributeNames": {"#st": "status"},
+                "ExpressionAttributeValues": {":deleting": "deleting", ":purging": "purging"},
+            }},
+            event=outbox_put(event),
+        )
+
+    def purge_member(self, tenant_id: str, user_id: str) -> bool:
+        """Removes a member of a workspace being purged, and it from their list. False if gone already."""
+        try:
+            transact(
+                self.table,
+                member={"Delete": {"Key": _member_key(tenant_id, user_id),
+                                   "ConditionExpression": "attribute_exists(pk)"}},
+                **_leave(user_id, tenant_id),
+            )
+            return True
+        except ConditionFailed:
+            return False
+
+    def purge_rest(self, tenant_id: str) -> int:
+        """
+        Deletes the workspace's remaining items (invitations, counters), then
+        its profile, which takes it out of the purge job's index. Returns how many.
+        """
+        deleted = delete_partition(self.table, _tenant_pk(tenant_id), keep=lambda sk: sk == "PROFILE")
+        self.table.delete_item(Key=_profile(tenant_id))
+        return deleted + 1
 
     # ---------- members ----------
 
