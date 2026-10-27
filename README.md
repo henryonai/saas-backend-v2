@@ -364,6 +364,13 @@ sam sync --config-env dev   # fast code sync while developing
 sam deploy --config-env prod
 ```
 
+In prod, a deploy moves the API functions (the `live` alias of each, `Mappings.Rollout`
+in `template.yaml`) to the new code gradually: CodeDeploy sends 10% of requests to it
+for 5 minutes, then the rest. If `ApiFunctionErrorsAlarm` or `LambdaThrottlesAlarm`
+fires meanwhile, it moves them back and the deploy fails and rolls back, so a prod
+deploy takes about 5 minutes longer. The workers and the relay switch at once: their
+queues and streams retry what fails. Dev switches everything at once.
+
 With the assistant, package its code first and pass its location (without it,
 a new stack has no assistant, and an existing one keeps the code it has):
 
@@ -524,6 +531,13 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
     fail (Cognito doesn't retry it). A broken shared layer shows here first.
   - `OutboxLagAlarm`: events have waited more than 5 minutes to be published.
     The relay keeps retrying for up to an hour; see `outbox-relay` in the app log group.
+  - `LambdaThrottlesAlarm`: Lambda refused to run an API, sign-in or relay
+    function because the account's concurrency (shared by dev and prod) ran out.
+  - `ApiDurationAlarm`, `WorkersDurationAlarm`: a function's p99 duration has
+    been above 80% of its timeout for 15 minutes. The alarm's graph shows p99 /
+    timeout per function; when you change a `Timeout`, change it in the alarm too.
+  - `ApiFunctionErrorsAlarm` sends no email (`ApiErrorsAlarm` does): it is what
+    rolls a prod deploy back.
   - Messages in any dead-letter queue (accounts, notifications, outbox, the
     assistant's purge). For accounts, notifications and the purge's
     `MemberRemoved` these are events the
