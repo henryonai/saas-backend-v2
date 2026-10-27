@@ -220,8 +220,7 @@ Resources:
         Format: >-
           {"requestId":"$context.requestId","ip":"$context.identity.sourceIp",
           "route":"$context.routeKey","status":"$context.status","latencyMs":"$context.responseLatency",
-          "user":"$context.authorizer.claims.sub","tenant":"$context.request.header.x-tenant-id",
-          "error":"$context.integrationErrorMessage"}
+          "user":"$context.authorizer.claims.sub","error":"$context.integrationErrorMessage"}
       Auth:
         DefaultAuthorizer: CognitoJwt   # every route requires login unless stated
         Authorizers:

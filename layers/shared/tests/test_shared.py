@@ -164,7 +164,7 @@ def test_relay_retries_only_the_event_that_failed():
     assert "EventBridge throttled" in failure["exception"]
 
 
-def test_an_unhandled_error_is_logged_with_the_request_tenant_and_user():
+def test_each_request_logs_its_route_status_tenant_and_user_and_an_unhandled_error_its_traceback():
     router = Router()
 
     @router.get("/broken")
@@ -181,10 +181,13 @@ def test_an_unhandled_error_is_logged_with_the_request_tenant_and_user():
         with pytest.raises(RuntimeError):   # still an error to Lambda: API Gateway answers 500
             handler(http_event("GET", "/broken", alice), FakeContext())
         assert call(handler, "GET", "/fine", alice) == (200, {"ok": True})
-    [line] = logs()                         # one line, and none for the request that worked
-    assert line["level"] == "ERROR" and line["message"] == "Unhandled error"
-    assert "table not found" in line["exception"]
-    assert (line["correlation_id"], line["tenant_id"], line["user_id"]) == ("test", "t1", "alice")
+    error, request = logs()                 # the error's traceback, then the request that worked
+    assert error["level"] == "ERROR" and error["message"] == "Unhandled error"
+    assert "table not found" in error["exception"]
+    assert (error["correlation_id"], error["tenant_id"], error["user_id"]) == ("test", "t1", "alice")
+    assert request["level"] == "INFO" and request["message"] == "Request"
+    assert (request["route"], request["status"], request["tenant_id"], request["user_id"]) == \
+        ("GET /fine", 200, "t1", "alice")
 
 
 class CollidingTable:

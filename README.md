@@ -515,15 +515,16 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
 
 - **Logs:** all functions log JSON (Powertools) into one log group per stack,
   with the request id (`correlation_id`, the access log's `requestId`),
-  `tenant_id` and `user_id` on every API log line. Routes log nothing when
-  they work. An uncaught error is one `Unhandled error` line with its
+  `tenant_id` and `user_id` on every API log line. Routes themselves log
+  nothing when they work. An uncaught error is one `Unhandled error` line with its
   traceback (`Webhook failed` for the payment webhook), so a 500 in the access
   log leads to it by `correlation_id`; a message a worker or the relay
-  couldn't process is a WARNING with its traceback. API Gateway access logs go
-  to their own group, one JSON line per request with its user (`user`) and
-  workspace (`tenant`, from `X-Tenant-Id`), so Logs Insights can count
-  requests per workspace:
-  `stats count(*) by tenant | sort count(*) desc`. Retention: `LogRetentionDays`.
+  couldn't process is a WARNING with its traceback. Each API request that
+  returns writes one `Request` line (route, status, `ms`), so Logs Insights on
+  the app log group can count requests per workspace:
+  `filter message = "Request" | stats count(*) by tenant_id | sort count(*) desc`
+  (HTTP APIs can't log a request header in their access log). API Gateway
+  access logs go to their own group. Retention: `LogRetentionDays`.
 - **Tracing:** X-Ray tracing is on for every function. (The X-Ray SDK is in
   maintenance mode; for spans inside your code, use OpenTelemetry/ADOT.)
 - **Metrics:** the relay emits `EventsPublished` to the `saas-<stage>` namespace.
