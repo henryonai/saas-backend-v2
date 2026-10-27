@@ -154,7 +154,7 @@ fields such as `subscription_revision`).
 **How an event travels:** service creates an `Event` → repository saves it as
 an `OUTBOX#` item in the same transaction as the change (kept 7 days) → the
 table's DynamoDB stream triggers `OutboxRelayFunction` → it publishes to this
-stack's event bus, retrying until it works → a rule sends it to the
+stack's event bus, retrying for up to an hour → a rule sends it to the
 listener's SQS queue → the listener's worker (with a dead-letter queue, which
 also gets what the rule couldn't deliver within an hour).
 Delivery is at least once and not in order, hence rule 9.
@@ -511,7 +511,7 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
   - `AccountsPreTokenErrorsAlarm`: the login trigger errored, so sign-ins
     fail (Cognito doesn't retry it). A broken shared layer shows here first.
   - `OutboxLagAlarm`: events have waited more than 5 minutes to be published.
-    The relay keeps retrying; see `outbox-relay` in the app log group.
+    The relay keeps retrying for up to an hour; see `outbox-relay` in the app log group.
   - Messages in any dead-letter queue (accounts, notifications, outbox, the
     assistant's purge). For accounts, notifications and the purge's
     `MemberRemoved` these are events the
@@ -519,7 +519,7 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
     within an hour (their `ERROR_CODE` message attribute says why): fix the
     cause and move the messages back with SQS "Start DLQ redrive". The outbox
     queue only says which stream records the relay could not publish within
-    24 hours; republish those events from the table (they are kept 7 days):
+    an hour; republish those events from the table (they are kept 7 days):
     `uv run python scripts/replay-outbox.py --table <table> --bus <EventBusName> --since <time>`.
 - **Busy items:** transactions that collide on the same item (for example many
   orders at once in one workspace) are retried; if they keep colliding, the
