@@ -51,6 +51,24 @@ describe('NewOrderDialog', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
+  it('sends the same Idempotency-Key when the same order is submitted again, a new one when it changed', async () => {
+    fetchMock.mockResolvedValue(json({ message: 'Network trouble' }, 503));
+    const user = userEvent.setup();
+    await renderWithApp(<NewOrderDialog />);
+    await user.click(screen.getByRole('button', { name: 'New order' }));
+    await fillAndSubmit(user);
+    await user.click(screen.getByRole('button', { name: 'Create order' }));
+    await user.clear(screen.getByLabelText('Quantity'));
+    await user.type(screen.getByLabelText('Quantity'), '4');
+    await user.click(screen.getByRole('button', { name: 'Create order' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const keys = fetchMock.mock.calls.map(([, init]) => (init?.headers as Record<string, string>)['Idempotency-Key']);
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
   it('offers the owner an upgrade when the plan is full (402)', async () => {
     fetchMock.mockResolvedValue(json({ message: 'Your free plan allows 100 orders. Upgrade for more.' }, 402));
     const user = userEvent.setup();

@@ -78,6 +78,11 @@ def call(method: str, path: str, token: str | None = None, **kw) -> requests.Res
     return requests.request(method, API + path, headers=headers, timeout=30, **kw)
 
 
+def new_key() -> dict:
+    """An Idempotency-Key header: a create that makes something needs a new one each time."""
+    return {"Idempotency-Key": secrets.token_hex(16)}
+
+
 def wait_for(fn, timeout: int = 90, every: float = 3):
     """Polls fn() until it returns something truthy (events are asynchronous)."""
     deadline = time.time() + timeout
@@ -205,15 +210,22 @@ check("GET /tenants (no X-Tenant-Id needed)", r.ok and [w["tenant_id"] for w in 
 check("invalid name -> 422", carol("POST", "/tenants", json={"name": ""}).status_code == 422)
 
 print("Orders")
-r = owner("POST", "/orders", json={"item": "Widget", "quantity": 2, "price_cents": 1999})
+widget, key = {"item": "Widget", "quantity": 2, "price_cents": 1999}, new_key()
+r = owner("POST", "/orders", json=widget, headers=key)
 check("POST /orders", r.status_code == 201 and r.json()["status"] == "pending", show(r))
 order1 = r.json()["order_id"]
-order2 = owner("POST", "/orders", json={"item": "Gadget", "quantity": 1, "price_cents": 500}).json()["order_id"]
+r = owner("POST", "/orders", json=widget, headers=key)
+check("a retry with the same Idempotency-Key returns the same order", r.status_code == 201
+      and r.json()["order_id"] == order1, show(r))
+check("an order without an Idempotency-Key -> 422", owner("POST", "/orders", json=widget).status_code == 422)
+order2 = owner("POST", "/orders", json={"item": "Gadget", "quantity": 1, "price_cents": 500},
+               headers=new_key()).json()["order_id"]
 r = owner("GET", f"/orders/{order1}")
 check("GET /orders/{id}", r.ok and r.json()["item"] == "Widget", show(r))
 check("unknown order -> 404", owner("GET", "/orders/does-not-exist").status_code == 404)
 check("invalid order -> 422",
-      owner("POST", "/orders", json={"item": "", "quantity": 0, "price_cents": 1}).status_code == 422)
+      owner("POST", "/orders", json={"item": "", "quantity": 0, "price_cents": 1},
+            headers=new_key()).status_code == 422)
 r = owner("PATCH", f"/orders/{order1}/status", json={"status": "paid"})
 check("PATCH status pending -> paid", r.ok and r.json()["status"] == "paid", show(r))
 r = owner("PATCH", f"/orders/{order1}/status", json={"status": "pending"})
@@ -361,7 +373,8 @@ check("bob's new token: member of Smoke Co on pro",
 r = bob("GET", "/orders", params={"limit": 50})
 check("bob sees the workspace's orders", r.ok and len(r.json()["items"]) == 2, show(r))
 check("bob (member) can create an order",
-      bob("POST", "/orders", json={"item": "Bolt", "quantity": 5, "price_cents": 10}).status_code == 201)
+      bob("POST", "/orders", json={"item": "Bolt", "quantity": 5, "price_cents": 10},
+          headers=new_key()).status_code == 201)
 check("bob (member) can't invite -> 403", bob("POST", "/users/invite", json={"email": ghost}).status_code == 403)
 check("bob (member) can't change roles -> 403",
       bob("PATCH", f"/users/{owner.id}/role", json={"role": "member"}).status_code == 403)

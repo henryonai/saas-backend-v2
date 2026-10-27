@@ -202,7 +202,8 @@ Resources:
       CorsConfiguration:
         AllowOrigins: [!If [HasCorsOrigin, !Ref CorsOrigin, !Sub "https://${WebDistribution.DomainName}"]]
         AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
-        AllowHeaders: [content-type, authorization, x-tenant-id]   # x-tenant-id: the workspace (shared/auth.py)
+        # x-tenant-id: the workspace (shared/auth.py); idempotency-key: makes a retried create safe (orders)
+        AllowHeaders: [content-type, authorization, x-tenant-id, idempotency-key]
       DefaultRouteSettings:               # protects the functions (and your bill) from floods
         ThrottlingRateLimit: 50
         ThrottlingBurstLimit: 100

@@ -5,6 +5,7 @@ from aws_lambda_powertools.event_handler.api_gateway import Router
 from aws_lambda_powertools.event_handler.openapi.params import Query
 
 from shared.auth import CurrentUser, get_current_user
+from shared.idempotency import IdempotencyKey
 
 from orders.container import get_order_service
 from orders.models import Order
@@ -18,8 +19,9 @@ Service = Annotated[OrderService, Depends(get_order_service)]
 
 
 @router.post("/orders")
-def create_order(body: OrderCreate, user: User, service: Service) -> Response[Order]:
-    order = service.create_order(user, body)
+def create_order(body: OrderCreate, user: User, service: Service,
+                 idempotency_key: IdempotencyKey) -> Response[Order]:
+    order = service.create_order(user, body, idempotency_key)
     return Response(status_code=201, content_type=content_types.APPLICATION_JSON,
                     body=order.model_dump(mode="json"))
 

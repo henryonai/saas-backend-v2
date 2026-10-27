@@ -2,6 +2,8 @@
 Orders table:
   pk = TENANT#<tenant_id>   sk = ORDER#<order_id>   order (ids sort by creation time)
   pk = TENANT#<tenant_id>   sk = COUNTER            order_count, for the plan limit
+  pk = TENANT#<tenant_id>   sk = IDEMPOTENCY#<user_id>#<key>   the order a create with that Idempotency-Key
+                                                    made (shared/idempotency.py)
   pk = OUTBOX#<event_id>    sk = OUTBOX             events to publish (shared/outbox.py)
 
 The tenant is part of every key, so one tenant can never read another's orders.
@@ -11,6 +13,7 @@ from botocore.exceptions import ClientError
 
 from shared.dynamo import is_condition_failure, transact
 from shared.events import Event
+from shared.idempotency import idempotency_put, replay
 from shared.outbox import outbox_put
 
 from orders.models import Order, OrderStatus
@@ -28,11 +31,15 @@ class OrderRepository:
     def __init__(self, table):
         self.table = table
 
-    def create(self, order: Order, event: Event, max_orders: int | None) -> None:
+    def create(self, order: Order, event: Event, max_orders: int | None, idempotency: tuple[str, str]) -> None:
         """
         Saves the order and its event, and counts it against the plan limit,
         all in one transaction. Raises ConditionFailed({"limit"}) when the
         tenant already has max_orders orders (None = unlimited).
+
+        `idempotency` is the client's (key, request fingerprint): saved in the
+        same transaction, so a retry with the key raises
+        ConditionFailed({IDEMPOTENCY, ...}) and changes nothing (see order_for_key).
         """
         counter = {
             "Key": {"pk": _pk(order.tenant_id), "sk": "COUNTER"},
@@ -48,7 +55,12 @@ class OrderRepository:
             limit={"Update": counter},
             order={"Put": {"Item": item, "ConditionExpression": "attribute_not_exists(pk)"}},
             event=outbox_put(event),
+            idempotency=idempotency_put(_pk(order.tenant_id), order.created_by, *idempotency, order.order_id),
         )
+
+    def order_for_key(self, tenant_id: str, user_id: str, key: str, request: str) -> str:
+        """The id of the order the first create with this key made (shared.idempotency.replay)."""
+        return replay(self.table, _pk(tenant_id), user_id, key, request)
 
     def get(self, tenant_id: str, order_id: str) -> Order | None:
         # Strongly consistent, so a status change sees the previous one (e.g. "paid" right before "shipped").
