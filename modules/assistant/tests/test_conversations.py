@@ -27,6 +27,7 @@ import pytest
 import yaml
 from ag_ui.core import Message
 from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError
+from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
@@ -46,6 +47,8 @@ from assistant.handler import handler
 from assistant.middleware import INTERRUPTED
 from assistant.models import Run, current_month, iso
 from assistant.purge import process_batch
+from assistant.repository import CONVERSATIONS_BY_USER, LISTED
+from assistant.schemas import ConversationOut
 from assistant.versions import Tree
 from shared.auth import user_from_claims
 from testkit.http import FakeContext, call, claims, only_workspace
@@ -811,6 +814,30 @@ def test_the_list_is_newest_first_in_pages(ctx, api, alice):
     assert [c["title"] for c in rest["items"]] == ["Chat 1"] and rest["next_cursor"] is None
     assert first["items"][0] == {"thread_id": thread(2), "title": "Chat 2", "created_at": "2026-10-24T08:03:00.000Z",
                                  "updated_at": "2026-10-24T08:03:00.000Z", "message_count": 1}
+
+
+def test_the_list_index_keeps_only_what_the_list_and_the_purge_read(ctx):
+    start(ctx, thread(1), "2026-10-24T08:01:00.000Z", title="Chat 1")   # its META has a run and versions
+
+    page = ctx.conversations.table.query(IndexName=CONVERSATIONS_BY_USER,
+                                         KeyConditionExpression=Key("gsi1pk").eq("TENANT#t1#USER#alice#CONVS"))
+    (item,) = page["Items"]
+    assert set(item) == {"pk", "sk", "gsi1pk", "gsi1sk", *LISTED}
+    meta = ctx.conversations.table.get_item(Key={"pk": item["pk"], "sk": "META"})["Item"]
+    assert {"run", "path"} <= set(meta)
+
+
+def test_the_list_index_keeps_every_field_the_list_shows():
+    """A field added to ConversationOut, or dropped from template.yaml, would be missing from the list."""
+    class Template(yaml.SafeLoader):
+        pass
+
+    Template.add_multi_constructor("!", lambda loader, tag, node: None)
+    template = yaml.load((Path(__file__).resolve().parents[3] / "template.yaml").read_text(), Template)
+    indexes = template["Resources"]["AssistantTable"]["Properties"]["GlobalSecondaryIndexes"]
+    (index,) = [i for i in indexes if i["IndexName"] == CONVERSATIONS_BY_USER]
+    assert index["Projection"] == {"ProjectionType": "INCLUDE", "NonKeyAttributes": list(LISTED)}
+    assert set(ConversationOut.model_fields) | {"agents", "expires_at"} <= set(LISTED)
 
 
 def test_a_new_message_moves_the_conversation_to_the_top(ctx, api, alice):

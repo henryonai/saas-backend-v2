@@ -937,11 +937,24 @@ Resources:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
       GlobalSecondaryIndexes:
-        - IndexName: gsi1                # each user's conversations, most recent first (repository.py)
+        # Replaced by ConversationsByUser: no code reads it now. Remove it in a
+        # later deploy (CloudFormation adds or removes one index per update), with
+        # its ARN in the API's and the purge worker's policies.
+        - IndexName: gsi1
           KeySchema:
             - { AttributeName: gsi1pk, KeyType: HASH }
             - { AttributeName: gsi1sk, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
+        # Each user's conversations, most recent first (repository.py). Only what
+        # the list and the purge read: each message moves gsi1sk, which rewrites
+        # the conversation's copy here, so its versions and run stay out.
+        - IndexName: ConversationsByUser
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes: [thread_id, title, title_source, created_at, updated_at, message_count, agents, expires_at]
       # Old usage, and, if AssistantConversationDays is set, conversations that
       # many days after their last message: only a conversation's META has a
       # TTL. The stream brings its removal to the purge worker, which deletes
@@ -1238,7 +1251,8 @@ Resources:
             - Effect: Allow
               Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem,
                        dynamodb:DeleteItem]
-              Resource: [!GetAtt AssistantTable.Arn, !Sub "${AssistantTable.Arn}/index/gsi1"]
+              Resource: [!GetAtt AssistantTable.Arn, !Sub "${AssistantTable.Arn}/index/ConversationsByUser",
+                         !Sub "${AssistantTable.Arn}/index/gsi1"]   # gsi1: until the code from before is gone
             # Presigned uploads (PutObject with its tag) and downloads (GetObject) act as this role;
             # HeadObject (GetObject) checks an upload arrived, DeleteObjectTagging keeps it.
             - Effect: Allow
@@ -1303,7 +1317,8 @@ Resources:
               Resource:
                 - !GetAtt AssistantCheckpointTable.Arn
                 - !GetAtt AssistantTable.Arn
-                - !Sub "${AssistantTable.Arn}/index/gsi1"   # a removed member's conversations
+                - !Sub "${AssistantTable.Arn}/index/ConversationsByUser"   # a removed member's conversations
+                - !Sub "${AssistantTable.Arn}/index/gsi1"   # until the code from before is gone
             - Effect: Allow
               Action: [s3:ListBucket]
               Resource: [!GetAtt AssistantCheckpointBucket.Arn, !GetAtt AssistantFilesBucket.Arn]
