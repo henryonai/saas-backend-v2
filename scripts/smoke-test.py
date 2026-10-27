@@ -13,7 +13,7 @@ users and calls every endpoint, printing PASS/FAIL per check:
   what, leaving and removing members, tenant isolation, users in several
   workspaces (X-Tenant-Id), plan limits, and deleting, restoring and (with
   TenantDeletionDays of a few minutes at most, as on dev) purging a workspace, deleting an
-  account, exports (a workspace's and a user's) and the audit log.
+  account, exports (a workspace's and a user's), the audit log and the back-office.
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
@@ -479,6 +479,29 @@ check("carol's own export is done", bool(job), carol("GET", "/exports/me", tenan
 if job:
     mine = requests.get(job["files"]["accounts"], timeout=30)
     check("it lists her workspaces", mine.ok and mine.json()["user"]["email"] == carol.email, mine.status_code)
+
+print("Back-office (platform admins)")
+ops = Person("ops")
+idp.admin_add_user_to_group(UserPoolId=POOL, Username=ops.email, GroupName="platform-admins")
+ops.sign_in()
+check("a workspace owner can't open it -> 403", owner("GET", "/admin/tenants", tenant=None).status_code == 403)
+summary = wait_for(lambda: (r := ops("GET", f"/admin/tenants/{other_id}", tenant=None)).ok and r.json())
+check("GET /admin/tenants/{id}: Other Co's summary, from events",
+      bool(summary) and summary["name"] == "Other Co" and summary["owner_id"] == carol.id, summary)
+r = ops("POST", f"/admin/tenants/{other_id}/suspend", tenant=None, json={"reason": "smoke test"})
+check("POST .../suspend", r.status_code == 202, show(r))
+gone = wait_for(lambda: other_id not in carol.sign_in().workspaces)
+check("a suspended workspace leaves its owner's token", bool(gone), carol.workspaces)
+r = ops("POST", f"/admin/tenants/{other_id}/plan", tenant=None, json={"plan": "pro", "note": "smoke test"})
+check("POST .../plan (grant pro)", r.status_code == 202, show(r))
+back = wait_for(lambda: ops("GET", f"/admin/tenants/{other_id}", tenant=None).json().get("status") == "suspended"
+                and ops("POST", f"/admin/tenants/{other_id}/unsuspend", tenant=None).status_code == 202)
+check("POST .../unsuspend", bool(back))
+back = wait_for(lambda: (w := carol.sign_in().workspaces.get(other_id)) and w["plan"] == "pro" and w)
+check("unsuspended, it's back in her token, on the granted plan", bool(back), carol.workspaces)
+r = ops("GET", "/admin/log", tenant=None)
+check("GET /admin/log has the three actions", r.ok and [a["action"] for a in r.json()["items"]][:3] ==
+      ["unsuspend", "grant_plan", "suspend"], show(r))
 
 print("Deleting a workspace")
 r = carol("POST", "/orders", tenant=other_id, json={"item": "Doomed", "quantity": 1, "price_cents": 100},

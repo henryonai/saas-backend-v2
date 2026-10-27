@@ -241,3 +241,12 @@ def test_an_idempotency_key_is_saved_once_and_replays_what_it_created(monkeypatc
     with pytest.raises(Conflict):
         replay(table, "TENANT#t1", "alice", "k", "req")
     transact(table, **{IDEMPOTENCY: idempotency_put("TENANT#t1", "alice", "k", "req", "o-3")})   # free again
+
+
+@pytest.mark.parametrize("groups", ["[platform-admins]", "[support platform-admins]", ["platform-admins"]])
+def test_platform_admins_are_the_user_pool_group(groups):
+    assert user_from_claims({**claims("ops"), "cognito:groups": groups}).platform_admin
+    assert not user_from_claims({**claims("ops"), "cognito:groups": "[support]"}).platform_admin
+    assert not user_from_claims(claims("alice", "t1", "owner")).platform_admin
+    with pytest.raises(Forbidden):
+        user_from_claims(claims("alice", "t1", "owner")).require_platform_admin()

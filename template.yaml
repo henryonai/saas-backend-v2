@@ -191,6 +191,16 @@ Resources:
           SourceArn: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesIdentity}
         - EmailSendingAccount: COGNITO_DEFAULT
 
+  # The people who run the product (the admin module's back-office), not a workspace's
+  # admins. Add someone: aws cognito-idp admin-add-user-to-group --user-pool-id <UserPoolId>
+  # --username <their email> --group-name platform-admins; their next token says so.
+  PlatformAdminsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: platform-admins
+      Description: Can use the back-office (/admin)
+
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
@@ -275,6 +285,19 @@ Resources:
             BisectBatchOnFunctionError: true
             MaximumRetryAttempts: -1      # retry as often as it takes, but
             MaximumRecordAgeInSeconds: 3600   # only for an hour: then OutboxDLQ, so one bad record can't hold up its shard all day
+            DestinationConfig: { OnFailure: { Type: SQS, Destination: !GetAtt OutboxDLQ.Arn } }
+            FilterCriteria:
+              Filters: [{ Pattern: '{"eventName": ["INSERT"], "dynamodb": {"Keys": {"pk": {"S": [{"prefix": "OUTBOX#"}]}}}}' }]
+        Admin:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt AdminTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 50
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: -1
+            MaximumRecordAgeInSeconds: 3600
             DestinationConfig: { OnFailure: { Type: SQS, Destination: !GetAtt OutboxDLQ.Arn } }
             FilterCriteria:
               Filters: [{ Pattern: '{"eventName": ["INSERT"], "dynamodb": {"Keys": {"pk": {"S": [{"prefix": "OUTBOX#"}]}}}}' }]
@@ -437,6 +460,7 @@ Resources:
         - { Id: billing, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref BillingApiFunction }] } } }
         - { Id: webhook, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref BillingWebhookFunction }] } } }
         - { Id: audit, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref AuditApiFunction }] } } }
+        - { Id: admin, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref AdminApiFunction }] } } }
         - !If
           - HasAssistant
           - { Id: assistant, ReturnData: false, MetricStat: { Stat: Sum, Period: 60, Metric: { Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{ Name: FunctionName, Value: !Ref AssistantApiFunction }] } } }
@@ -710,7 +734,7 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [SubscriptionChanged, ExportRequested]
+        detail-type: [SubscriptionChanged, ExportRequested, TenantSuspended, TenantUnsuspended]
       Targets:
         - Id: AccountsQueue
           Arn: !GetAtt AccountsQueue.Arn
@@ -1078,7 +1102,7 @@ Resources:
         source: [saas.app]
         detail-type: [TenantCreated, UserInvited, InvitationCancelled, MemberJoined, RoleChanged, MemberRemoved,
                       TenantDeletionScheduled, TenantRestored, SubscriptionChanged, PaymentFailed, OrderCreated,
-                      ExportRequested, TenantDeleted]
+                      ExportRequested, TenantDeleted, PlanGranted, TenantSuspended, TenantUnsuspended]
       Targets:
         - Id: AuditQueue
           Arn: !GetAtt AuditQueue.Arn
@@ -1158,6 +1182,153 @@ Resources:
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt AuditDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
+      AlarmActions: [!Ref AlertsTopic]
+
+  # =====================================================================
+  # Module: admin  (/admin: the back-office for platform admins)
+  # =====================================================================
+
+  AdminTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      StreamSpecification: { StreamViewType: NEW_IMAGE }       # feeds the outbox relay
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }   # applied-event markers
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  AdminApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/admin/src/
+      Handler: admin.handler.handler
+      AutoPublishAlias: live            # rollout: see Mappings.Rollout
+      DeploymentPreference:
+        Type: !FindInMap [Rollout, !Ref Stage, Type]
+        Alarms: [!Ref ApiFunctionErrorsAlarm, !Ref LambdaThrottlesAlarm]
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: admin
+          ADMIN_TABLE: !Ref AdminTable
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AdminTable }   # reads the summaries; logs actions with their events
+      Events:
+        AdminTenantsGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /admin/tenants, Method: GET } }
+        AdminTenantsAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/admin/tenants/{proxy+}", Method: GET } }
+        AdminTenantsAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/admin/tenants/{proxy+}", Method: POST } }
+        AdminLogGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /admin/log, Method: GET } }
+
+  AdminDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600   # keep failed messages 14 days
+
+  AdminQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 180            # 6x the listener timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AdminDLQ.Arn
+        maxReceiveCount: 5
+
+  # The events that change a workspace's summary (admin/service.py handle_event).
+  AdminRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source: [saas.app]
+        detail-type: [TenantCreated, MemberJoined, MemberRemoved, OrderCreated, SubscriptionChanged,
+                      TenantDeletionScheduled, TenantRestored, TenantSuspended, TenantUnsuspended, TenantDeleted]
+      Targets:
+        - Id: AdminQueue
+          Arn: !GetAtt AdminQueue.Arn
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 3600 }   # as AccountsRule
+          DeadLetterConfig: { Arn: !GetAtt AdminDLQ.Arn }
+
+  AdminQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref AdminQueue]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt AdminQueue.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt AdminQueue.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt AdminRule.Arn }
+
+  AdminDLQPolicy:                       # the rule's undelivered events (DeadLetterConfig above)
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref AdminDLQ]
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly                # no client may use it over plain HTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt AdminDLQ.Arn
+            Condition: { Bool: { aws:SecureTransport: false } }
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt AdminDLQ.Arn
+            Condition:
+              ArnEquals: { aws:SourceArn: !GetAtt AdminRule.Arn }
+
+  AdminListenerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: modules/admin/src/
+      Handler: admin.listener.handler
+      Timeout: 30
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: admin
+          ADMIN_TABLE: !Ref AdminTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem]   # summaries and markers (transactions)
+              Resource: !GetAtt AdminTable.Arn
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AdminQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 2 }   # no hurry: a few at a time
+
+  AdminDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The back-office's workspace summaries weren't updated (messages in the admin dead-letter queue)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt AdminDLQ.QueueName }]
       Statistic: Maximum
       Period: 300
       EvaluationPeriods: 1
@@ -1426,7 +1597,7 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [TenantDeletionScheduled, TenantRestored, TenantDeleted, ExportRequested]
+        detail-type: [TenantDeletionScheduled, TenantRestored, TenantDeleted, ExportRequested, PlanGranted]
       Targets:
         - Id: BillingQueue
           Arn: !GetAtt BillingQueue.Arn
@@ -2123,7 +2294,7 @@ Resources:
                 "${ApiErrorsAlarm.Arn}","${AccountsPreTokenErrorsAlarm.Arn}","${LambdaThrottlesAlarm.Arn}",
                 "${ApiDurationAlarm.Arn}","${WorkersDurationAlarm.Arn}","${OutboxLagAlarm.Arn}","${OutboxDLQAlarm.Arn}",
                 "${AccountsDLQAlarm.Arn}","${NotificationsDLQAlarm.Arn}","${OrdersDLQAlarm.Arn}","${BillingDLQAlarm.Arn}",
-                "${AccountsPurgeDLQAlarm.Arn}","${AuditDLQAlarm.Arn}"]}},
+                "${AccountsPurgeDLQAlarm.Arn}","${AuditDLQAlarm.Arn}","${AdminDLQAlarm.Arn}"]}},
               {"type":"metric","x":0,"y":3,"width":12,"height":6,"properties":{"title":"API requests and errors","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
                 ["AWS/ApiGateway","Count","ApiId","${HttpApi}",{"label":"requests"}],
                 ["AWS/ApiGateway","4xx","ApiId","${HttpApi}",{"label":"4xx"}],

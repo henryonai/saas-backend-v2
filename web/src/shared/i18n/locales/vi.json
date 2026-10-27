@@ -57,7 +57,8 @@
     "overview": "Tổng quan",
     "plan": "Gói {{plan}}",
     "team": "Thành viên",
-    "toggleSidebar": "Ẩn/hiện thanh bên"
+    "toggleSidebar": "Ẩn/hiện thanh bên",
+    "admin": "Quản trị"
   },
   "workspaces": {
     "title": "Workspace",
@@ -84,7 +85,8 @@
       "until": "Có thể khôi phục đến {{date}}",
       "purging": "Đang bị xóa hẳn",
       "restore": "Khôi phục",
-      "restored": "Đã khôi phục {{workspace}}."
+      "restored": "Đã khôi phục {{workspace}}.",
+      "suspended": "Bị quản trị viên sản phẩm đình chỉ"
     }
   },
   "auth": {
@@ -296,7 +298,10 @@
         "SubscriptionChanged": "Gói đổi thành {{plan}} ({{status}})",
         "PaymentFailed": "Một lần thanh toán thất bại",
         "OrderCreated": "Đã tạo đơn hàng {{item}}",
-        "ExportRequested": "Đã bắt đầu xuất dữ liệu không gian làm việc"
+        "ExportRequested": "Đã bắt đầu xuất dữ liệu không gian làm việc",
+        "PlanGranted": "Quản trị viên nền tảng đã tặng gói {{plan}}",
+        "TenantSuspended": "Quản trị viên nền tảng đã đình chỉ không gian làm việc: {{reason}}",
+        "TenantUnsuspended": "Quản trị viên nền tảng đã bỏ đình chỉ không gian làm việc"
       }
     }
   },
@@ -539,6 +544,52 @@
       "billing": "Gói đăng ký",
       "notifications": "Thông báo",
       "assistant": "Trợ lý"
+    }
+  },
+  "admin": {
+    "title": "Trang quản trị",
+    "description": "Mọi không gian làm việc, dành cho người vận hành sản phẩm.",
+    "forbidden": "Chỉ quản trị viên nền tảng mới mở được trang quản trị.",
+    "tabs": {
+      "workspaces": "Không gian làm việc",
+      "log": "Nhật ký quản trị"
+    },
+    "columns": {
+      "workspace": "Không gian làm việc",
+      "plan": "Gói",
+      "status": "Trạng thái",
+      "members": "Thành viên",
+      "orders": "Đơn hàng",
+      "created": "Ngày tạo"
+    },
+    "status": {
+      "active": "Đang hoạt động",
+      "deleting": "Đang bị xóa",
+      "suspended": "Bị đình chỉ"
+    },
+    "comped": "được tặng",
+    "actionsFor": "Thao tác cho {{workspace}}",
+    "applied": "Xong. Danh sách sẽ cập nhật sau vài giây.",
+    "unsuspend": "Bỏ đình chỉ",
+    "logEmpty": "Chưa có thao tác quản trị nào.",
+    "grant": {
+      "open": "Tặng gói",
+      "title": "Tặng gói cho {{workspace}}",
+      "description": "Nó nhận gói mà không phải trả tiền, cho đến khi gói đăng ký trên Stripe thay đổi.",
+      "note": "Ghi chú (lý do)",
+      "submit": "Tặng gói"
+    },
+    "suspend": {
+      "open": "Đình chỉ",
+      "title": "Đình chỉ {{workspace}}?",
+      "description": "Không ai làm việc được trong đó cho đến khi bạn bỏ đình chỉ. Dữ liệu vẫn được giữ.",
+      "reason": "Lý do",
+      "submit": "Đình chỉ"
+    },
+    "actions": {
+      "grant_plan": "Đã tặng gói {{plan}} cho {{tenant}} ({{note}})",
+      "suspend": "Đã đình chỉ {{tenant}}: {{reason}}",
+      "unsuspend": "Đã bỏ đình chỉ {{tenant}}"
     }
   }
 }

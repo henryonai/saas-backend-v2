@@ -27,6 +27,7 @@ that must hold under concurrent requests (seats, limits, memberships, one
 | Billing | billing | none | `expires_at` | NEW_IMAGE → outbox relay |
 | Notifications | notifications | none | `expires_at` | none |
 | Audit | audit | none | `expires_at` | none |
+| Admin | admin | none | `expires_at` | NEW_IMAGE → outbox relay |
 | Assistant | assistant (optional) | `ConversationsByUser` (INCLUDE) | `expires_at` | OLD_IMAGE → purge worker |
 | Assistant checkpoints | assistant (optional) | none | `ttl` | none |
 
@@ -139,3 +140,15 @@ per thread, expiring after 30 days (`ttl`); checkpoints over 350 KB go to S3.
 | Assistant files bucket | the user's files and their versions | until deleted |
 | Assistant checkpoint bucket | checkpoints over 350 KB | with their thread |
 | Cognito user pool | logins (email, password, MFA) | until the account is deleted |
+
+## Admin
+
+| pk | sk | What | Expires |
+|---|---|---|---|
+| `TENANTS` | `<tenant_id>` | a workspace's summary (name, owner, plan, status, members, orders) | no (deleted when the workspace is purged) |
+| `EVENT#<event_id>` | `EVENT` | an event already applied to the summaries | 7 days |
+| `LOG` | `<at>#<action_id>` | something a platform admin did | no |
+| `OUTBOX#<event_id>` | `OUTBOX` | an event waiting to be published | 7 days |
+
+Access: platform admins page through `TENANTS` (one partition, read only by
+them) and `LOG` (newest first). The table's stream feeds the outbox relay.

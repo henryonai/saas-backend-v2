@@ -17,6 +17,7 @@ revision): it publishes nothing, so the many updates Stripe sends don't
 notify anyone again. Listeners only compare revisions, so gaps are fine.
 """
 import time
+from datetime import datetime
 
 from aws_lambda_powertools import Logger
 
@@ -87,6 +88,8 @@ class BillingService:
                 updates[name] = getattr(event, name)
         changed = {field: value for field, value in newer.items() if getattr(current, field) != value}
         updates.update(changed)
+        if "plan" in newer:
+            updates["comped"] = False   # the provider decides the plan again
         new = current.model_copy(update=updates)
 
         to_publish = [events.subscription_changed(new)] if changed else []
@@ -106,6 +109,8 @@ class BillingService:
         elif event_type in ("TenantDeletionScheduled", "TenantRestored"):
             self.workspace_deleting(detail["tenant_id"], event_type == "TenantDeletionScheduled",
                                     detail["occurred_at"])
+        elif event_type == "PlanGranted":   # the admin module's
+            self.grant_plan(detail["tenant_id"], detail["plan"], detail["event_id"], detail["occurred_at"])
         elif event_type == "ExportRequested" and detail["kind"] == "workspace":
             sub = self.subscriptions.get(detail["owner_id"])
             self.exports.write(detail, "billing", {"subscription": sub.model_dump(include={
@@ -136,6 +141,26 @@ class BillingService:
                 self.subscriptions.save_renewal_stopped(tenant_id, False)
             if self.subscriptions.get(tenant_id).deleting_at == sub.deleting_at:
                 return   # nothing newer arrived while the provider was called
+
+    def grant_plan(self, tenant_id: str, plan: str, event_id: str, occurred_at: str) -> None:
+        """
+        A platform admin gave the workspace this plan, without a payment
+        (comped). It counts as the newest change to plan and status until the
+        provider sends a newer one, which ends it. A repeated event changes nothing.
+        """
+        if not is_plan(plan):
+            raise InvalidRequest(f"Unknown plan {plan!r}")
+        current = self.subscriptions.get(tenant_id) or Subscription(tenant_id=tenant_id)
+        if current.deleted_at or current.plan_event_id == event_id:
+            return
+        at = int(datetime.fromisoformat(occurred_at).timestamp())
+        new = current.model_copy(update={
+            "plan": plan, "status": "active", "comped": True, "revision": current.revision + 1,
+            "plan_changed_at": at, "plan_event_id": event_id, "status_changed_at": at, "status_event_id": event_id})
+        try:
+            self.subscriptions.save_change(new, current.revision, [events.subscription_changed(new)])
+        except ConditionFailed:
+            raise ServiceBusy("Subscription changed during processing, retry later")
 
     def delete_tenant(self, tenant_id: str) -> None:
         """

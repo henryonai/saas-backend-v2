@@ -9,8 +9,9 @@ import { formatDateTime } from '@/shared/lib/format';
 import { useRestoreTenant, useWorkspaces } from '../hooks';
 
 /**
- * Workspaces their owner deleted that aren't purged yet. Their owner can
- * restore them; for the others, it says when they go. Nothing when there are none.
+ * Workspaces their owner deleted that aren't purged yet, and ones the product's
+ * admins suspended. Their owner can restore a deleted one; for the others, it
+ * says why they can't be opened. Nothing when there are none.
  */
 export function DeletedWorkspaces() {
   const { t } = useTranslation();
@@ -31,9 +32,11 @@ export function DeletedWorkspaces() {
             <div className="min-w-0 flex-1">
               <p className="truncate font-medium">{workspace.name}</p>
               <p className="text-xs text-muted-foreground">
-                {workspace.status === 'deleting' && workspace.delete_after
-                  ? t('workspaces.deleted.until', { date: formatDateTime(workspace.delete_after) })
-                  : t('workspaces.deleted.purging')}
+                {workspace.status === 'suspended'
+                  ? t('workspaces.deleted.suspended')
+                  : workspace.status === 'deleting' && workspace.delete_after
+                    ? t('workspaces.deleted.until', { date: formatDateTime(workspace.delete_after) })
+                    : t('workspaces.deleted.purging')}
               </p>
             </div>
             {workspace.role === 'owner' && workspace.status === 'deleting' && (

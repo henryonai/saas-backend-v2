@@ -196,6 +196,18 @@ class AccountRepository:
             "ExpressionAttributeValues": {":deleting": "deleting", ":active": "active", ":now": now},
         }})
 
+    def set_suspended(self, tenant_id: str, suspended: bool) -> bool:
+        """active -> suspended, or back. False if it wasn't in the other state (deleted meanwhile, or repeated)."""
+        old, new = ("active", "suspended") if suspended else ("suspended", "active")
+        return self._change(None, {"Update": {
+            "Key": _profile(tenant_id),
+            "UpdateExpression": "SET #st = :new",
+            "ConditionExpression": "attribute_exists(pk) AND " + (
+                "(attribute_not_exists(#st) OR #st = :old)" if suspended else "#st = :old"),
+            "ExpressionAttributeNames": {"#st": "status"},
+            "ExpressionAttributeValues": {":old": old, ":new": new},
+        }})
+
     def due_for_purge(self, now: int) -> list[str]:
         """Workspaces whose grace period has ended (and ones a purge left unfinished), oldest first."""
         ids, start = [], {}

@@ -109,7 +109,7 @@ class AccountService:
         delete_after = int(time.time() + self.deletion_days * 24 * 3600)
         if not self.accounts.schedule_deletion(tenant.tenant_id, delete_after,
                                                events.tenant_deletion_scheduled(tenant, delete_after, user)):
-            raise Conflict("This workspace is being deleted already")
+            raise Conflict("This workspace can't be deleted now: it is being deleted already, or suspended")
         return tenant.model_copy(update={"status": "deleting", "delete_after": delete_after})
 
     def restore_tenant(self, user: CurrentUser, tenant_id: str) -> Tenant:
@@ -365,6 +365,14 @@ class AccountService:
         workspaces = {tenant.tenant_id: {"role": member.role, "plan": tenant.plan}
                       for tenant, member in self.accounts.workspaces_of(user_id) if tenant.active}
         return {WORKSPACES_CLAIM: json.dumps(workspaces, separators=(",", ":"))} if workspaces else {}
+
+    def set_suspended(self, tenant_id: str, suspended: bool) -> None:
+        """
+        A platform admin suspended the workspace, or lifted it (the admin module's
+        events): a suspended one leaves every member's next token, as a deleted one does.
+        """
+        if self.accounts.set_suspended(tenant_id, suspended):
+            logger.info("Workspace suspended" if suspended else "Workspace unsuspended", extra={"tenant_id": tenant_id})
 
     def apply_subscription_change(self, tenant_id: str, plan: str, status: str, revision: int) -> None:
         """Called when billing publishes SubscriptionChanged. Late or repeated events are skipped."""

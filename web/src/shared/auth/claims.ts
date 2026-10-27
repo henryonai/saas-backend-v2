@@ -27,6 +27,8 @@ export interface SessionUser {
   tenantId: string | null;
   role: Role | null;
   plan: string | null;
+  /** in the platform-admins group: runs the product, may open the back-office (/admin) */
+  platformAdmin?: boolean;
 }
 
 function text(value: unknown): string | null {
@@ -35,6 +37,12 @@ function text(value: unknown): string | null {
 
 function isRole(value: unknown): value is Role {
   return typeof value === 'string' && (ROLES as readonly string[]).includes(value);
+}
+
+/** The user pool groups the token lists (Cognito's cognito:groups claim). */
+export function groupsFromClaims(claims: Record<string, unknown>): string[] {
+  const groups = claims['cognito:groups'];
+  return Array.isArray(groups) ? groups.filter((group): group is string => typeof group === 'string') : [];
 }
 
 /** The token's workspaces. A claim the backend wouldn't accept (it answers 401) reads as none. */
@@ -64,6 +72,7 @@ export function userFromClaims(claims: Record<string, unknown>, tenantId: string
     email: text(claims.email) ?? '',
     emailVerified: claims.email_verified === true || claims.email_verified === 'true',
     workspaces: workspacesFromClaims(claims),
+    platformAdmin: groupsFromClaims(claims).includes('platform-admins'),
   };
   return inWorkspace(user, tenantId);
 }

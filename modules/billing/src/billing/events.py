@@ -21,7 +21,8 @@ def _owner(sub: Subscription) -> dict:
 def subscription_changed(sub: Subscription) -> Event:
     """The full plan state. `revision` increases with every change; ignore lower ones."""
     return Event(SUBSCRIPTION_CHANGED, sub.tenant_id,
-                 {"plan": sub.plan, "status": sub.status, "revision": sub.revision, **_owner(sub)})
+                 {"plan": sub.plan, "status": sub.status, "revision": sub.revision, "comped": sub.comped,
+                  **_owner(sub)})
 
 
 def payment_failed(sub: Subscription) -> Event:

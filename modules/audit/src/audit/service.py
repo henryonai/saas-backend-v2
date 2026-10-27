@@ -17,7 +17,7 @@ from audit.repository import AuditRepository, InvalidCursor
 # here and to AuditRule in template.yaml to log it.
 AUDITED = {"TenantCreated", "UserInvited", "InvitationCancelled", "MemberJoined", "RoleChanged", "MemberRemoved",
            "TenantDeletionScheduled", "TenantRestored", "SubscriptionChanged", "PaymentFailed", "OrderCreated",
-           "ExportRequested"}
+           "ExportRequested", "PlanGranted", "TenantSuspended", "TenantUnsuspended"}
 # Who did it, for events that don't say actor_id.
 ACTOR_FIELD = {"OrderCreated": "user_id", "ExportRequested": "user_id"}
 NOT_DETAILS = {"tenant_id", "event_id", "occurred_at", "actor_id", "actor_email", "owner_id", "owner_email"}

@@ -39,7 +39,7 @@ def test_webhook_upgrades_and_publishes_owner_details(ctx, owner):
     [event] = ctx.events()
     assert event["type"] == "SubscriptionChanged"
     detail = {k: v for k, v in event["detail"].items() if k not in ("event_id", "occurred_at")}
-    assert detail == {"tenant_id": "t1", "plan": "pro", "status": "active", "revision": 1,
+    assert detail == {"tenant_id": "t1", "plan": "pro", "status": "active", "revision": 1, "comped": False,
                       "owner_id": "alice", "owner_email": "alice@example.com"}
 
 

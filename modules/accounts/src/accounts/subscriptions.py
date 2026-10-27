@@ -2,6 +2,7 @@
 Accounts' listener (EventBridge -> SQS -> this Lambda):
   - SubscriptionChanged from billing: keeps the tenant's local copy of its plan up to date;
   - ExportRequested (its own): writes accounts' part of the export;
+  - TenantSuspended, TenantUnsuspended from the admin module: stops a workspace, or lets it work again;
   - the exports bucket's "Object Created": marks that part of its export done
     (shared/exports.py), and the export done once every part is there.
 
@@ -28,6 +29,8 @@ def process_batch(event: dict, context, service: AccountService) -> dict:
             service.write_export_part(d)
         elif message["detail-type"] == "Object Created":      # the exports bucket, via EventBridge
             service.export_part_written(d["object"]["key"])
+        elif message["detail-type"] in ("TenantSuspended", "TenantUnsuspended"):   # the admin module's
+            service.set_suspended(d["tenant_id"], message["detail-type"] == "TenantSuspended")
         else:
             logger.info("Subscription changed", extra={"tenant_id": d["tenant_id"], "plan": d["plan"],
                                                        "revision": d["revision"]})

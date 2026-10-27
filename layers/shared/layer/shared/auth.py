@@ -13,6 +13,10 @@ request names the one it acts in: the X-Tenant-Id header (the assistant on
 AgentCore: forwardedProps.tenantId). Only a workspace the token lists is
 accepted; the request picks, the token decides.
 
+Platform admins (the people running the product, not a workspace's admins)
+are the user pool's platform-admins group: Cognito lists a user's groups in
+the ID token's cognito:groups claim. Only the admin module's routes accept them.
+
 Claims are a snapshot from when the token was issued (ID tokens last 15
 minutes, see template.yaml). The accounts module re-checks roles in its own
 table for actions that change who has access.
@@ -37,6 +41,8 @@ ROLE_MEMBER: Role = "member"
 
 WORKSPACES_CLAIM = "workspaces"
 TENANT_HEADER = "x-tenant-id"   # API Gateway passes header names in lowercase
+GROUPS_CLAIM = "cognito:groups"
+PLATFORM_ADMINS = "platform-admins"   # the user pool group (template.yaml)
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,11 @@ class CurrentUser:
     role: Role | None
     plan: str | None
     email_verified: bool = False
+    platform_admin: bool = False   # in the platform-admins group: may use the admin module
+
+    def require_platform_admin(self) -> None:
+        if not self.platform_admin:
+            raise Forbidden("Only platform admins can do this")
 
     def require_tenant(self) -> str:
         if not self.tenant_id:
@@ -101,7 +112,19 @@ def user_from_claims(claims: dict, tenant_id: str | None = None) -> CurrentUser:
         plan=workspace.plan if workspace else None,
         # API Gateway passes claim values as strings.
         email_verified=str(claims.get("email_verified", "")).lower() == "true",
+        platform_admin=PLATFORM_ADMINS in groups_in(claims),
     )
+
+
+def groups_in(claims: dict) -> set[str]:
+    """
+    The user pool groups the token lists. API Gateway passes the array claim as
+    a string like "[platform-admins other]"; AgentCore passes a list.
+    """
+    raw = claims.get(GROUPS_CLAIM)
+    if isinstance(raw, list):
+        return {str(g) for g in raw}
+    return set(str(raw or "").strip("[]").replace(",", " ").split())
 
 
 def workspaces_in(claims: dict) -> dict[str, Workspace]:
