@@ -97,6 +97,33 @@ describe('WorkspaceSwitcher', () => {
     expect(JSON.parse(created?.[1]?.body as string)).toEqual({ name: 'Tea House' });
   });
 
+  it('sends the same Idempotency-Key when the same workspace is created again, a new one for another name', async () => {
+    const answer = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      init?.method === 'POST' ? json({ message: 'Busy' }, 503) : answer(input, init),
+    );
+    const posts = () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+    const user = await openMenu();
+    await user.click(await screen.findByRole('menuitem', { name: 'Create workspace' }));
+    await user.type(await screen.findByLabelText('Workspace name'), 'Tea House');
+    const submit = screen.getByRole('button', { name: 'Create workspace' });
+    await user.click(submit);
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+    await waitFor(() => expect(posts()).toHaveLength(2));
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.clear(screen.getByLabelText('Workspace name'));
+    await user.type(screen.getByLabelText('Workspace name'), 'Leaf Ltd');
+    await user.click(submit);
+    await waitFor(() => expect(posts()).toHaveLength(3));
+
+    const keys = posts().map(([, init]) => (init?.headers as Record<string, string>)['Idempotency-Key']);
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
   it('offers the invitations the user can accept', async () => {
     invitations = [
       { tenant_id: 'tenant-9', tenant_name: 'Leaf Ltd', email: 'owner@example.com', role: 'member', invited_by: 'x@leaf.test', expires_at: 2_000_000_000 },

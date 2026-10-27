@@ -197,9 +197,15 @@ check("ID token without a workspace -> 403", owner("GET", "/orders").status_code
 check("GET /tenants/me without a workspace -> 403", owner("GET", "/tenants/me").status_code == 403)
 
 print("Workspace")
-r = owner("POST", "/tenants", json={"name": "Smoke Co"})
+key = new_key()
+r = owner("POST", "/tenants", json={"name": "Smoke Co"}, headers=key)
 check("POST /tenants", r.status_code == 201, show(r))
 tenant_id = r.json().get("tenant_id")
+r = owner("POST", "/tenants", json={"name": "Smoke Co"}, headers=key)
+check("a retry with the same Idempotency-Key returns the same workspace",
+      r.status_code == 201 and r.json()["tenant_id"] == tenant_id, show(r))
+check("a workspace without an Idempotency-Key -> 422",
+      owner("POST", "/tenants", json={"name": "Smoke Co"}).status_code == 422)
 owner.sign_in()
 check("new token lists the workspace", owner.workspaces == {tenant_id: {"role": "owner", "plan": "free"}},
       owner.workspaces)
@@ -207,7 +213,7 @@ r = owner("GET", "/tenants/me")
 check("GET /tenants/me", r.ok and r.json()["plan"] == "free" and r.json()["seats_used"] == 1, show(r))
 r = owner("GET", "/tenants", tenant=None)
 check("GET /tenants (no X-Tenant-Id needed)", r.ok and [w["tenant_id"] for w in r.json()] == [tenant_id], show(r))
-check("invalid name -> 422", carol("POST", "/tenants", json={"name": ""}).status_code == 422)
+check("invalid name -> 422", carol("POST", "/tenants", json={"name": ""}, headers=new_key()).status_code == 422)
 
 print("Orders")
 widget, key = {"item": "Widget", "quantity": 2, "price_cents": 1999}, new_key()
@@ -327,7 +333,7 @@ check("GET /users/invitations (bob, carol)",
       r.ok and sorted(i["email"] for i in r.json()) == sorted([bob.email, carol.email]), show(r))
 
 print("Another workspace: isolation, several workspaces, decline")
-r = carol("POST", "/tenants", json={"name": "Other Co"})
+r = carol("POST", "/tenants", json={"name": "Other Co"}, headers=new_key())
 check("carol creates her own workspace", r.status_code == 201, show(r))
 other_id = r.json().get("tenant_id")
 carol.sign_in()
