@@ -22,6 +22,8 @@ export interface RequestOptions {
   body?: unknown;
   query?: Record<string, string | number | null | undefined>;
   signal?: AbortSignal;
+  /** Sent as they are, e.g. Idempotency-Key (allowed by the API's CORS settings in template.yaml). */
+  headers?: Record<string, string>;
 }
 
 function urlOf(path: string, query: RequestOptions['query']): string {
@@ -39,7 +41,7 @@ async function send(path: string, options: RequestOptions): Promise<Response> {
     await endSession('expired');
     throw new ApiError(401, 'Not signed in');
   }
-  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  const headers: Record<string, string> = { ...options.headers, Authorization: `Bearer ${token}` };
   // The workspace this tab works in: the backend checks the token lists it.
   const tenantId = sessionStore.getState().user?.tenantId;
   if (tenantId) headers['X-Tenant-Id'] = tenantId;

@@ -48,8 +48,11 @@ def only_workspace(user: dict | None) -> str | None:
 
 def http_event(method: str, path: str, user: dict | None = None,
                body: dict | None = None, query: dict | None = None,
-               tenant_id: str | None | object = ONLY_WORKSPACE) -> dict:
-    """`tenant_id` is the X-Tenant-Id header: by default the token's only workspace; None sends none."""
+               tenant_id: str | None | object = ONLY_WORKSPACE, headers: dict | None = None) -> dict:
+    """
+    `tenant_id` is the X-Tenant-Id header: by default the token's only workspace; None sends none.
+    `headers` are sent too, their names in lowercase as API Gateway passes them.
+    """
     request_context = {
         "http": {"method": method, "path": path, "sourceIp": "127.0.0.1"},
         "requestId": "test",
@@ -57,7 +60,7 @@ def http_event(method: str, path: str, user: dict | None = None,
     }
     if user is not None:
         request_context["authorizer"] = {"jwt": {"claims": user, "scopes": []}}
-    headers = {"content-type": "application/json"}
+    headers = {"content-type": "application/json", **{k.lower(): v for k, v in (headers or {}).items()}}
     tenant = only_workspace(user) if tenant_id is ONLY_WORKSPACE else tenant_id
     if tenant:
         headers["x-tenant-id"] = tenant
@@ -76,8 +79,8 @@ def http_event(method: str, path: str, user: dict | None = None,
 
 def call(handler, method: str, path: str, user: dict | None = None,
          body: dict | None = None, query: dict | None = None,
-         tenant_id: str | None | object = ONLY_WORKSPACE):
+         tenant_id: str | None | object = ONLY_WORKSPACE, headers: dict | None = None):
     """Returns (status_code, parsed_json_or_None)."""
-    response = handler(http_event(method, path, user, body, query, tenant_id), FakeContext())
+    response = handler(http_event(method, path, user, body, query, tenant_id, headers), FakeContext())
     raw = response.get("body")
     return response["statusCode"], (json.loads(raw) if raw else None)

@@ -4,6 +4,7 @@ it into the HTTP app with dependency_overrides. No monkeypatching.
 """
 import json
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -30,6 +31,16 @@ class FakeIdentity:
         self.signed_out.append(user_id)
 
 
+def api(method: str, path: str, *args, headers: dict | None = None, **kwargs):
+    """
+    testkit's call. A POST /tenants gets a new Idempotency-Key, as the web app
+    sends one per workspace, unless the test passes its headers (`{}`: none).
+    """
+    if headers is None and (method, path) == ("POST", "/tenants"):
+        headers = {"Idempotency-Key": str(uuid4())}
+    return call(handler, method, path, *args, headers=headers, **kwargs)
+
+
 @pytest.fixture
 def ctx():
     table = create_table("accounts-test", with_gsi1=True)
@@ -49,7 +60,7 @@ def ctx():
 
     yield SimpleNamespace(table=table, service=service, identity=identity, token=token, login=login,
                           events=lambda: outbox_events(table),
-                          api=lambda *a, **kw: call(handler, *a, **kw))
+                          api=api)
     app.dependency_overrides.clear()
 
 

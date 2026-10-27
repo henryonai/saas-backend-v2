@@ -1,0 +1,107 @@
+# The ship kit's profile for this repo: what `ship` and its skills need to know to plan, build,
+# check and land a change here. Repo facts live here, never in the kit.
+version: 1
+name: saas-backend
+default_branch: main
+
+plan_roots:
+  - dir: plans
+    index: plans/README.md
+    backlog: plans/BACKLOG.md
+
+landing:
+  - kind: plan-status
+  - kind: index-row
+  - kind: worktree-removed
+  - kind: branch-deleted
+  - kind: lease-released
+
+resources:
+  # No Postgres or Redis: the tests run offline, with moto and fakes. The ports are for the web
+  # app in a live check, one block per lease.
+  ports:
+    range: [5300, 5399]
+    block: 5
+    stride: 10
+
+# The checks CI runs (.github/workflows/ci.yml), in the same order.
+gates:
+  lint:
+    run: uvx ruff check .
+  test:
+    run: uv run pytest
+    count: '(\d+) passed'
+  requirements:
+    run: ./scripts/export-requirements.sh --check
+  cfn:
+    run: uvx cfn-lint template.yaml .github/deploy-role.yaml
+  web:
+    # gen:api must leave the generated client unchanged, as CI checks
+    run: >-
+      pnpm gen:api && git diff --exit-code -- src/shared/api/generated
+      && pnpm typecheck && pnpm lint && pnpm test && pnpm build
+    cwd: web
+    count: 'Tests\s+(\d+) passed'
+
+deploy:
+  workflow: deploy.yml
+  environment: prod   # the GitHub environment that is production
+
+# A branch's live check runs on the dev stack: `ship deploy-branch` deploys it there through
+# deploy.yml, refusing a branch behind main or one that would take dev from another branch.
+live:
+  deploy:
+    workflow: deploy.yml
+    inputs: {environment: dev}
+    environment: dev
+  smoke: uv run scripts/smoke-test.py --stack saas-dev
+  web:
+    setup: cd web && ./scripts/env-from-stack.sh saas-dev
+    start: cd web && pnpm dev --port {port} --strictPort
+    url: http://localhost:{port}
+    sign_in: owner
+
+# The model ship-builder writes each part of a build on; the session reviews and commits it.
+models:
+  builder: sonnet
+
+# What a review of a change here checks first (ship-review hands it to the reviewer).
+security:
+  identity: >-
+    The caller and their role come only from the ID token's claims (get_current_user in
+    layers/shared/layer/shared/auth.py), never from the body, path or query. A request names its
+    workspace (the X-Tenant-Id header; the assistant's forwardedProps.tenantId), and only a
+    workspace the token lists is accepted: the request picks, the token decides.
+  isolation: >-
+    A workspace's items are keyed under TENANT#<tenant_id>, and one user's under
+    TENANT#<tenant_id>#USER#<user_id>. Keys outside a tenant (USER#, EMAIL#, OUTBOX#,
+    IDEMPOTENCY#) are lookups and system records that never hand back another tenant's data.
+  sensitive:
+    - layers/shared/**
+    - modules/accounts/**
+    - modules/billing/**
+    - "modules/*/src/*/repository.py"
+    - modules/assistant/src/assistant/tools/**
+    - modules/assistant/src/assistant/middleware/**
+    - modules/assistant/src/assistant/agents/**
+    - modules/assistant/src/assistant/sandbox.py
+    - modules/assistant/src/assistant/files.py
+    - modules/assistant/src/assistant/purge.py
+    - template.yaml
+    - .github/deploy-role.yaml
+  rules:
+    - Every write checks the caller's role on the server; the accounts module re-checks roles in its table for changes to who has access.
+    - A payment webhook's signature is checked before its payload is trusted (modules/billing/src/billing/webhook.py), and handling it twice changes nothing.
+    - Plan limits, seats and memberships are enforced with DynamoDB conditions, not read-then-write code.
+    - The assistant's tools act only with the calling user's rights in the calling workspace; its bash sandbox reaches neither the runtime's credentials nor another tenant's files.
+    - No token, secret, conversation text or personal data is logged.
+    - IAM in template.yaml stays least-privilege, and no change replaces or deletes a table or the user pool.
+
+# The owner's pages: ship-plan reads the project page before the code, and ship-land drafts a
+# work log entry. A copy made with scripts/rename-project.py starts with none.
+artifacts:
+  project: https://app.notion.com/p/404c6f66e650814e83e7de2a824ae0f9
+  work_log: collection://05332792-632b-4102-815b-21cbe2712240
+
+worktrees:
+  dir: .claude/worktrees

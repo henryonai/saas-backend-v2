@@ -52,11 +52,49 @@ def test_the_workspace_limit_holds_for_simultaneous_requests(ctx):
     # Both requests passed every check; the conditional write lets only one win.
     repo = ctx.service.accounts
     first, second = Tenant(name="First", owner_id="bob"), Tenant(name="Second", owner_id="bob")
-    repo.create_tenant(first, Member(tenant_id=first.tenant_id, user_id="bob", email="b@x.com", role="owner"), 1)
+    repo.create_tenant(first, Member(tenant_id=first.tenant_id, user_id="bob", email="b@x.com", role="owner"), 1,
+                       idempotency=("key-1", "first"))
     with pytest.raises(ConditionFailed) as error:
-        repo.create_tenant(second, Member(tenant_id=second.tenant_id, user_id="bob", email="b@x.com", role="owner"), 1)
+        repo.create_tenant(second, Member(tenant_id=second.tenant_id, user_id="bob", email="b@x.com", role="owner"),
+                           1, idempotency=("key-2", "second"))
     assert error.value.failed == {"workspaces"}
     assert list(ctx.login("bob")) == [first.tenant_id]
+    assert "Item" not in ctx.table.get_item(Key={"pk": "USER#bob", "sk": "IDEMPOTENCY#bob#key-2"})   # nor its key
+
+
+def test_a_retry_with_the_same_idempotency_key_returns_the_first_workspace(ctx, owner):
+    key = {"Idempotency-Key": "4f9a1c2e-7b3d-4e8f-9a6b-0c1d2e3f4a5b"}
+    status, beta = ctx.api("POST", "/tenants", claims("alice"), {"name": "Beta"}, headers=key)
+    assert status == 201
+    assert ctx.api("POST", "/tenants", claims("alice"), {"name": "Gamma"})[0] == 201   # now at MAX_WORKSPACES
+
+    # The first request was counted: its retry returns it, not "too many workspaces".
+    assert ctx.api("POST", "/tenants", claims("alice"), {"name": "Beta"}, headers=key) == (201, beta)
+    assert sorted(w["name"] for w in ctx.api("GET", "/tenants", claims("alice"))[1]) == ["Acme", "Beta", "Gamma"]
+    count = ctx.table.get_item(Key={"pk": "USER#alice", "sk": "WORKSPACES"})["Item"]["count"]
+    assert count == 3
+
+
+def test_an_idempotency_key_used_for_another_workspace_is_refused(ctx, owner):
+    key = {"Idempotency-Key": "key-1"}
+    ctx.api("POST", "/tenants", claims("alice"), {"name": "Beta"}, headers=key)
+    status, body = ctx.api("POST", "/tenants", claims("alice"), {"name": "Gamma"}, headers=key)
+    assert status == 400 and "different request" in body["message"]
+    assert len(ctx.api("GET", "/tenants", claims("alice"))[1]) == 2
+
+
+def test_a_workspace_without_an_idempotency_key_is_refused(ctx):
+    """Without one, a retried create could make a second workspace."""
+    status, body = ctx.api("POST", "/tenants", claims("bob"), {"name": "Bob's shop"}, headers={})
+    assert status == 422 and "idempotency-key" in json.dumps(body).lower()
+    assert ctx.api("GET", "/tenants", claims("bob"))[1] == []
+
+
+def test_keys_are_per_user(ctx):
+    key = {"Idempotency-Key": "key-1"}
+    _, bob = ctx.api("POST", "/tenants", claims("bob"), {"name": "Shop"}, headers=key)
+    _, carol = ctx.api("POST", "/tenants", claims("carol"), {"name": "Shop"}, headers=key)
+    assert bob["tenant_id"] != carol["tenant_id"]
 
 
 def test_no_workspace_yet_is_blocked(ctx):

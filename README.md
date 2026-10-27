@@ -154,7 +154,7 @@ fields such as `subscription_revision`).
 **How an event travels:** service creates an `Event` → repository saves it as
 an `OUTBOX#` item in the same transaction as the change (kept 7 days) → the
 table's DynamoDB stream triggers `OutboxRelayFunction` → it publishes to this
-stack's event bus, retrying until it works → a rule sends it to the
+stack's event bus, retrying for up to an hour → a rule sends it to the
 listener's SQS queue → the listener's worker (with a dead-letter queue, which
 also gets what the rule couldn't deliver within an hour).
 Delivery is at least once and not in order, hence rule 9.
@@ -167,7 +167,8 @@ the login trigger lists the workspace in the token's `workspaces` claim, with
 their role there and its plan.
 
 **Several workspaces:** a user can belong to up to 20 workspaces
-(`MAX_WORKSPACES_PER_USER`): create more with `POST /tenants`, or accept
+(`MAX_WORKSPACES_PER_USER`): create more with `POST /tenants` (with an
+`Idempotency-Key`, see Operations), or accept
 invitations, without leaving any. `GET /tenants` lists them, and the token
 lists them all. Each request names the workspace it acts in with the
 `X-Tenant-Id` header (the assistant: `forwardedProps.tenantId`), so each
@@ -522,7 +523,7 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
   - `AccountsPreTokenErrorsAlarm`: the login trigger errored, so sign-ins
     fail (Cognito doesn't retry it). A broken shared layer shows here first.
   - `OutboxLagAlarm`: events have waited more than 5 minutes to be published.
-    The relay keeps retrying; see `outbox-relay` in the app log group.
+    The relay keeps retrying for up to an hour; see `outbox-relay` in the app log group.
   - Messages in any dead-letter queue (accounts, notifications, outbox, the
     assistant's purge). For accounts, notifications and the purge's
     `MemberRemoved` these are events the
@@ -530,11 +531,21 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
     within an hour (their `ERROR_CODE` message attribute says why): fix the
     cause and move the messages back with SQS "Start DLQ redrive". The outbox
     queue only says which stream records the relay could not publish within
-    24 hours; republish those events from the table (they are kept 7 days):
+    an hour; republish those events from the table (they are kept 7 days):
     `uv run python scripts/replay-outbox.py --table <table> --bus <EventBusName> --since <time>`.
 - **Busy items:** transactions that collide on the same item (for example many
   orders at once in one workspace) are retried; if they keep colliding, the
   API answers 503 and the client should retry.
+- **Retried creates:** `POST /orders` and `POST /tenants` require an
+  `Idempotency-Key` header (a new UUID per order or workspace; without one,
+  422). Sent again with the same request (after a timeout, a 503 or a double
+  click), it returns what the first request made instead of making and
+  counting another; the same key with a different request gets 400. The key
+  is saved in the create's own transaction and kept 24 hours
+  (`shared/idempotency.py`). The web app's new order dialog and create
+  workspace form send one.
+  Use the same helper for any create where the server picks the new id; a write
+  with a natural key, or a condition on the current state, is safe already.
 - **Rate limits:** the HTTP API allows 50 requests/second (bursts of 100) by
   default; change `DefaultRouteSettings` in `template.yaml`.
 - **Workers:** the accounts and notifications workers run at most 5 at a time

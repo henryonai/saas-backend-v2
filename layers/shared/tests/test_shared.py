@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Annotated
 
 import boto3
@@ -12,8 +13,9 @@ from pydantic import ValidationError
 from shared import http, outbox
 from shared.auth import CurrentUser, Workspace, get_current_user, user_from_claims, workspaces_in
 from shared.dynamo import ConditionFailed, transact
-from shared.errors import Forbidden, ServiceBusy, Unauthorized
+from shared.errors import Conflict, Forbidden, InvalidRequest, ServiceBusy, Unauthorized
 from shared.events import Event, EventBridgePublisher
+from shared.idempotency import IDEMPOTENCY, fingerprint, idempotency_put, replay
 from shared.ids import sortable_id
 from shared.outbox import outbox_put, relay
 from shared.plans import get_limit, get_plan
@@ -214,3 +216,25 @@ def test_transactions_that_keep_colliding_ask_the_caller_to_retry_later():
     table = CollidingTable(collisions=100)
     with pytest.raises(ServiceBusy):
         transact(table, item={"Put": {"Item": {"pk": "A", "sk": "A"}}})
+
+
+def test_a_request_has_the_same_fingerprint_whatever_the_order_of_its_fields():
+    assert fingerprint({"a": 1, "b": [2, 3]}) == fingerprint({"b": [2, 3], "a": 1})
+    assert fingerprint({"a": 1}) != fingerprint({"a": 2})
+
+
+def test_an_idempotency_key_is_saved_once_and_replays_what_it_created(monkeypatch):
+    table = create_table("idempotency-test")
+    transact(table, **{IDEMPOTENCY: idempotency_put("TENANT#t1", "alice", "k", "req", "o-1")})
+    with pytest.raises(ConditionFailed) as e:   # the retry: nothing is written
+        transact(table, **{IDEMPOTENCY: idempotency_put("TENANT#t1", "alice", "k", "req", "o-2")})
+    assert e.value.failed == {IDEMPOTENCY}
+
+    assert replay(table, "TENANT#t1", "alice", "k", "req") == "o-1"
+    with pytest.raises(InvalidRequest):
+        replay(table, "TENANT#t1", "alice", "k", "another request")
+    later = time.time() + 25 * 60 * 60
+    monkeypatch.setattr("shared.idempotency.time.time", lambda: later)   # expired; TTL hasn't removed it yet
+    with pytest.raises(Conflict):
+        replay(table, "TENANT#t1", "alice", "k", "req")
+    transact(table, **{IDEMPOTENCY: idempotency_put("TENANT#t1", "alice", "k", "req", "o-3")})   # free again

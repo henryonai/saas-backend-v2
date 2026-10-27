@@ -1,5 +1,5 @@
 import { PlusIcon } from 'lucide-react';
-import { type FormEvent, useId, useState } from 'react';
+import { type FormEvent, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Alert, AlertDescription } from '@/shared/components/ui/alert';
@@ -21,6 +21,9 @@ export function CreateWorkspaceForm({ onCreated }: { onCreated?: () => void }) {
   const [apiError, setApiError] = useState<string | null>(null);
   // Creating, then opening it: one submission until both are done, so a second click can't create another.
   const [submitting, setSubmitting] = useState(false);
+  // One Idempotency-Key per workspace: submitting the same name again (after a
+  // timeout, or when opening it failed) sends the same key, so it isn't created twice.
+  const attempt = useRef<{ name: string; key: string } | null>(null);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -33,7 +36,9 @@ export function CreateWorkspaceForm({ onCreated }: { onCreated?: () => void }) {
     setApiError(null);
     setSubmitting(true);
     try {
-      const tenant = await create.mutateAsync({ name: trimmed });
+      if (attempt.current?.name !== trimmed) attempt.current = { name: trimmed, key: crypto.randomUUID() };
+      const tenant = await create.mutateAsync({ body: { name: trimmed }, idempotencyKey: attempt.current.key });
+      attempt.current = null;   // created: another workspace, even of the same name, is a new one
       toast.success(t('welcome.create.created', { workspace: trimmed }));
       onCreated?.();
       if (!(await goTo(tenant.tenant_id))) toast.error(t('workspaces.openFailed'));

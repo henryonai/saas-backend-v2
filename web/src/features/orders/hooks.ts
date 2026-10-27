@@ -32,7 +32,7 @@ export function useOrder(orderId: string) {
 export function useCreateOrder() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: OrderCreate) => createOrder(body),
+    mutationFn: ({ body, idempotencyKey }: { body: OrderCreate; idempotencyKey: string }) => createOrder(body, idempotencyKey),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: qk.orders() }),
   });
 }

@@ -11,9 +11,13 @@ export function listWorkspaces(signal?: AbortSignal) {
   return api<WorkspaceSummary[]>('/tenants', { signal });
 }
 
-/** Creates a workspace and makes the caller its owner. The token must be refreshed after. */
-export function createTenant(body: TenantCreate) {
-  return api<Tenant>('/tenants', { method: 'POST', body });
+/**
+ * Creates a workspace and makes the caller its owner. The token must be
+ * refreshed after. Send the same `idempotencyKey` again to retry: the API
+ * returns the workspace the first request made instead of making another.
+ */
+export function createTenant(body: TenantCreate, idempotencyKey: string) {
+  return api<Tenant>('/tenants', { method: 'POST', body, headers: { 'Idempotency-Key': idempotencyKey } });
 }
 
 /** Invitations sent to the signed-in user's (verified) email address. */

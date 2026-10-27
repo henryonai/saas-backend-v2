@@ -6,8 +6,9 @@ same transaction as the change, and this relay publishes them to EventBridge.
 
 The relay is one Lambda function reading each module table's DynamoDB stream
 (OutboxRelayFunction in template.yaml). A failed publish is retried from the
-stream until it succeeds. If it still fails when the stream record expires
-(24 hours), the item is still in the table: scripts/replay-outbox.py
+stream for up to an hour, so one event that can't be published only holds up
+the events behind it on its shard that long. Then the relay reports it to
+OutboxDLQ; the item is still in the table: scripts/replay-outbox.py
 publishes it again. Delivery is at least once and not in order, so listeners
 skip duplicates by event_id and use a version number where order matters.
 """

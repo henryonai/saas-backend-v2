@@ -10,6 +10,8 @@ Key design:
   TENANT#<tenant_id>  INVITES_SENT#<day>  invitations sent that day (rate limit, expires)
   USER#<user_id>      WORKSPACE#<tenant>  one of the user's workspaces (one item per membership)
   USER#<user_id>      WORKSPACES          how many workspaces the user belongs to (count, limited)
+  USER#<user_id>      IDEMPOTENCY#<user_id>#<key>  the workspace a POST /tenants with that key created
+                                          (shared/idempotency.py; expires)
   OUTBOX#<event_id>   OUTBOX              events to publish (shared/outbox.py)
 
 Rules that must hold even under concurrent requests (the workspaces per user,
@@ -23,6 +25,7 @@ from botocore.exceptions import ClientError
 
 from shared.dynamo import ConditionFailed, is_condition_failure, transact
 from shared.events import Event
+from shared.idempotency import idempotency_put, replay
 from shared.outbox import outbox_put
 
 from accounts.models import Invitation, Member, Tenant
@@ -108,17 +111,29 @@ class AccountRepository:
 
     # ---------- tenants ----------
 
-    def create_tenant(self, tenant: Tenant, owner: Member, max_workspaces: int) -> None:
-        """Raises ConditionFailed({"workspaces"}) if the owner is in max_workspaces already."""
+    def create_tenant(self, tenant: Tenant, owner: Member, max_workspaces: int,
+                      idempotency: tuple[str, str]) -> None:
+        """
+        Raises ConditionFailed({"workspaces"}) if the owner is in max_workspaces already.
+        `idempotency` is the client's (key, request fingerprint), saved under the
+        user (the workspace is new): a retry with the key raises
+        ConditionFailed({IDEMPOTENCY, ...}) and changes nothing (see tenant_for_key).
+        """
         transact(
             self.table,
             **_join(owner, max_workspaces),
             tenant={"Put": {"Item": {**_profile(tenant.tenant_id), **tenant.model_dump()}}},
             member={"Put": {"Item": self._member_item(owner)}},
+            idempotency=idempotency_put(f"USER#{owner.user_id}", owner.user_id, *idempotency, tenant.tenant_id),
         )
 
-    def get_tenant(self, tenant_id: str) -> Tenant | None:
-        item = self.table.get_item(Key=_profile(tenant_id)).get("Item")
+    def tenant_for_key(self, user_id: str, key: str, request: str) -> str:
+        """The id of the workspace the first create with this key made (shared.idempotency.replay)."""
+        return replay(self.table, f"USER#{user_id}", user_id, key, request)
+
+    def get_tenant(self, tenant_id: str, consistent: bool = False) -> Tenant | None:
+        """`consistent`: right after it was created (a create's retry)."""
+        item = self.table.get_item(Key=_profile(tenant_id), ConsistentRead=consistent).get("Item")
         return Tenant.model_validate(_clean(item)) if item else None
 
     def apply_subscription(self, tenant_id: str, plan: str, status: str, revision: int) -> bool:

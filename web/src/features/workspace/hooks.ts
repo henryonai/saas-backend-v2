@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { qk } from '@/shared/api/keys';
+import type { TenantCreate } from '@/shared/api/types';
 import { refreshSession, switchWorkspace } from '@/shared/auth/session';
 import { acceptInvitation, createTenant, declineInvitation, getTenant, listReceivedInvitations, listWorkspaces } from './api';
 
@@ -33,7 +34,10 @@ export function useGoToWorkspace() {
 }
 
 export function useCreateTenant() {
-  return useMutation({ mutationFn: createTenant });
+  return useMutation({
+    mutationFn: ({ body, idempotencyKey }: { body: TenantCreate; idempotencyKey: string }) =>
+      createTenant(body, idempotencyKey),
+  });
 }
 
 export function useReceivedInvitations() {

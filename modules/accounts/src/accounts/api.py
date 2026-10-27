@@ -9,6 +9,7 @@ from aws_lambda_powertools.event_handler import Depends, Response, content_types
 from aws_lambda_powertools.event_handler.api_gateway import Router
 
 from shared.auth import CurrentUser, get_current_user
+from shared.idempotency import IdempotencyKey
 
 from accounts.container import get_account_service
 from accounts.models import Invitation, Member
@@ -30,8 +31,9 @@ def created(model) -> Response:
 
 # After this, the frontend must refresh the token so it lists the new workspace.
 @router.post("/tenants")
-def create_tenant(body: TenantCreate, user: User, service: Service) -> Response[TenantOut]:
-    return created(TenantOut.of(service.create_tenant(user, body)))
+def create_tenant(body: TenantCreate, user: User, service: Service,
+                  idempotency_key: IdempotencyKey) -> Response[TenantOut]:
+    return created(TenantOut.of(service.create_tenant(user, body, idempotency_key)))
 
 
 # Every workspace the caller belongs to (no X-Tenant-Id needed).

@@ -1,6 +1,6 @@
 """
 Publishes a module's saved events again, e.g. after the OutboxDLQ alarm (the
-relay could not publish them before their stream records expired). Events
+relay could not publish them within an hour). Events
 stay in the outbox for 7 days. Listeners skip events they already handled, so
 replaying more than needed is safe.
 

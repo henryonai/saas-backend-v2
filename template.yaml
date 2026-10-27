@@ -202,7 +202,8 @@ Resources:
       CorsConfiguration:
         AllowOrigins: [!If [HasCorsOrigin, !Ref CorsOrigin, !Sub "https://${WebDistribution.DomainName}"]]
         AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
-        AllowHeaders: [content-type, authorization, x-tenant-id]   # x-tenant-id: the workspace (shared/auth.py)
+        # x-tenant-id: the workspace (shared/auth.py); idempotency-key: makes a retried create safe (orders)
+        AllowHeaders: [content-type, authorization, x-tenant-id, idempotency-key]
       DefaultRouteSettings:               # protects the functions (and your bill) from floods
         ThrottlingRateLimit: 50
         ThrottlingBurstLimit: 100
@@ -250,7 +251,8 @@ Resources:
             BatchSize: 50
             FunctionResponseTypes: [ReportBatchItemFailures]
             BisectBatchOnFunctionError: true
-            MaximumRetryAttempts: -1      # keep retrying until it works (records last 24 hours)
+            MaximumRetryAttempts: -1      # retry as often as it takes, but
+            MaximumRecordAgeInSeconds: 3600   # only for an hour: then OutboxDLQ, so one bad record can't hold up its shard all day
             DestinationConfig: { OnFailure: { Type: SQS, Destination: !GetAtt OutboxDLQ.Arn } }
             FilterCriteria:
               Filters: [{ Pattern: '{"eventName": ["INSERT"], "dynamodb": {"Keys": {"pk": {"S": [{"prefix": "OUTBOX#"}]}}}}' }]
@@ -262,7 +264,8 @@ Resources:
             BatchSize: 50
             FunctionResponseTypes: [ReportBatchItemFailures]
             BisectBatchOnFunctionError: true
-            MaximumRetryAttempts: -1      # keep retrying until it works (records last 24 hours)
+            MaximumRetryAttempts: -1      # retry as often as it takes, but
+            MaximumRecordAgeInSeconds: 3600   # only for an hour: then OutboxDLQ, so one bad record can't hold up its shard all day
             DestinationConfig: { OnFailure: { Type: SQS, Destination: !GetAtt OutboxDLQ.Arn } }
             FilterCriteria:
               Filters: [{ Pattern: '{"eventName": ["INSERT"], "dynamodb": {"Keys": {"pk": {"S": [{"prefix": "OUTBOX#"}]}}}}' }]
@@ -274,14 +277,15 @@ Resources:
             BatchSize: 50
             FunctionResponseTypes: [ReportBatchItemFailures]
             BisectBatchOnFunctionError: true
-            MaximumRetryAttempts: -1      # keep retrying until it works (records last 24 hours)
+            MaximumRetryAttempts: -1      # retry as often as it takes, but
+            MaximumRecordAgeInSeconds: 3600   # only for an hour: then OutboxDLQ, so one bad record can't hold up its shard all day
             DestinationConfig: { OnFailure: { Type: SQS, Destination: !GetAtt OutboxDLQ.Arn } }
             FilterCriteria:
               Filters: [{ Pattern: '{"eventName": ["INSERT"], "dynamodb": {"Keys": {"pk": {"S": [{"prefix": "OUTBOX#"}]}}}}' }]
 
-  # Where the relay reports batches it could not publish before their stream
-  # records expired (which records, not the events themselves). The events are
-  # still in the tables for 7 days: republish them with scripts/replay-outbox.py.
+  # Where the relay reports records it could not publish within an hour (which
+  # records, not the events themselves). The events are still in the tables for
+  # 7 days: republish them with scripts/replay-outbox.py.
   OutboxDLQ:
     Type: AWS::SQS::Queue
     Properties:
@@ -357,9 +361,9 @@ Resources:
       TreatMissingData: notBreaching      # an idle queue sends no data
       AlarmActions: [!Ref AlertsTopic]
 
-  # The relay retries a record it can't publish until the record expires (24 hours),
-  # and later events on the same shard wait behind it. This fires within minutes,
-  # long before OutboxDLQAlarm.
+  # The relay retries a record it can't publish for up to an hour, and later
+  # events on the same shard wait behind it. This fires within minutes, before
+  # the record goes to OutboxDLQ.
   OutboxLagAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
