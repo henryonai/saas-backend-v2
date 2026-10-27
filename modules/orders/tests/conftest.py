@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -11,6 +12,16 @@ from testkit.http import call, claims
 from testkit.outbox import outbox_events
 
 
+def api(method: str, path: str, *args, headers: dict | None = None, **kwargs):
+    """
+    testkit's call. A POST /orders gets a new Idempotency-Key, as the web app
+    sends one per order, unless the test passes its headers (`{}`: none).
+    """
+    if headers is None and (method, path) == ("POST", "/orders"):
+        headers = {"Idempotency-Key": str(uuid4())}
+    return call(handler, method, path, *args, headers=headers, **kwargs)
+
+
 @pytest.fixture
 def ctx():
     table = create_table("orders-test")
@@ -18,7 +29,7 @@ def ctx():
     app.dependency_overrides[get_order_service] = lambda: service
     yield SimpleNamespace(table=table, service=service,
                           events=lambda: outbox_events(table),
-                          api=lambda *a, **kw: call(handler, *a, **kw))
+                          api=api)
     app.dependency_overrides.clear()
 
 

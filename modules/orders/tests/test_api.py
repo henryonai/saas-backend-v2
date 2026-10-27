@@ -1,3 +1,4 @@
+import json
 import time
 
 import pytest
@@ -114,8 +115,9 @@ def test_order_and_event_are_saved_together_or_not_at_all(ctx, alice):
     from orders.models import Order
     order = Order(**ORDER, tenant_id="t1", created_by="alice")
     with pytest.raises(ConditionFailed):
-        repo.create(order, Event("OrderCreated", "t1"), max_orders=100)
+        repo.create(order, Event("OrderCreated", "t1"), max_orders=100, idempotency=("key-1", "request"))
     assert repo.get("t1", order.order_id) is None and ctx.events() == []
+    assert "Item" not in ctx.table.get_item(Key={"pk": "TENANT#t1", "sk": "IDEMPOTENCY#alice#key-1"})   # nor the key
 
 
 def test_a_retry_with_the_same_idempotency_key_returns_the_first_order(ctx, alice):
@@ -131,7 +133,14 @@ def test_a_retry_with_the_same_idempotency_key_returns_the_first_order(ctx, alic
     assert counter["order_count"] == 1   # counted once against the plan limit
 
 
-def test_without_a_key_each_request_makes_an_order(ctx, alice):
+def test_an_order_without_an_idempotency_key_is_refused(ctx, alice):
+    """Without one, a retried create could make a second order."""
+    status, body = ctx.api("POST", "/orders", alice, ORDER, headers={})
+    assert status == 422 and "idempotency-key" in json.dumps(body).lower()
+    assert ctx.api("GET", "/orders", alice)[1]["items"] == []
+
+
+def test_each_new_key_makes_an_order(ctx, alice):
     ctx.api("POST", "/orders", alice, ORDER)
     ctx.api("POST", "/orders", alice, ORDER)
     assert len(ctx.api("GET", "/orders", alice)[1]["items"]) == 2
@@ -142,7 +151,7 @@ def test_an_idempotency_key_used_for_another_order_is_refused(ctx, alice):
     ctx.api("POST", "/orders", alice, ORDER, headers=key)
     status, body = ctx.api("POST", "/orders", alice, {**ORDER, "quantity": 3}, headers=key)
 
-    assert status == 400 and "different order" in body["message"]
+    assert status == 400 and "different request" in body["message"]
     assert len(ctx.api("GET", "/orders", alice)[1]["items"]) == 1
 
 
@@ -169,7 +178,7 @@ def test_an_expired_key_can_be_used_again(ctx, alice, monkeypatch):
     key = {"Idempotency-Key": "key-1"}
     ctx.api("POST", "/orders", alice, ORDER, headers=key)
     later = time.time() + 25 * 60 * 60
-    monkeypatch.setattr("orders.repository.time.time", lambda: later)   # TTL hasn't removed it yet
+    monkeypatch.setattr("shared.idempotency.time.time", lambda: later)   # TTL hasn't removed it yet
 
     assert ctx.api("POST", "/orders", alice, ORDER, headers=key)[0] == 201
     assert len(ctx.api("GET", "/orders", alice)[1]["items"]) == 2

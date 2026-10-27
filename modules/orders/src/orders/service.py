@@ -1,9 +1,7 @@
-import hashlib
-import json
-
 from shared.auth import CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached
+from shared.idempotency import IDEMPOTENCY, fingerprint
 from shared.plans import get_limit
 
 from orders import events
@@ -23,40 +21,31 @@ class OrderService:
     def __init__(self, orders: OrderRepository):
         self.orders = orders
 
-    def create_order(self, user: CurrentUser, data: OrderCreate, idempotency_key: str | None = None) -> Order:
+    def create_order(self, user: CurrentUser, data: OrderCreate, idempotency_key: str) -> Order:
         """
-        With an Idempotency-Key, a retry of the same request (a timeout, a
-        double click) returns the order the first one made instead of making
+        A retry of the same request with the same Idempotency-Key (a timeout,
+        a double click) returns the order the first one made instead of making
         another; the same key with a different request is refused.
         """
         tenant_id = user.require_tenant()
         # Copy fields explicitly: a new request field must not end up stored by accident.
         order = Order(tenant_id=tenant_id, created_by=user.user_id,
                       item=data.item, quantity=data.quantity, price_cents=data.price_cents)
-        fingerprint = hashlib.sha256(json.dumps(data.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+        request = fingerprint(data.model_dump(mode="json"))
 
         # Plan comes from the login token: no call to the accounts module.
         # The limit is checked inside the same transaction that saves the order.
         max_orders = get_limit(user.plan, "max_orders")
         try:
-            self.orders.create(order, events.order_created(order), max_orders,
-                               idempotency=(idempotency_key, fingerprint) if idempotency_key else None)
+            self.orders.create(order, events.order_created(order), max_orders, idempotency=(idempotency_key, request))
         except ConditionFailed as e:
-            if "idempotency" in e.failed:   # before the limit: the order it made is counted already
-                return self._replay(user, idempotency_key, fingerprint)
+            if IDEMPOTENCY in e.failed:   # before the limit: the order it made is counted already
+                return self.get_order(user, self.orders.order_for_key(tenant_id, user.user_id, idempotency_key,
+                                                                      request))
             if "limit" not in e.failed:
                 raise
             raise PlanLimitReached(f"Your {user.plan} plan allows {max_orders} orders. Upgrade for more.")
         return order
-
-    def _replay(self, user: CurrentUser, key: str, fingerprint: str) -> Order:
-        found = self.orders.replay(user.require_tenant(), user.user_id, key)
-        if not found:   # expired just now: rare enough to ask for a retry
-            raise Conflict("This Idempotency-Key just expired. Please retry.")
-        order_id, first = found
-        if first != fingerprint:
-            raise InvalidRequest("This Idempotency-Key was used for a different order. Use a new key.")
-        return self.get_order(user, order_id)
 
     def get_order(self, user: CurrentUser, order_id: str) -> Order:
         order = self.orders.get(user.require_tenant(), order_id)

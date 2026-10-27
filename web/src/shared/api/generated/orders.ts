@@ -228,9 +228,9 @@ export interface operations {
     create_order_orders_post: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description A new random value per order (a UUID): sent again with a retry, it returns the order the first request made instead of making another. */
-                "idempotency-key"?: string | null;
+            header: {
+                /** @description A new random value (a UUID) for each thing created. Sent again with the same request, it returns what the first request created instead of creating another. */
+                "idempotency-key": string;
             };
             path?: never;
             cookie?: never;
