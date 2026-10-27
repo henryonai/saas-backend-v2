@@ -9,11 +9,13 @@ sandbox.
 import base64
 import json
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import boto3
 import pytest
+import yaml
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
@@ -34,7 +36,6 @@ from assistant.sandbox import CommandResult
 from assistant.service import ConversationLog, ConversationService, FileService, MemoryService, UsageService
 from assistant.titles import Titles
 from assistant.tools import make_tools
-from testkit.aws import create_table
 from testkit.http import ONLY_WORKSPACE, call, claims, only_workspace
 
 SESSION = "11111111-2222-3333-4444-555555555555"
@@ -179,9 +180,26 @@ def id_token(user_claims: dict) -> str:
     return f"Bearer {part({'alg': 'RS256'})}.{part(user_claims)}.signature"
 
 
+def table_from_template(name: str):
+    """
+    The assistant table with template.yaml's keys and indexes, so a read from
+    an index gets only the fields that index keeps there too.
+    """
+    class Template(yaml.SafeLoader):
+        pass
+
+    Template.add_multi_constructor("!", lambda loader, tag, node: None)   # CloudFormation's tags: not needed here
+    template = yaml.load((Path(__file__).resolve().parents[3] / "template.yaml").read_text(), Template)
+    spec = template["Resources"]["AssistantTable"]["Properties"]
+    boto3.client("dynamodb").create_table(
+        TableName=name, BillingMode="PAY_PER_REQUEST", AttributeDefinitions=spec["AttributeDefinitions"],
+        KeySchema=spec["KeySchema"], GlobalSecondaryIndexes=spec["GlobalSecondaryIndexes"])
+    return boto3.resource("dynamodb").Table(name)
+
+
 @pytest.fixture
 def ctx():
-    table = create_table("assistant-test", with_gsi1=True)
+    table = table_from_template("assistant-test")
     usage = UsageService(usage=UsageRepository(table))
     conversations = ConversationRepository(table)
     history = ConversationLog(conversations, days=0)   # kept until deleted, as template.yaml's default

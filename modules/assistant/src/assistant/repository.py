@@ -19,6 +19,7 @@ Assistant table:
   pk = TENANT#<t>#USER#<u>#FILES          sk = NAMED#<thread>#<name>   the file an agent saved under that name
                                                                  in that conversation: saved again, a new version
   gsi1pk = TENANT#<t>#USER#<u>#CONVS      gsi1sk = <updated_at>  on META only: the user's list, newest first
+                                         (index ConversationsByUser, with only LISTED of META's fields)
 
 The tenant is part of every key, and the user of every conversation key, so
 one workspace never sees another's usage and one user never sees another's
@@ -190,6 +191,13 @@ def conversation_of(pk: str) -> tuple[str, str, str]:
     if not (pk.startswith("TENANT#") and tenant_id and user_id and thread_id):
         raise ValueError(f"Not a conversation's key: {pk!r}")
     return tenant_id, user_id, thread_id
+
+
+# The index of each user's conversations, and the fields of a META it keeps
+# (template.yaml): what the list shows, what the purge needs (agents) and the
+# expiry the list filters on. Conversations read from it have no run or versions.
+CONVERSATIONS_BY_USER = "ConversationsByUser"
+LISTED = ("thread_id", "title", "title_source", "created_at", "updated_at", "message_count", "agents", "expires_at")
 
 
 def _list_pk(tenant_id: str, user_id: str) -> str:
@@ -528,7 +536,7 @@ class ConversationRepository:
              cursor: str | None = None) -> tuple[list[Conversation], str | None]:
         """Newest first. Returns the conversations and a cursor for the next page (None at the end)."""
         params = {
-            "IndexName": "gsi1",
+            "IndexName": CONVERSATIONS_BY_USER,
             "KeyConditionExpression": Key("gsi1pk").eq(_list_pk(tenant_id, user_id)),
             "FilterExpression": Attr("expires_at").not_exists() | Attr("expires_at").gt(int(time.time())),
             "ScanIndexForward": False,
@@ -549,7 +557,7 @@ class ConversationRepository:
         Every conversation of the user's in the workspace, expired or not,
         whose last message was at or before `until` (an ISO time, as stored).
         """
-        params = {"IndexName": "gsi1",
+        params = {"IndexName": CONVERSATIONS_BY_USER,
                   "KeyConditionExpression": Key("gsi1pk").eq(_list_pk(tenant_id, user_id)) & Key("gsi1sk").lte(until)}
         while True:
             result = self.table.query(**params)
