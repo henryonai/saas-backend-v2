@@ -2,10 +2,14 @@
 Orders table:
   pk = TENANT#<tenant_id>   sk = ORDER#<order_id>   order (ids sort by creation time)
   pk = TENANT#<tenant_id>   sk = COUNTER            order_count, for the plan limit
+  pk = TENANT#<tenant_id>   sk = IDEMPOTENCY#<user_id>#<key>   the order a create with that Idempotency-Key
+                                                    made, and its request's fingerprint (expires after 24 hours)
   pk = OUTBOX#<event_id>    sk = OUTBOX             events to publish (shared/outbox.py)
 
 The tenant is part of every key, so one tenant can never read another's orders.
 """
+import time
+
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
@@ -16,8 +20,15 @@ from shared.outbox import outbox_put
 from orders.models import Order, OrderStatus
 
 
+IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60  # a client retries within minutes; a day is plenty
+
+
 def _pk(tenant_id: str) -> str:
     return f"TENANT#{tenant_id}"
+
+
+def _idempotency_key(tenant_id: str, user_id: str, key: str) -> dict:
+    return {"pk": _pk(tenant_id), "sk": f"IDEMPOTENCY#{user_id}#{key}"}
 
 
 def _clean(item: dict) -> dict:
@@ -28,11 +39,16 @@ class OrderRepository:
     def __init__(self, table):
         self.table = table
 
-    def create(self, order: Order, event: Event, max_orders: int | None) -> None:
+    def create(self, order: Order, event: Event, max_orders: int | None,
+               idempotency: tuple[str, str] | None = None) -> None:
         """
         Saves the order and its event, and counts it against the plan limit,
         all in one transaction. Raises ConditionFailed({"limit"}) when the
         tenant already has max_orders orders (None = unlimited).
+
+        `idempotency` is the client's (key, request fingerprint): saved in the
+        same transaction, so a retry with the key raises
+        ConditionFailed({"idempotency", ...}) and changes nothing (see replay).
         """
         counter = {
             "Key": {"pk": _pk(order.tenant_id), "sk": "COUNTER"},
@@ -48,7 +64,25 @@ class OrderRepository:
             limit={"Update": counter},
             order={"Put": {"Item": item, "ConditionExpression": "attribute_not_exists(pk)"}},
             event=outbox_put(event),
+            idempotency=self._idempotency_put(order, *idempotency) if idempotency else None,
         )
+
+    def _idempotency_put(self, order: Order, key: str, fingerprint: str) -> dict:
+        now = int(time.time())
+        return {"Put": {
+            "Item": {**_idempotency_key(order.tenant_id, order.created_by, key), "order_id": order.order_id,
+                     "fingerprint": fingerprint, "expires_at": now + IDEMPOTENCY_TTL_SECONDS},
+            # TTL removes it some time after it expires: until then, an expired one is free to reuse.
+            "ConditionExpression": "attribute_not_exists(pk) OR expires_at <= :now",
+            "ExpressionAttributeValues": {":now": now},
+        }}
+
+    def replay(self, tenant_id: str, user_id: str, key: str) -> tuple[str, str] | None:
+        """(order_id, fingerprint) of the order a create with this key made, if it hasn't expired."""
+        item = self.table.get_item(Key=_idempotency_key(tenant_id, user_id, key), ConsistentRead=True).get("Item")
+        if not item or item["expires_at"] <= int(time.time()):
+            return None
+        return item["order_id"], item["fingerprint"]
 
     def get(self, tenant_id: str, order_id: str) -> Order | None:
         # Strongly consistent, so a status change sees the previous one (e.g. "paid" right before "shipped").

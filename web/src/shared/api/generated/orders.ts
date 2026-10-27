@@ -228,7 +228,10 @@ export interface operations {
     create_order_orders_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description A new random value per order (a UUID): sent again with a retry, it returns the order the first request made instead of making another. */
+                "idempotency-key"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };

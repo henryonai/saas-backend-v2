@@ -524,6 +524,12 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
 - **Busy items:** transactions that collide on the same item (for example many
   orders at once in one workspace) are retried; if they keep colliding, the
   API answers 503 and the client should retry.
+- **Retried creates:** `POST /orders` takes an `Idempotency-Key` header (a new
+  UUID per order). Sent again with the same order (after a timeout, a 503 or a
+  double click), it returns the order the first request made instead of making
+  and counting another; the same key with a different order gets 400. The key
+  is saved in the order's own transaction and kept 24 hours. The web app's new
+  order dialog sends one. Add the same to any create a client may retry.
 - **Rate limits:** the HTTP API allows 50 requests/second (bursts of 100) by
   default; change `DefaultRouteSettings` in `template.yaml`.
 - **Workers:** the accounts and notifications workers run at most 5 at a time

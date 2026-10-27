@@ -1,5 +1,5 @@
 import { PlusIcon } from 'lucide-react';
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { UpgradeNotice } from '@/shared/components/upgrade-notice';
@@ -32,6 +32,9 @@ export function NewOrderDialog() {
   const [quantity, setQuantity] = useState('1');
   const [price, setPrice] = useState('');
   const [errors, setErrors] = useState<Errors>({});
+  // One Idempotency-Key per order: submitting the same order again (after a
+  // timeout, say) sends the same key, so it can't be created twice.
+  const attempt = useRef<{ body: string; key: string } | null>(null);
 
   const quantityValue = Number(quantity);
   const priceCents = dollarsToCents(price);
@@ -42,6 +45,7 @@ export function NewOrderDialog() {
     setQuantity('1');
     setPrice('');
     setErrors({});
+    attempt.current = null;
     create.reset();
   }
 
@@ -57,7 +61,11 @@ export function NewOrderDialog() {
     if (Object.keys(found).length > 0 || priceCents === null) return;
 
     try {
-      const order = await create.mutateAsync({ item: item.trim(), quantity: quantityValue, price_cents: priceCents });
+      const body = { item: item.trim(), quantity: quantityValue, price_cents: priceCents };
+      if (attempt.current?.body !== JSON.stringify(body)) {
+        attempt.current = { body: JSON.stringify(body), key: crypto.randomUUID() };   // a changed order is a new one
+      }
+      const order = await create.mutateAsync({ body, idempotencyKey: attempt.current.key });
       toast.success(t('orders.new.created', { item: order.item }));
       setOpen(false);
       reset();
