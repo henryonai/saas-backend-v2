@@ -45,3 +45,24 @@ def test_openrouter_without_a_key_fails_at_startup(monkeypatch):
             monkeypatch.setenv(name, value)
     with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
         container.get_agents()
+
+
+@pytest.mark.parametrize(("settings", "factory"), [
+    ({"ASSISTANT_TABLE": "assistant-dev", "FILES_BUCKET": "files-dev",
+      "PURGE_QUEUE_URL": "https://sqs.example.com/purge"}, container.get_api_file_service),
+    ({"ASSISTANT_TABLE": "assistant-dev", "CHECKPOINT_TABLE": "checkpoints-dev",
+      "CHECKPOINT_BUCKET": "checkpoints-dev", "FILES_BUCKET": "files-dev"}, container.get_purged_files),
+])
+def test_the_api_and_the_purge_need_their_region(monkeypatch, settings, factory):
+    """Not the SDK's guess: a link signed for another region than the bucket's fails in the browser."""
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("REGION", raising=False)
+    factory.cache_clear()
+    with pytest.raises(ValidationError, match="region"):
+        factory()
+    monkeypatch.setenv("REGION", "ap-southeast-1")
+    factory.cache_clear()
+    store = factory().store
+    assert store.bucket == "files-dev" and store.client.meta.region_name == "ap-southeast-1"
+    factory.cache_clear()

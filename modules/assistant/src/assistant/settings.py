@@ -37,6 +37,7 @@ class ConversationsApiSettings(BaseAppSettings):
     assistant_table: str
     files_bucket: str      # uploads and downloads are presigned for it
     purge_queue_url: str   # where deleted conversations go for purge.py
+    region: str            # set in template.yaml, as the runtime's: S3 links are signed for the bucket's region
     conversation_days: int = 0   # as the runtime's (AssistantSettings): sending a message moves the expiry on
 
 
@@ -46,3 +47,4 @@ class PurgeSettings(BaseAppSettings):
     checkpoint_table: str
     checkpoint_bucket: str
     files_bucket: str        # a removed member's files
+    region: str              # set in template.yaml, as the runtime's

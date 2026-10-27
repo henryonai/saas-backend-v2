@@ -1231,6 +1231,7 @@ Resources:
           ASSISTANT_TABLE: !Ref AssistantTable
           FILES_BUCKET: !Ref AssistantFilesBucket
           PURGE_QUEUE_URL: !Ref AssistantPurgeQueue
+          REGION: !Ref AWS::Region
           CONVERSATION_DAYS: !Ref AssistantConversationDays   # as the runtime's: each message moves the expiry on
       Policies:
         - Statement:
@@ -1294,6 +1295,7 @@ Resources:
           CHECKPOINT_TABLE: !Ref AssistantCheckpointTable
           CHECKPOINT_BUCKET: !Ref AssistantCheckpointBucket
           FILES_BUCKET: !Ref AssistantFilesBucket
+          REGION: !Ref AWS::Region
       Policies:
         - Statement:
             - Effect: Allow

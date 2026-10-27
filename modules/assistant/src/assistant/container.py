@@ -40,13 +40,12 @@ def get_settings() -> AssistantSettings:
     return AssistantSettings()
 
 
-def _table(name: str, region: str | None = None):
+def _table(name: str, region: str):
     return boto3.resource("dynamodb", region_name=region).Table(name)
 
 
-def _files(table, bucket: str, usage: UsageService, region: str | None = None) -> FileService:
+def _files(table, bucket: str, usage: UsageService, region: str) -> FileService:
     # The bucket's own regional endpoint: links signed for it work from a browser at once, with no redirect.
-    region = region or boto3.session.Session().region_name
     s3 = boto3.client("s3", region_name=region, endpoint_url=f"https://s3.{region}.amazonaws.com",
                       config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
     return FileService(FileRepository(table), S3FileStore(s3, bucket), usage)
@@ -146,9 +145,10 @@ def get_titles():
 @lru_cache
 def get_conversation_service() -> ConversationService:
     settings = ConversationsApiSettings()
-    table = _table(settings.assistant_table)
+    table = _table(settings.assistant_table, settings.region)
     return ConversationService(ConversationRepository(table),
-                               purge=SqsPurgeQueue(boto3.client("sqs"), settings.purge_queue_url),
+                               purge=SqsPurgeQueue(boto3.client("sqs", region_name=settings.region),
+                                                   settings.purge_queue_url),
                                usage=UsageService(usage=UsageRepository(table)), days=settings.conversation_days,
                                files=get_api_file_service())
 
@@ -157,37 +157,41 @@ def get_conversation_service() -> ConversationService:
 def get_api_file_service() -> FileService:
     """For the HTTP API: uploads, the user's files, links to download them."""
     settings = ConversationsApiSettings()
-    table = _table(settings.assistant_table)
-    return _files(table, settings.files_bucket, UsageService(usage=UsageRepository(table)))
+    table = _table(settings.assistant_table, settings.region)
+    return _files(table, settings.files_bucket, UsageService(usage=UsageRepository(table)), settings.region)
 
 
 @lru_cache
 def get_memory_service() -> MemoryService:
     """For the HTTP API: the user sees, edits and deletes what the assistant remembers."""
-    return MemoryService(MemoryRepository(_table(ConversationsApiSettings().assistant_table)))
+    settings = ConversationsApiSettings()
+    return MemoryService(MemoryRepository(_table(settings.assistant_table, settings.region)))
 
 
 @lru_cache
 def get_checkpoint_purge() -> CheckpointPurge:
     settings = PurgeSettings()
-    return CheckpointPurge(_table(settings.checkpoint_table), boto3.client("s3"), settings.checkpoint_bucket)
+    return CheckpointPurge(_table(settings.checkpoint_table, settings.region),
+                           boto3.client("s3", region_name=settings.region), settings.checkpoint_bucket)
 
 
 @lru_cache
 def get_purged_conversations() -> ConversationRepository:
     """For the purge worker: what is left of the conversations that expired, and a removed member's."""
-    return ConversationRepository(_table(PurgeSettings().assistant_table))
+    settings = PurgeSettings()
+    return ConversationRepository(_table(settings.assistant_table, settings.region))
 
 
 @lru_cache
 def get_purged_memories() -> MemoryRepository:
     """For the purge worker: a removed member's memories."""
-    return MemoryRepository(_table(PurgeSettings().assistant_table))
+    settings = PurgeSettings()
+    return MemoryRepository(_table(settings.assistant_table, settings.region))
 
 
 @lru_cache
 def get_purged_files() -> FileService:
     """For the purge worker: a removed member's files."""
     settings = PurgeSettings()
-    table = _table(settings.assistant_table)
-    return _files(table, settings.files_bucket, UsageService(usage=UsageRepository(table)))
+    table = _table(settings.assistant_table, settings.region)
+    return _files(table, settings.files_bucket, UsageService(usage=UsageRepository(table)), settings.region)
