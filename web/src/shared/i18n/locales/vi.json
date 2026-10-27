@@ -50,6 +50,7 @@
   "nav": {
     "account": "Tài khoản",
     "assistant": "Trợ lý",
+    "files": "Tệp",
     "billing": "Thanh toán",
     "notifications": "Thông báo",
     "orders": "Đơn hàng",
@@ -341,6 +342,7 @@
     "stop": "Dừng",
     "thinking": "Đang suy nghĩ…",
     "tokens": "Câu trả lời vừa rồi: {{tokens}} token",
+    "earlier": "Xem các tin nhắn trước",
     "edit": "Sửa tin nhắn",
     "editLabel": "Tin nhắn của bạn",
     "editSend": "Gửi",
@@ -348,6 +350,9 @@
     "goodAnswer": "Câu trả lời tốt",
     "badAnswer": "Câu trả lời chưa tốt",
     "regenerate": "Tạo lại câu trả lời",
+    "previousVersion": "Phiên bản trước",
+    "nextVersion": "Phiên bản sau",
+    "version": "Phiên bản {{index}}/{{count}}",
     "errorTitle": "Trợ lý không trả lời được",
     "errors": {
       "internal": "Trợ lý gặp sự cố. Vui lòng thử lại.",
@@ -367,7 +372,85 @@
       "input": "Đầu vào",
       "result": "Kết quả",
       "running": "Đang chạy",
-      "done": "Xong"
+      "done": "Xong",
+      "remember": "Đã lưu vào bộ nhớ",
+      "rememberAgain": "Đã cập nhật một ghi nhớ",
+      "forget": "Đã quên một ghi nhớ",
+      "writeFile": "Viết một tệp",
+      "saveFile": "Lưu một tệp",
+      "openFile": "Mở một tệp trong terminal"
+    },
+    "memory": {
+      "title": "Bộ nhớ",
+      "description": "Trợ lý ghi nhớ những gì bạn kể về bản thân qua các cuộc trò chuyện và dùng chúng khi trả lời. Mọi điều nó ghi nhớ đều ở đây để bạn sửa hoặc xóa.",
+      "enabled": "Ghi nhớ qua các cuộc trò chuyện",
+      "on": "Bật: trợ lý có thể lưu và dùng các ghi nhớ.",
+      "off": "Tắt: trợ lý không dùng và không lưu ghi nhớ. Những gì đã lưu vẫn còn cho đến khi bạn xóa.",
+      "addLabel": "Điều để trợ lý ghi nhớ",
+      "addPlaceholder": "Thêm điều cần ghi nhớ, ví dụ “Tôi thích câu trả lời ngắn”",
+      "add": "Thêm",
+      "full": "Bộ nhớ đã đầy: hãy xóa bớt trước",
+      "empty": "Chưa ghi nhớ gì. Hãy kể với trợ lý về bản thân bạn, hoặc thêm ở đây.",
+      "listLabel": "Những điều trợ lý ghi nhớ",
+      "edit": "Sửa “{{text}}”",
+      "editLabel": "Sửa ghi nhớ",
+      "delete": "Xóa “{{text}}”",
+      "deleteLabel": "Xóa ghi nhớ",
+      "count": "{{count}} / {{limit}}",
+      "forgetAll": "Quên tất cả",
+      "forgetAllTitle": "Quên tất cả?",
+      "forgetAllDescription": "Mọi điều trợ lý ghi nhớ về bạn sẽ bị xóa vĩnh viễn. Các cuộc trò chuyện vẫn được giữ."
+    },
+    "files": {
+      "attach": "Đính kèm tệp",
+      "choose": "Tệp để đính kèm",
+      "attached": "Tệp đã đính kèm",
+      "remove": "Bỏ {{name}}",
+      "failed": "Chưa đính kèm",
+      "notAttached": "Chưa đính kèm được {{name}}: {{reason}}",
+      "tooMany": "Mỗi tin nhắn đính kèm tối đa {{count}} tệp.",
+      "download": "Tải {{name}}",
+      "downloadShort": "Tải về",
+      "image": "Ảnh: {{name}}",
+      "version": "phiên bản {{version}}"
+    }
+  },
+  "files": {
+    "title": "Tệp",
+    "description": "Những gì trợ lý tạo cho bạn và những tệp bạn đính kèm vào tin nhắn. Chúng được giữ cho đến khi bạn xóa.",
+    "sourceLabel": "Hiển thị",
+    "sources": {
+      "all": "Tất cả",
+      "assistant": "Do trợ lý tạo",
+      "upload": "Bạn đính kèm"
+    },
+    "kindLabel": "Loại",
+    "kinds": {
+      "all": "Mọi loại",
+      "image": "Hình ảnh",
+      "text": "Văn bản",
+      "data": "Dữ liệu",
+      "document": "Tài liệu",
+      "other": "Khác"
+    },
+    "columns": {
+      "name": "Tên",
+      "from": "Từ",
+      "size": "Kích thước",
+      "updated": "Cập nhật",
+      "actions": "Thao tác"
+    },
+    "versions_one": "{{count}} phiên bản",
+    "versions_other": "{{count}} phiên bản",
+    "you": "Bạn",
+    "openChat": "Mở cuộc trò chuyện",
+    "delete": "Xóa {{name}}",
+    "deleteShort": "Xóa",
+    "deleteTitle": "Xóa tệp này?",
+    "deleteDescription": "“{{name}}” và mọi phiên bản của nó sẽ bị xóa vĩnh viễn. Các tin nhắn có tệp này sẽ cho biết tệp không còn.",
+    "empty": {
+      "title": "Chưa có tệp nào",
+      "description": "Hãy đính kèm tệp vào tin nhắn, hoặc nhờ trợ lý làm một báo cáo, một bảng hay một biểu đồ."
     }
   },
   "upgrade": {

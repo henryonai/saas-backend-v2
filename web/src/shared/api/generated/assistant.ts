@@ -8,7 +8,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** GET /assistant/conversations/{thread_id}/messages */
+        get: operations["earlier_messages_assistant_conversations__thread_id__messages_get"];
         put?: never;
         /** POST /assistant/conversations/{thread_id}/messages */
         post: operations["send_message_assistant_conversations__thread_id__messages_post"];
@@ -54,6 +55,23 @@ export interface paths {
         patch: operations["rename_conversation_assistant_conversations__thread_id__patch"];
         trace?: never;
     };
+    "/assistant/conversations/{thread_id}/messages/{message_id}/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /assistant/conversations/{thread_id}/messages/{message_id}/version */
+        post: operations["show_version_assistant_conversations__thread_id__messages__message_id__version_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assistant/conversations/{thread_id}/messages/{message_id}": {
         parameters: {
             query?: never;
@@ -69,6 +87,42 @@ export interface paths {
         head?: never;
         /** PATCH /assistant/conversations/{thread_id}/messages/{message_id} */
         patch: operations["rate_answer_assistant_conversations__thread_id__messages__message_id__patch"];
+        trace?: never;
+    };
+    "/assistant/memories/{memory_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /assistant/memories/{memory_id} */
+        delete: operations["delete_memory_assistant_memories__memory_id__delete"];
+        options?: never;
+        head?: never;
+        /** PATCH /assistant/memories/{memory_id} */
+        patch: operations["edit_memory_assistant_memories__memory_id__patch"];
+        trace?: never;
+    };
+    "/assistant/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /assistant/files/{file_id} */
+        get: operations["get_file_assistant_files__file_id__get"];
+        put?: never;
+        post?: never;
+        /** DELETE /assistant/files/{file_id} */
+        delete: operations["delete_file_assistant_files__file_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/assistant/conversations": {
@@ -88,11 +142,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assistant/memories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /assistant/memories */
+        get: operations["list_memories_assistant_memories_get"];
+        put?: never;
+        /** POST /assistant/memories */
+        post: operations["add_memory_assistant_memories_post"];
+        /** DELETE /assistant/memories */
+        delete: operations["delete_memories_assistant_memories_delete"];
+        options?: never;
+        head?: never;
+        /** PATCH /assistant/memories */
+        patch: operations["set_memory_assistant_memories_patch"];
+        trace?: never;
+    };
+    "/assistant/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /assistant/files */
+        get: operations["list_files_assistant_files_get"];
+        put?: never;
+        /** POST /assistant/files */
+        post: operations["start_upload_assistant_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** ConversationDetail */
+        /**
+         * ConversationDetail
+         * @description A conversation as it is opened: the latest 200 messages of a long one (earlier_cursor for the rest).
+         */
         ConversationDetail: {
             /** Thread Id */
             thread_id: string;
@@ -104,8 +199,6 @@ export interface components {
             updated_at: string;
             /** Message Count */
             message_count: number;
-            /** Run Id */
-            run_id: string | null;
             /** Messages */
             messages: {
                 [key: string]: unknown;
@@ -117,6 +210,17 @@ export interface components {
             ratings: {
                 [key: string]: "up" | "down";
             };
+            /**
+             * Versions
+             * @default {}
+             */
+            versions: {
+                [key: string]: components["schemas"]["Version"];
+            };
+            /** Earlier Cursor */
+            earlier_cursor?: string | null;
+            /** Run Id */
+            run_id: string | null;
         };
         /** ConversationOut */
         ConversationOut: {
@@ -143,17 +247,149 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** FileDetail */
+        FileDetail: {
+            /** File Id */
+            file_id: string;
+            /** Name */
+            name: string;
+            /** Content Type */
+            content_type: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "image" | "text" | "data" | "document" | "other";
+            /** Size */
+            size: number;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "upload" | "assistant";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "ready";
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Versions */
+            versions: components["schemas"]["FileVersion"][];
+            /** Thread Id */
+            thread_id?: string | null;
+            /** Agent */
+            agent?: string | null;
+            /** Download Url */
+            download_url: string;
+            /** View Url */
+            view_url?: string | null;
+        };
+        /** FileOut */
+        FileOut: {
+            /** File Id */
+            file_id: string;
+            /** Name */
+            name: string;
+            /** Content Type */
+            content_type: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "image" | "text" | "data" | "document" | "other";
+            /** Size */
+            size: number;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "upload" | "assistant";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "ready";
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Versions */
+            versions: components["schemas"]["FileVersion"][];
+            /** Thread Id */
+            thread_id?: string | null;
+            /** Agent */
+            agent?: string | null;
+        };
+        /** FilePage */
+        FilePage: {
+            /** Items */
+            items: components["schemas"]["FileOut"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** FileVersion */
+        FileVersion: {
+            /** Version */
+            version: number;
+            /** Size */
+            size: number;
+            /** Created At */
+            created_at: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** MemoryIn */
+        MemoryIn: {
+            /** Text */
+            text: string;
+        };
+        /** MemoryList */
+        MemoryList: {
+            /** Enabled */
+            enabled: boolean;
+            /** Items */
+            items: components["schemas"]["MemoryOut"][];
+            /** Limit */
+            limit: number;
+        };
+        /** MemoryOut */
+        MemoryOut: {
+            /** Memory Id */
+            memory_id: string;
+            /** Text */
+            text: string;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Thread Id */
+            thread_id?: string | null;
+        };
+        /** MemorySettings */
+        MemorySettings: {
+            /** Enabled */
+            enabled: boolean;
+        };
         /** MessageIn */
         MessageIn: {
             /** Id */
             id: string;
-            /** Content */
+            /**
+             * Content
+             * @default
+             */
             content: string;
+            /**
+             * Attachments
+             * @default []
+             */
+            attachments: string[];
             /**
              * Agent
              * @default assistant
@@ -161,6 +397,29 @@ export interface components {
             agent: string;
             /** Replaces */
             replaces?: string | null;
+        };
+        /** MessagePage */
+        MessagePage: {
+            /** Messages */
+            messages: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Ratings
+             * @default {}
+             */
+            ratings: {
+                [key: string]: "up" | "down";
+            };
+            /**
+             * Versions
+             * @default {}
+             */
+            versions: {
+                [key: string]: components["schemas"]["Version"];
+            };
+            /** Earlier Cursor */
+            earlier_cursor?: string | null;
         };
         /** MessageRating */
         MessageRating: {
@@ -172,12 +431,43 @@ export interface components {
             /** Run Id */
             run_id: string;
         };
+        /** UploadIn */
+        UploadIn: {
+            /** Name */
+            name: string;
+            /** Content Type */
+            content_type?: string | null;
+            /** Size */
+            size: number;
+        };
+        /** UploadOut */
+        UploadOut: {
+            file: components["schemas"]["FileOut"];
+            /** Url */
+            url: string;
+            /** Fields */
+            fields: {
+                [key: string]: string;
+            };
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
             loc: (string | number)[];
             /** Error Type */
             type: string;
+        };
+        /** Version */
+        Version: {
+            /** Index */
+            index: number;
+            /** Count */
+            count: number;
+        };
+        /** VersionIn */
+        VersionIn: {
+            /** Version */
+            version: number;
         };
         /** ResponseValidationError */
         ResponseValidationError: {
@@ -193,6 +483,40 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    earlier_messages_assistant_conversations__thread_id__messages_get: {
+        parameters: {
+            query: {
+                before: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessagePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     send_message_assistant_conversations__thread_id__messages_post: {
         parameters: {
             query?: never;
@@ -357,6 +681,42 @@ export interface operations {
             };
         };
     };
+    show_version_assistant_conversations__thread_id__messages__message_id__version_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     rate_answer_assistant_conversations__thread_id__messages__message_id__patch: {
         parameters: {
             query?: never;
@@ -372,6 +732,136 @@ export interface operations {
                 "application/json": components["schemas"]["MessageRating"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_memory_assistant_memories__memory_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_memory_assistant_memories__memory_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_file_assistant_files__file_id__get: {
+        parameters: {
+            query?: {
+                version?: number | null;
+            };
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_file_assistant_files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -412,6 +902,198 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_memories_assistant_memories_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_memory_assistant_memories_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_memories_assistant_memories_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_memory_assistant_memories_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_files_assistant_files_get: {
+        parameters: {
+            query?: {
+                source?: ("upload" | "assistant") | null;
+                kind?: ("image" | "text" | "data" | "document" | "other") | null;
+                thread_id?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_upload_assistant_files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadOut"];
                 };
             };
             /** @description Validation Error */

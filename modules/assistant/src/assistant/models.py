@@ -1,12 +1,15 @@
 """
 What the assistant module stores: one usage record per workspace and month,
-and each user's conversations with their messages. What its two endpoints
-(the HTTP API and the agent's) accept and return is in schemas.py.
+each user's conversations with their messages, what it remembers about each
+user, and their files (attached, or made by an agent). What its two
+endpoints (the HTTP API and the agent's) accept and return is in schemas.py.
 """
 from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel
+
+from assistant.versions import Tree
 
 
 def current_month() -> str:
@@ -41,6 +44,52 @@ TitleSource = Literal["message", "model", "user"]
 Rating = Literal["up", "down"]
 
 
+# What a file is, for filters and for how an agent gets it (files.kind_of).
+FileKind = Literal["image", "text", "data", "document", "other"]
+FileSource = Literal["upload", "assistant"]   # the user attached it, or an agent made it
+
+
+class Attachment(BaseModel):
+    """A file on a user's message: what the agent is told about it (and given, for images and text)."""
+    file_id: str
+    name: str
+    content_type: str
+    size: int
+    kind: FileKind
+
+
+class FileVersion(BaseModel):
+    version: int    # from 1; its S3 object is <tenant>/<user>/<file_id>/<version>
+    size: int
+    created_at: str
+
+
+class File(BaseModel):
+    """
+    A user's file, in S3 with this record: one they attached to a message, or
+    one an agent made (a report, a chart, data), each with its versions. Kept
+    until its user deletes it, or leaves the workspace; an upload never sent
+    expires a day after it was asked for.
+    """
+    file_id: str
+    name: str
+    content_type: str
+    kind: FileKind
+    size: int                   # the newest version's, in bytes
+    source: FileSource
+    status: Literal["pending", "ready"]   # pending: an upload not sent with a message yet
+    created_at: str
+    updated_at: str
+    versions: list[FileVersion]
+    thread_id: str | None = None   # the conversation it was attached to or made in
+    agent: str | None = None       # the agent that made it
+    expires_at: int | None = None  # while pending (TTL)
+
+    def attachment(self) -> Attachment:
+        return Attachment(file_id=self.file_id, name=self.name, content_type=self.content_type, size=self.size,
+                          kind=self.kind)
+
+
 class Run(BaseModel):
     """
     The answer being written to a conversation's newest message: one at a
@@ -57,6 +106,23 @@ class Run(BaseModel):
     # An edited (or answered again) message: the agent's side of the
     # conversation goes back to before this user message, as the history did.
     rewind_to: str | None = None
+    # The agent's checkpoints are of another path through the conversation
+    # (another version was shown, or another agent spoke since): it starts
+    # again from the history of the one shown (app.restored).
+    restore: bool = False
+    attachments: list[Attachment] = []   # the files on the message
+
+
+class Memory(BaseModel):
+    """
+    Something the assistant remembers about a user across conversations, as
+    ChatGPT's saved memories: theirs to see, edit and delete.
+    """
+    memory_id: str
+    text: str
+    created_at: str
+    updated_at: str
+    thread_id: str | None = None   # the conversation an agent saved it in; None: the user wrote it
 
 
 class Conversation(BaseModel):
@@ -66,10 +132,25 @@ class Conversation(BaseModel):
     title_source: TitleSource
     created_at: str
     updated_at: str            # the last message
-    message_count: int         # AG-UI messages stored: the user's, the assistant's, tool results
+    # AG-UI messages shown (the user's, the assistant's, tool results): the
+    # length of the path through the versions (versions.py).
+    message_count: int
     agents: set[str] = set()   # the agents spoken to (forwardedProps.agent): each keeps its own checkpoints
     # Epoch seconds; DynamoDB's TTL removes it some time after. None: kept
     # until its user deletes it (CONVERSATION_DAYS = 0).
     expires_at: int | None = None
-    question_id: str | None = None   # the newest user message's: sent again (a retry), it isn't added twice
+    question_id: str | None = None   # the newest user message shown: sent again (a retry), it is answered again
     run: Run | None = None
+    # Its versions (versions.Tree): the path shown and every branch. None:
+    # saved before it had any, one branch.
+    path: list[list[int]] | None = None
+    branches: dict[str, dict] | None = None
+    # One more with every change to what it shows (a message, an answer,
+    # another version shown); None: not changed since versions came.
+    rev: int | None = None
+    # Each agent's checkpoints are of the conversation as it was at this
+    # rev; when it isn't now, the agent starts again from the history (Run.restore).
+    heads: dict[str, int] = {}
+
+    def tree(self) -> Tree:
+        return Tree.load(self.path, self.branches, self.message_count)

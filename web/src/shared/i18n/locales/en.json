@@ -50,6 +50,7 @@
   "nav": {
     "account": "Account",
     "assistant": "Assistant",
+    "files": "Files",
     "billing": "Billing",
     "notifications": "Notifications",
     "orders": "Orders",
@@ -341,6 +342,7 @@
     "stop": "Stop",
     "thinking": "Thinking…",
     "tokens": "Last answer: {{tokens}} tokens",
+    "earlier": "Show earlier messages",
     "edit": "Edit message",
     "editLabel": "Your message",
     "editSend": "Send",
@@ -348,6 +350,9 @@
     "goodAnswer": "Good answer",
     "badAnswer": "Bad answer",
     "regenerate": "Regenerate",
+    "previousVersion": "Previous version",
+    "nextVersion": "Next version",
+    "version": "Version {{index}} of {{count}}",
     "errorTitle": "The assistant couldn't answer",
     "errors": {
       "internal": "Something went wrong on the assistant's side. Please try again.",
@@ -367,7 +372,85 @@
       "input": "Input",
       "result": "Result",
       "running": "Running",
-      "done": "Done"
+      "done": "Done",
+      "remember": "Saved to memory",
+      "rememberAgain": "Updated a memory",
+      "forget": "Forgot a memory",
+      "writeFile": "Write a file",
+      "saveFile": "Save a file",
+      "openFile": "Open a file in the terminal"
+    },
+    "memory": {
+      "title": "Memory",
+      "description": "The assistant remembers what you tell it about yourself, across conversations, and uses it in its answers. Everything it remembers is here for you to change or delete.",
+      "enabled": "Remember things across conversations",
+      "on": "On: it can save and use memories.",
+      "off": "Off: it neither uses nor saves memories. What it saved stays until you delete it.",
+      "addLabel": "Something for the assistant to remember",
+      "addPlaceholder": "Add something to remember, e.g. “I prefer short answers”",
+      "add": "Add",
+      "full": "Memory is full: delete something first",
+      "empty": "Nothing remembered yet. Tell the assistant something about yourself, or add it here.",
+      "listLabel": "What the assistant remembers",
+      "edit": "Edit “{{text}}”",
+      "editLabel": "Edit memory",
+      "delete": "Delete “{{text}}”",
+      "deleteLabel": "Delete memory",
+      "count": "{{count}} of {{limit}}",
+      "forgetAll": "Forget everything",
+      "forgetAllTitle": "Forget everything?",
+      "forgetAllDescription": "Everything the assistant remembers about you is deleted for good. Your conversations stay."
+    },
+    "files": {
+      "attach": "Attach files",
+      "choose": "Files to attach",
+      "attached": "Files attached",
+      "remove": "Remove {{name}}",
+      "failed": "Not attached",
+      "notAttached": "{{name}} wasn't attached: {{reason}}",
+      "tooMany": "Attach at most {{count}} files to a message.",
+      "download": "Download {{name}}",
+      "downloadShort": "Download",
+      "image": "Image: {{name}}",
+      "version": "version {{version}}"
+    }
+  },
+  "files": {
+    "title": "Files",
+    "description": "What the assistant made for you, and what you attached to messages. They stay until you delete them.",
+    "sourceLabel": "Show",
+    "sources": {
+      "all": "All",
+      "assistant": "Made by the assistant",
+      "upload": "Attached by you"
+    },
+    "kindLabel": "Kind",
+    "kinds": {
+      "all": "All kinds",
+      "image": "Images",
+      "text": "Text",
+      "data": "Data",
+      "document": "Documents",
+      "other": "Other"
+    },
+    "columns": {
+      "name": "Name",
+      "from": "From",
+      "size": "Size",
+      "updated": "Updated",
+      "actions": "Actions"
+    },
+    "versions_one": "{{count}} version",
+    "versions_other": "{{count}} versions",
+    "you": "You",
+    "openChat": "Open the conversation",
+    "delete": "Delete {{name}}",
+    "deleteShort": "Delete",
+    "deleteTitle": "Delete this file?",
+    "deleteDescription": "“{{name}}” and all its versions are deleted for good. Messages it was on show that it's gone.",
+    "empty": {
+      "title": "No files yet",
+      "description": "Attach files to your messages, or ask the assistant for a report, a table or a chart."
     }
   },
   "upgrade": {

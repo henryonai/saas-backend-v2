@@ -6,7 +6,8 @@ Three entry points use it:
               Built once per Runtime session (a microVM) and reused by its
               following messages.
   handler.py  Lambda: the HTTP API for the users' conversations, which also
-              takes their messages (and counts them against the plan).
+              takes their messages (and counts them against the plan), their
+              memories and their files.
   purge.py    Lambda: deletes what is left of a deleted or expired
               conversation, or of a removed member's: the agents'
               checkpoints, and the messages.
@@ -18,10 +19,19 @@ when they run.
 from functools import lru_cache
 
 import boto3
+from botocore.config import Config
 
 from assistant.checkpoints import CheckpointPurge
-from assistant.repository import ConversationRepository, UsageRepository
-from assistant.service import ConversationLog, ConversationService, SqsPurgeQueue, UsageService
+from assistant.files import S3FileStore
+from assistant.repository import ConversationRepository, FileRepository, MemoryRepository, UsageRepository
+from assistant.service import (
+    ConversationLog,
+    ConversationService,
+    FileService,
+    MemoryService,
+    SqsPurgeQueue,
+    UsageService,
+)
 from assistant.settings import AssistantSettings, ConversationsApiSettings, PurgeSettings
 
 
@@ -30,14 +40,36 @@ def get_settings() -> AssistantSettings:
     return AssistantSettings()
 
 
-def _table(name: str, region: str | None = None):
+def _table(name: str, region: str):
     return boto3.resource("dynamodb", region_name=region).Table(name)
+
+
+def _files(table, bucket: str, usage: UsageService, region: str) -> FileService:
+    # The bucket's own regional endpoint: links signed for it work from a browser at once, with no redirect.
+    s3 = boto3.client("s3", region_name=region, endpoint_url=f"https://s3.{region}.amazonaws.com",
+                      config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
+    return FileService(FileRepository(table), S3FileStore(s3, bucket), usage)
 
 
 @lru_cache
 def get_usage_service() -> UsageService:
     settings = get_settings()
     return UsageService(usage=UsageRepository(_table(settings.assistant_table, settings.region)))
+
+
+@lru_cache
+def get_memories() -> MemoryService:
+    """What the assistant remembers about each user (the agents', in the runtime)."""
+    settings = get_settings()
+    return MemoryService(MemoryRepository(_table(settings.assistant_table, settings.region)))
+
+
+@lru_cache
+def get_file_service() -> FileService:
+    """The users' files, for the agents' tools and what the model is sent of attachments."""
+    settings = get_settings()
+    return _files(_table(settings.assistant_table, settings.region), settings.files_bucket, get_usage_service(),
+                  settings.region)
 
 
 @lru_cache
@@ -63,10 +95,13 @@ def get_agents() -> dict:
     settings = get_settings()
     agentcore = boto3.client("bedrock-agentcore", region_name=settings.region)
     usage = get_usage_service()
+    memories, files = get_memories(), get_file_service()
     tools = make_tools(
         api=HttpAppApi(httpx.Client(timeout=10), settings.api_url),
         usage=usage,
         sandbox=AgentCoreSandbox(agentcore, settings.sandbox_id, settings.sandbox_session_seconds),
+        memories=memories,
+        files=files,
     )
     models: dict[str, BaseChatModel] = {}
 
@@ -92,6 +127,8 @@ def get_agents() -> dict:
         ),
         usage=usage,
         tools=tools,
+        memories=memories,
+        files=files,
     ))
 
 
@@ -108,19 +145,53 @@ def get_titles():
 @lru_cache
 def get_conversation_service() -> ConversationService:
     settings = ConversationsApiSettings()
-    table = _table(settings.assistant_table)
+    table = _table(settings.assistant_table, settings.region)
     return ConversationService(ConversationRepository(table),
-                               purge=SqsPurgeQueue(boto3.client("sqs"), settings.purge_queue_url),
-                               usage=UsageService(usage=UsageRepository(table)), days=settings.conversation_days)
+                               purge=SqsPurgeQueue(boto3.client("sqs", region_name=settings.region),
+                                                   settings.purge_queue_url),
+                               usage=UsageService(usage=UsageRepository(table)), days=settings.conversation_days,
+                               files=get_api_file_service())
+
+
+@lru_cache
+def get_api_file_service() -> FileService:
+    """For the HTTP API: uploads, the user's files, links to download them."""
+    settings = ConversationsApiSettings()
+    table = _table(settings.assistant_table, settings.region)
+    return _files(table, settings.files_bucket, UsageService(usage=UsageRepository(table)), settings.region)
+
+
+@lru_cache
+def get_memory_service() -> MemoryService:
+    """For the HTTP API: the user sees, edits and deletes what the assistant remembers."""
+    settings = ConversationsApiSettings()
+    return MemoryService(MemoryRepository(_table(settings.assistant_table, settings.region)))
 
 
 @lru_cache
 def get_checkpoint_purge() -> CheckpointPurge:
     settings = PurgeSettings()
-    return CheckpointPurge(_table(settings.checkpoint_table), boto3.client("s3"), settings.checkpoint_bucket)
+    return CheckpointPurge(_table(settings.checkpoint_table, settings.region),
+                           boto3.client("s3", region_name=settings.region), settings.checkpoint_bucket)
 
 
 @lru_cache
 def get_purged_conversations() -> ConversationRepository:
     """For the purge worker: what is left of the conversations that expired, and a removed member's."""
-    return ConversationRepository(_table(PurgeSettings().assistant_table))
+    settings = PurgeSettings()
+    return ConversationRepository(_table(settings.assistant_table, settings.region))
+
+
+@lru_cache
+def get_purged_memories() -> MemoryRepository:
+    """For the purge worker: a removed member's memories."""
+    settings = PurgeSettings()
+    return MemoryRepository(_table(settings.assistant_table, settings.region))
+
+
+@lru_cache
+def get_purged_files() -> FileService:
+    """For the purge worker: a removed member's files."""
+    settings = PurgeSettings()
+    table = _table(settings.assistant_table, settings.region)
+    return _files(table, settings.files_bucket, UsageService(usage=UsageRepository(table)), settings.region)

@@ -36,7 +36,9 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 
 from shared.errors import AppError
 
+from assistant.models import Attachment
 from assistant.schemas import ERROR_CODES
+from assistant.service import user_parts
 
 
 def error_event(error: AppError) -> RunErrorEvent:
@@ -151,6 +153,23 @@ class Transcript:
         return self._by_id[message_id]
 
 
+def user_message(message_id: str, text: str, attachments: list[Attachment]) -> HumanMessage:
+    """
+    A user message as the agent keeps it: its text, and a line naming each
+    file on it, whose details ride along (additional_kwargs) for
+    AttachmentsMiddleware, which gives the model the files it can read. The
+    bytes never go into the checkpoint.
+    """
+    lines = [text] if text else []
+    lines += [f"[Attached file: {a.name} ({a.content_type}, {_size(a.size)}), id {a.file_id}]" for a in attachments]
+    return HumanMessage("\n\n".join(lines) or "(no text)", id=message_id,
+                        additional_kwargs={"attachments": [a.model_dump() for a in attachments]} if attachments else {})
+
+
+def _size(size: int) -> str:
+    return f"{size / 1024 / 1024:.1f} MB" if size >= 1024 * 1024 else f"{max(1, round(size / 1024))} KB"
+
+
 def agent_messages(history: list[dict]) -> list[BaseMessage]:
     """
     A conversation's AG-UI messages (the history: the user's, and what
@@ -164,7 +183,7 @@ def agent_messages(history: list[dict]) -> list[BaseMessage]:
     for message in history:
         match message.get("role"):
             case "user":
-                messages.append(HumanMessage(message.get("content") or "", id=message["id"]))
+                messages.append(user_message(message["id"], *user_parts(message.get("content"))))
             case "assistant":
                 calls = []
                 for call in message.get("toolCalls") or []:

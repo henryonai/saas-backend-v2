@@ -16,4 +16,8 @@ export const qk = {
   notifications: () => ['notifications'] as const,
   conversations: () => ['assistant', 'conversations'] as const,
   conversation: (threadId: string) => ['assistant', 'conversation', threadId] as const,
+  memories: () => ['assistant', 'memories'] as const,
+  files: () => ['assistant', 'files'] as const,
+  fileList: (filters: Record<string, string | undefined>) => ['assistant', 'files', 'list', filters] as const,
+  file: (fileId: string, version?: number) => ['assistant', 'files', 'detail', fileId, version ?? null] as const,
 };

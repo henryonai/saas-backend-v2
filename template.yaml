@@ -358,6 +358,7 @@ Resources:
       EvaluationPeriods: 1
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
       AlarmActions: [!Ref AlertsTopic]
 
   # The relay retries a record it can't publish for up to an hour, and later
@@ -581,6 +582,7 @@ Resources:
       EvaluationPeriods: 1
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
       AlarmActions: [!Ref AlertsTopic]
 
   # =====================================================================
@@ -751,6 +753,7 @@ Resources:
       EvaluationPeriods: 1
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
       AlarmActions: [!Ref AlertsTopic]
 
   # =====================================================================
@@ -986,6 +989,39 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
 
+  # The users' files: what they attach to messages, and what agents make for
+  # them, one object per version (assistant/files.py). The browser uploads
+  # straight here with a presigned POST from the HTTP API, tagged pending:
+  # unless a message takes it (the tag goes), the rule below deletes it a
+  # day later. Downloads are presigned GETs. Kept until their user deletes
+  # them or leaves the workspace (the purge worker).
+  AssistantFilesBucket:
+    Type: AWS::S3::Bucket
+    Condition: HasAssistant
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: [!If [HasCorsOrigin, !Ref CorsOrigin, !Sub "https://${WebDistribution.DomainName}"]]
+            AllowedMethods: [POST, GET]     # uploads; GET: the app previews a text file
+            AllowedHeaders: ["*"]
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: UploadsNeverSent
+            Status: Enabled
+            TagFilters: [{ Key: pending, Value: "true" }]
+            ExpirationInDays: 1
+
   # The bash tool's terminal: a separate microVM per conversation, so the
   # model's commands never run next to the agent's credentials. No
   # ExecutionRoleArn: commands in it can't call any AWS API.
@@ -1041,12 +1077,18 @@ Resources:
                 Effect: Allow
                 Action: [s3:GetLifecycleConfiguration, s3:PutLifecycleConfiguration]
                 Resource: !GetAtt AssistantCheckpointBucket.Arn
-              # Usage counters, and each conversation's history (service.ConversationLog);
-              # Query reads it back for an agent whose checkpoints expired (app.restored).
+              # Usage counters, each conversation's history (service.ConversationLog), and
+              # what the agents remember about each user (DeleteItem: the forget tool);
+              # Query reads the history back for an agent whose checkpoints expired (app.restored).
               - Sid: Table
                 Effect: Allow
-                Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
+                Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem,
+                         dynamodb:DeleteItem]
                 Resource: !GetAtt AssistantTable.Arn
+              - Sid: Files                  # the users' files: attachments read for the model, files agents save
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "${AssistantFilesBucket.Arn}/*"
               - Sid: Sandbox                # assistant/sandbox.py
                 Effect: Allow
                 Action: [bedrock-agentcore:StartCodeInterpreterSession, bedrock-agentcore:InvokeCodeInterpreter]
@@ -1113,6 +1155,7 @@ Resources:
         ASSISTANT_TABLE: !Ref AssistantTable
         CHECKPOINT_TABLE: !Ref AssistantCheckpointTable
         CHECKPOINT_BUCKET: !Ref AssistantCheckpointBucket
+        FILES_BUCKET: !Ref AssistantFilesBucket
         API_URL: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
         MODEL_ID: !Ref AssistantModelId
         OPENROUTER_API_KEY_PARAM: !Ref OpenRouterApiKeyParam
@@ -1171,7 +1214,9 @@ Resources:
 
   # The users' conversations (/assistant/conversations): send a message (saved,
   # with the run that will answer it, before AgentCore runs it), stop an
-  # answer, list, reopen, rename, delete. A Lambda behind the HTTP API like
+  # answer, list, reopen, rename, delete; what the assistant remembers about
+  # each user (/assistant/memories); their files (/assistant/files: uploads,
+  # presigned, and links to download). A Lambda behind the HTTP API like
   # the other modules; the agent writes the answers. Same code as the agent,
   # but only the shared layer: these files never import LangChain (a test checks).
   AssistantApiFunction:
@@ -1184,16 +1229,34 @@ Resources:
         Variables:
           POWERTOOLS_SERVICE_NAME: assistant
           ASSISTANT_TABLE: !Ref AssistantTable
+          FILES_BUCKET: !Ref AssistantFilesBucket
           PURGE_QUEUE_URL: !Ref AssistantPurgeQueue
+          REGION: !Ref AWS::Region
           CONVERSATION_DAYS: !Ref AssistantConversationDays   # as the runtime's: each message moves the expiry on
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem]
+              Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:BatchWriteItem,
+                       dynamodb:DeleteItem]
               Resource: [!GetAtt AssistantTable.Arn, !Sub "${AssistantTable.Arn}/index/gsi1"]
+            # Presigned uploads (PutObject with its tag) and downloads (GetObject) act as this role;
+            # HeadObject (GetObject) checks an upload arrived, DeleteObjectTagging keeps it.
+            - Effect: Allow
+              Action: [s3:PutObject, s3:PutObjectTagging, s3:GetObject, s3:DeleteObject, s3:DeleteObjectTagging]
+              Resource: !Sub "${AssistantFilesBucket.Arn}/*"
         - SQSSendMessagePolicy: { QueueName: !GetAtt AssistantPurgeQueue.QueueName }
       Events:
         ListGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/conversations, Method: GET } }
+        MemoriesGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/memories, Method: GET } }
+        MemoriesPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/memories, Method: POST } }
+        MemoriesPatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/memories, Method: PATCH } }
+        MemoriesDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/memories, Method: DELETE } }
+        MemoryPatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/memories/{proxy+}", Method: PATCH } }
+        MemoryDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/memories/{proxy+}", Method: DELETE } }
+        FilesGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/files, Method: GET } }
+        FilesPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /assistant/files, Method: POST } }
+        FileGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/files/{proxy+}", Method: GET } }
+        FileDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/files/{proxy+}", Method: DELETE } }
         OneGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: GET } }
         OnePost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: POST } }
         OnePatch: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/assistant/conversations/{proxy+}", Method: PATCH } }
@@ -1231,6 +1294,8 @@ Resources:
           ASSISTANT_TABLE: !Ref AssistantTable
           CHECKPOINT_TABLE: !Ref AssistantCheckpointTable
           CHECKPOINT_BUCKET: !Ref AssistantCheckpointBucket
+          FILES_BUCKET: !Ref AssistantFilesBucket
+          REGION: !Ref AWS::Region
       Policies:
         - Statement:
             - Effect: Allow
@@ -1241,10 +1306,10 @@ Resources:
                 - !Sub "${AssistantTable.Arn}/index/gsi1"   # a removed member's conversations
             - Effect: Allow
               Action: [s3:ListBucket]
-              Resource: !GetAtt AssistantCheckpointBucket.Arn
+              Resource: [!GetAtt AssistantCheckpointBucket.Arn, !GetAtt AssistantFilesBucket.Arn]
             - Effect: Allow
               Action: [s3:DeleteObject]
-              Resource: !Sub "${AssistantCheckpointBucket.Arn}/*"
+              Resource: [!Sub "${AssistantCheckpointBucket.Arn}/*", !Sub "${AssistantFilesBucket.Arn}/*"]
         - SQSSendMessagePolicy: { QueueName: !GetAtt AssistantPurgeDLQ.QueueName }   # a stream batch that kept failing
       Events:
         Queue:
@@ -1327,6 +1392,7 @@ Resources:
       EvaluationPeriods: 1
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
       AlarmActions: [!Ref AlertsTopic]
 
 Outputs:

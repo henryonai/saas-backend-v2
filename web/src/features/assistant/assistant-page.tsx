@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { BotIcon, MessagesSquareIcon, SquarePenIcon } from 'lucide-react';
+import { BotIcon, ChevronsUpIcon, MessagesSquareIcon, SquarePenIcon } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ApiError } from '@/shared/api/client';
@@ -10,14 +10,18 @@ import { Button } from '@/shared/components/ui/button';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/shared/components/ui/empty';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/shared/components/ui/sheet';
 import { Skeleton } from '@/shared/components/ui/skeleton';
+import { Spinner } from '@/shared/components/ui/spinner';
 import { config } from '@/shared/config';
+import { toastError } from '@/shared/lib/errors';
 import { Composer } from './components/composer';
 import { ConversationList } from './components/conversation-list';
+import { MemoryButton } from './components/memory-dialog';
 import { RunErrorNotice } from './components/run-error';
 import { AssistantTurn, UserTurn } from './components/turn';
 import {
   conversationStore,
   editMessage,
+  loadEarlier,
   newConversation,
   openConversation,
   rateAnswer,
@@ -25,10 +29,11 @@ import {
   retry,
   sendMessage,
   stopAnswer,
+  switchVersion,
   useConversation,
 } from './conversation';
 import { refreshConversations, showNewConversation, useConversationHistory } from './hooks';
-import { toTurns } from './transcript';
+import { type AttachmentView, toTurns } from './transcript';
 
 const SUGGESTIONS = ['assistant.suggestions.orders', 'assistant.suggestions.usage', 'assistant.suggestions.analyze'] as const;
 
@@ -62,6 +67,7 @@ export function AssistantPage({ threadId }: { threadId?: string }) {
           actions={
             <>
               <ConversationsSheet activeId={threadId} />
+              <MemoryButton />
               {threadId && <NewConversationButton />}
             </>
           }
@@ -169,13 +175,14 @@ function OpenConversation({ threadId }: { threadId: string }) {
 function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, text: string) => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { messages, running, error, tokens, ratings } = useConversation();
+  const { messages, running, error, tokens, ratings, earlier, loadingEarlier, versions } = useConversation();
   const turns = useMemo(() => toTurns(messages), [messages]);
   const last = turns.at(-1);
   const lastPart = last?.role === 'assistant' ? last.parts.at(-1) : undefined;
   // Nothing on screen moves: the model hasn't written yet, or a tool just finished.
   const thinking = running && (!lastPart || (lastPart.type === 'tool' && lastPart.call.result !== null));
   const follow = useFollowBottom(messages, error, running);
+  const keepPlace = useKeepPlace(messages);
 
   // After each answer: the list's order changed, and a new conversation has its model-written title.
   const wasRunning = useRef(running);
@@ -184,12 +191,12 @@ function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, 
     wasRunning.current = running;
   }, [running, queryClient]);
 
-  function send(text: string) {
+  function send(text: string, attachments: AttachmentView[] = []) {
     const { threadId, messages: before } = conversationStore.getState();
-    if (!text.trim()) return;
+    if (!text.trim() && attachments.length === 0) return;
     follow();
-    void sendMessage(text);
-    if (before.length === 0) onFirstMessage?.(threadId, text.trim());
+    void sendMessage(text, attachments);
+    if (before.length === 0) onFirstMessage?.(threadId, text.trim() || attachments[0].name);
   }
 
   function edit(messageId: string, text: string) {
@@ -197,14 +204,31 @@ function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, 
     void editMessage(messageId, text);
   }
 
-  function answerAgain() {
+  function answerAgain(answerId: string) {
     follow();
-    void regenerate();
+    void regenerate(answerId);
+  }
+
+  function showVersion(messageId: string, version: number) {
+    switchVersion(messageId, version).catch((failure: unknown) => toastError(failure, t));
+  }
+
+  function showEarlier() {
+    keepPlace();
+    loadEarlier().catch((failure: unknown) => toastError(failure, t));
   }
 
   return (
     <>
       <div className="flex-1 space-y-6 pb-6">
+        {earlier && (
+          <div className="flex justify-center">
+            <Button variant="ghost" size="sm" className="text-muted-foreground" disabled={loadingEarlier || running} onClick={showEarlier}>
+              {loadingEarlier ? <Spinner /> : <ChevronsUpIcon />}
+              {t('assistant.earlier')}
+            </Button>
+          </div>
+        )}
         {turns.length === 0 && !running ? (
           <Empty className="border border-dashed">
             <EmptyHeader>
@@ -225,17 +249,27 @@ function Conversation({ onFirstMessage }: { onFirstMessage?: (threadId: string, 
         ) : (
           turns.map((turn, index) =>
             turn.role === 'user' ? (
-              <UserTurn key={turn.id} text={turn.text} onEdit={running ? undefined : (text) => edit(turn.id, text)} />
+              <UserTurn
+                key={turn.id}
+                text={turn.text}
+                attachments={turn.attachments}
+                onEdit={running ? undefined : (text) => edit(turn.id, text)}
+                version={versions[turn.id]}
+                onVersion={running ? undefined : (version) => showVersion(turn.id, version)}
+              />
             ) : (
               <AssistantTurn
                 key={turn.id}
                 turn={turn}
                 active={running && index === turns.length - 1}
                 thinking={thinking && index === turns.length - 1}
+                latest={index === turns.length - 1}
                 rating={ratings[turn.answerId]}
                 onRate={(rating) => void rateAnswer(turn.answerId, rating)}
-                // The last answer; after a failed run, the error's Try again does the same.
-                onRegenerate={!running && !error && index === turns.length - 1 ? answerAgain : undefined}
+                // After the last answer's failed run, the error's Try again does the same.
+                onRegenerate={!running && !(error && index === turns.length - 1) ? () => answerAgain(turn.id) : undefined}
+                version={versions[turn.id]}
+                onVersion={running ? undefined : (version) => showVersion(turn.id, version)}
               />
             ),
           )
@@ -270,6 +304,22 @@ function useFollowBottom(...changes: unknown[]): () => void {
   }, changes);
   return () => {
     following.current = true;
+  };
+}
+
+/**
+ * Messages added above the ones on screen (earlier ones, loaded) leave the
+ * user where they were reading. Returns a function to call before they load.
+ */
+function useKeepPlace(messages: unknown): () => void {
+  const fromBottom = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (fromBottom.current === null) return;
+    window.scrollTo({ top: document.documentElement.scrollHeight - fromBottom.current });
+    fromBottom.current = null;
+  }, [messages]);
+  return () => {
+    fromBottom.current = document.documentElement.scrollHeight - window.scrollY;
   };
 }
 

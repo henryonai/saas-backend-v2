@@ -1,5 +1,5 @@
 import { Link, Outlet, useMatchRoute } from '@tanstack/react-router';
-import { BellIcon, BotIcon, CreditCardIcon, LayoutDashboardIcon, PackageIcon, UsersIcon } from 'lucide-react';
+import { BellIcon, BotIcon, CreditCardIcon, FolderIcon, LayoutDashboardIcon, PackageIcon, UsersIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/shared/components/ui/badge';
 import {
@@ -27,6 +27,7 @@ const NAV = [
   { to: '/', label: 'nav.overview', icon: LayoutDashboardIcon, exact: true },
   { to: '/orders', label: 'nav.orders', icon: PackageIcon, exact: false },
   { to: '/assistant', label: 'nav.assistant', icon: BotIcon, exact: false },
+  { to: '/files', label: 'nav.files', icon: FolderIcon, exact: false },
   { to: '/team', label: 'nav.team', icon: UsersIcon, exact: false },
   { to: '/billing', label: 'nav.billing', icon: CreditCardIcon, exact: false },
   { to: '/notifications', label: 'nav.notifications', icon: BellIcon, exact: false },

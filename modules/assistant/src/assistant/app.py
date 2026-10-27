@@ -28,13 +28,15 @@ Each request:
   3. the run: the agent answers, with middleware for the token cap, as AG-UI
      events (a new conversation is titled meanwhile); it ends early if the
      user pressed Stop. An agent whose checkpoints of the conversation
-     expired starts again from its side of the history (restored)
+     expired, or are of another version of it, starts again from its side
+     of the history (restored)
   4. the history gets what streamed, however the run ended, and the
      conversation's run is removed; if the conversation was deleted
      meanwhile, the agent's checkpoints of it go too
 """
 import asyncio
 import base64
+import dataclasses
 import json
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -52,7 +54,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from shared.auth import user_from_claims
 from shared.errors import AppError, InvalidRequest, NotFound, Unauthorized
 
-from assistant.agui import AgUiStream, Transcript, agent_messages, error_event, internal_error
+from assistant.agui import AgUiStream, Transcript, agent_messages, error_event, internal_error, user_message
 from assistant.container import get_agents, get_conversation_log, get_titles
 from assistant.context import SESSION_ID, AgentContext, actor_of
 from assistant.factory import thread_config
@@ -138,14 +140,15 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
            titles: Titles) -> Iterator[BaseEvent]:
     """One run, start to finish, as AG-UI events. Its history is kept however it ends."""
     thread_id, run_id = context.session_id, run.run_id
+    context = dataclasses.replace(context, agent=run.agent)
     # Its timestamp tells this log of the run from another (resume_after).
     yield RunStartedEvent(thread_id=thread_id, run_id=run_id, timestamp=time.time_ns() // 1_000_000)
     # A new conversation is titled while the agent answers, not after it.
-    naming = titles.start(context, run.prompt) if run.first else None
+    naming = titles.start(context, run.prompt or ", ".join(a.name for a in run.attachments)) if run.first else None
     log = {"tenant_id": context.user.tenant_id, "user_id": context.user.user_id, "session_id": thread_id,
            "run_id": run_id, "agent": run.agent}
     input_tokens = output_tokens = 0
-    stopped = False
+    stopped = checkpointed = False
     events, transcript, streamed, stop_model = AgUiStream(), Transcript(), Streamed(), StopModel()
     agent = config = None
     try:
@@ -156,9 +159,12 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
         config = {**thread_config(context, run.agent), "callbacks": [stop_model]}
         # The checkpoint as saved (like keep_what_the_user_saw), or None.
         saved = agent.checkpointer.get_tuple(config)
-        earlier = rewound(saved, run.rewind_to, log) if saved else restored(history, context, run, log)
+        if saved and not run.restore:
+            earlier = rewound(saved, run.rewind_to, log)
+        else:   # none, or one of another version of the conversation
+            earlier = restored(history, context, run, log, replace=saved is not None)
         # The user's message keeps its AG-UI id: an edit or a retry finds it (rewound).
-        messages = [*earlier, HumanMessage(run.prompt, id=run.message_id)]
+        messages = [*earlier, user_message(run.message_id, run.prompt, run.attachments)]
         # Subagents' own output doesn't come through here (see delegation.py), only the calling agent's.
         # durability="exit": one checkpoint when the run ends (stopped, failed or done), not one per step.
         stream = agent.stream({"messages": messages}, config, context=context, stream_mode="messages",
@@ -176,8 +182,8 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
                     stopped = True
                     stop_model.stopping.set()
                     break
-        if stopped:
-            keep_what_the_user_saw(agent, config, streamed.messages, log)
+        # The run's checkpoint was written as its stream closed: it has the whole run, or (stopped) is given it.
+        checkpointed = keep_what_the_user_saw(agent, config, streamed.messages, log) if stopped else True
         for event in events.close():
             transcript.add(event)
             yield event
@@ -191,7 +197,7 @@ def handle(context: AgentContext, run: Run, agents: dict, history: ConversationL
     finally:
         # What streamed, however the run ended; before RUN_FINISHED, so a
         # client that reloads the conversation then finds all of it.
-        if keep_history(history, context, run, transcript, log) is False and config is not None:
+        if keep_history(history, context, run, transcript, log, checkpointed) is False and config is not None:
             forget(agent, config, log)
 
     if naming is not None:
@@ -271,31 +277,34 @@ def rewound(saved, message_id: str | None, log: dict) -> list[BaseMessage]:
     return [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages[:at]]
 
 
-def restored(history: ConversationLog, context: AgentContext, run: Run, log: dict) -> list[BaseMessage]:
+def restored(history: ConversationLog, context: AgentContext, run: Run, log: dict,
+             replace: bool = False) -> list[BaseMessage]:
     """
     The agent has no checkpoint of the conversation: it never answered in it
     (nothing to restore), its checkpoints expired while the conversation is
     kept (CHECKPOINT_DAYS without a message), or a run died before writing
-    its first. It starts again from what the history has of its side of the
-    conversation, before this message: the same messages, so it remembers
-    what the user sees. An edit's later messages are gone from the history
-    already.
+    its first. Or its checkpoint is of another version of the conversation
+    (Run.restore): the user showed another one, or another agent spoke since
+    (`replace`: what it has goes). It starts again from what the history has
+    of its side of the conversation it shows, before this message: the same
+    messages, so it remembers what the user sees.
     """
     messages = agent_messages(history.earlier(context, run))
-    if messages:
+    if messages or replace:
         logger.info("Restored the agent's side of the conversation from its history",
-                    extra={**log, "messages": len(messages)})
-    return messages
+                    extra={**log, "messages": len(messages), "replaced": replace})
+    return [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages] if replace else messages
 
 
-def keep_what_the_user_saw(agent, config: dict, streamed: list[BaseMessage], log: dict) -> None:
+def keep_what_the_user_saw(agent, config: dict, streamed: list[BaseMessage], log: dict) -> bool:
     """
     Stop closes the stream in the middle of a step, and LangGraph checkpoints
     only whole steps: a tool's result that came back just before stays a
     pending write, which the next message's run discards, and the answer's
     text so far isn't kept at all. The user saw both, and the history has
     them, so they go into the agent's state too. A tool call cut short is
-    left out (ConversationMiddleware answers one that never ran).
+    left out (ConversationMiddleware answers one that never ran). False if
+    that failed: the checkpoint lacks what the user saw.
     """
     try:
         # The checkpoint as saved: get_state() would add the pending writes, which the next run drops.
@@ -311,20 +320,22 @@ def keep_what_the_user_saw(agent, config: dict, streamed: list[BaseMessage], log
                 missing.append(AIMessage(content=message.text, id=message.id))
         if missing:
             agent.update_state(config, {"messages": missing}, as_node="model")
+        return True
     except Exception:
         logger.warning("Could not keep what the stopped run showed; the agent goes without it", extra=log,
                        exc_info=True)
+        return False
 
 
 def keep_history(history: ConversationLog, context: AgentContext, run: Run, transcript: Transcript,
-                 log: dict) -> bool | None:
+                 log: dict, checkpointed: bool) -> bool | None:
     """
     Best effort: the user has the answer already, and the agent its
-    checkpoint. False if the conversation was deleted meanwhile; None if
-    saving failed.
+    checkpoint (`checkpointed`: all of the run). False if the conversation
+    was deleted meanwhile; None if saving failed.
     """
     try:
-        return history.record(context, run.run_id, transcript.messages, agent=run.agent)
+        return history.record(context, run.run_id, transcript.messages, agent=run.agent, checkpointed=checkpointed)
     except Exception:
         logger.exception("Could not save the conversation's history", extra=log)
         return None

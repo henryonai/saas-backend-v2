@@ -146,7 +146,7 @@ fields such as `subscription_revision`).
 | Event | Published by | Used by |
 |---|---|---|
 | `UserInvited` | accounts | notifications (invitation email) |
-| `MemberRemoved` | accounts | assistant (deletes the member's conversations in that workspace) |
+| `MemberRemoved` | accounts | assistant (deletes the member's conversations, memories and files in that workspace) |
 | `OrderCreated` | orders | notifications (in-app) |
 | `SubscriptionChanged` (with `revision`) | billing | accounts (plan copy), notifications |
 | `PaymentFailed` | billing | notifications |
@@ -408,6 +408,17 @@ credentials for the stack (to create the users and read the webhook secret
 or the Stripe key),
 so use it on dev, not prod. The test users' logins are saved in
 `.aws-sam/smoke-users.json`.
+
+With the assistant deployed, `uv run scripts/smoke-assistant.py --stack saas-dev`
+checks it the same way, with the stack's real model, AgentCore and S3, and
+after each step reads what the assistant table and the files bucket hold: a
+conversation created, read, renamed, rated and deleted (its checkpoints
+purged), versions and how `META` stores them, Stop in the middle of an
+answer, an answer asked for again that fails, a long one read back, memory,
+files (uploads, what S3 refuses, attachments the model reads, files it
+writes, versions, links, deletes), on a workspace it sets to Pro the
+sandbox's files, and a member who leaves (the purge deletes all of theirs).
+It adds three test users and costs a few cents of model tokens.
 
 ## Frontend
 

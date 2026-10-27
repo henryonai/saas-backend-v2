@@ -1,7 +1,21 @@
 import { type InfiniteData, type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { qk } from '@/shared/api/keys';
-import type { AssistantConversation, AssistantConversationPage } from '@/shared/api/types';
-import { deleteConversation, getConversation, listConversations, renameConversation } from './api';
+import type { AssistantConversation, AssistantConversationPage, AssistantFileKind, AssistantMemoryList } from '@/shared/api/types';
+import {
+  addMemory,
+  deleteAllMemories,
+  deleteConversation,
+  deleteFile,
+  deleteMemory,
+  editMemory,
+  getConversation,
+  getFile,
+  listFiles,
+  listConversations,
+  listMemories,
+  renameConversation,
+  setMemoryEnabled,
+} from './api';
 
 const PAGE_SIZE = 30;
 /** The server's limit on a title (service.TITLE_CHARS); a first message is cut to it. */
@@ -90,4 +104,78 @@ function updateList(
   queryClient.setQueryData<ConversationPages>(qk.conversations(), (data) =>
     data && { ...data, pages: data.pages.map((page, index) => ({ ...page, items: change(page.items, index === 0) })) },
   );
+}
+
+/**
+ * What the assistant remembers about the user, read each time the Memory
+ * dialog opens: an answer may have just saved or forgotten something.
+ */
+export function useMemories() {
+  return useQuery({ queryKey: qk.memories(), queryFn: ({ signal }) => listMemories(signal), staleTime: 0 });
+}
+
+/** Adding, editing, deleting memories, and memory on or off: each reads the list again after. */
+export function useMemoryChanges() {
+  const queryClient = useQueryClient();
+  const settled = () => queryClient.invalidateQueries({ queryKey: qk.memories() });
+  return {
+    add: useMutation({ mutationFn: addMemory, onSettled: settled }),
+    edit: useMutation({ mutationFn: ({ memoryId, text }: { memoryId: string; text: string }) => editMemory(memoryId, text), onSettled: settled }),
+    remove: useMutation({ mutationFn: deleteMemory, onSettled: settled }),
+    removeAll: useMutation({ mutationFn: deleteAllMemories, onSettled: settled }),
+    setEnabled: useMutation({
+      mutationFn: setMemoryEnabled,
+      onSuccess: (list: AssistantMemoryList) => queryClient.setQueryData(qk.memories(), list),
+    }),
+  };
+}
+
+/**
+ * A file's links (to download it, and, an image, to show it). They last 15
+ * minutes on the server: kept 10 here, then read again.
+ */
+export function useFileLinks(fileId: string, version?: number) {
+  return useQuery({
+    queryKey: qk.file(fileId, version),
+    queryFn: ({ signal }) => getFile(fileId, version, signal),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    retry: false,
+  });
+}
+
+/** Downloads a file (a version, or the newest): a fresh link, opened. Throws what failed. */
+export async function downloadFile(fileId: string, version?: number): Promise<void> {
+  const { download_url } = await getFile(fileId, version);
+  const link = document.createElement('a');
+  link.href = download_url;
+  link.rel = 'noopener';
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+export interface FileFilters {
+  source?: 'upload' | 'assistant';
+  kind?: AssistantFileKind;
+}
+
+const FILES_PAGE = 30;
+
+/** The user's files, newest first, a page at a time. */
+export function useFiles(filters: FileFilters) {
+  return useInfiniteQuery({
+    queryKey: qk.fileList({ ...filters }),
+    queryFn: ({ pageParam, signal }) => listFiles({ ...filters, limit: FILES_PAGE, cursor: pageParam }, signal),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+  });
+}
+
+export function useDeleteFile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteFile,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: qk.files() }),
+  });
 }

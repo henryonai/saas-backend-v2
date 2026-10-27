@@ -34,6 +34,7 @@ interface Sent {
   content: string;
   agent: string;
   replaces?: string;
+  attachments?: string[];
 }
 
 /**
@@ -53,6 +54,15 @@ function backend(...answers: Answer[]) {
   const rated: { threadId: string; messageId: string; rating: string | null }[] = [];
   const running = new Map<string, string>();
   const refusals: { status: number; message: string }[] = [];
+  // A long conversation: the cursor its opening gives, and the page each cursor reads.
+  const earlierFrom = new Map<string, string>();
+  const earlier = new Map<string, { messages: Message[]; ratings: Record<string, string>; earlier_cursor: string | null }>();
+  // Each conversation's messages with other versions, and what showing one of them shows: `${messageId}/${version}`.
+  const versions = new Map<string, Record<string, { index: number; count: number }>>();
+  const shownVersions = new Map<string, { messages: Message[]; versions: Record<string, { index: number; count: number }> }>();
+  // Files: the uploads S3 got, and each file's record.
+  const uploads: FormData[] = [];
+  const files = new Map<string, Record<string, unknown>>();
 
   function keep(threadId: string, title: string, messages: Message[]) {
     const now = new Date().toISOString();
@@ -62,6 +72,10 @@ function backend(...answers: Answer[]) {
 
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
+    if (url.startsWith('https://s3.test')) {
+      uploads.push(init?.body as FormData);
+      return new Response(null, { status: 204 });
+    }
     if (url.startsWith('https://agent.test')) {
       const run: Run = JSON.parse(String(init?.body));
       runs.push(run);
@@ -83,24 +97,46 @@ function backend(...answers: Answer[]) {
     calls.push(`${method} ${path}`);
     if (path === '/tenants/me') return json({ tenant_id: 'tenant-1', name: 'Acme Coffee', plan: 'free' });
     if (path === '/notifications') return json([]);
+    if (path === '/assistant/files' && method === 'POST') {
+      const { name, content_type, size } = JSON.parse(String(init?.body));
+      const file = { file_id: `f${files.size + 1}`, name, content_type, size, kind: content_type.startsWith('image/') ? 'image' : 'text', source: 'upload', status: 'pending', created_at: '', updated_at: '', versions: [], thread_id: null, agent: null };
+      files.set(file.file_id, file);
+      return json({ file, url: 'https://s3.test/', fields: { key: `t/u/${file.file_id}/1` } }, 201);
+    }
+    if (path.startsWith('/assistant/files/')) {
+      const fileId = path.split('/')[3];
+      return json({ ...files.get(fileId), file_id: fileId, download_url: `https://s3.test/download/${fileId}`, view_url: `https://s3.test/view/${fileId}` });
+    }
     if (path === '/assistant/conversations') {
       return json({ items: [...conversations.values()].reverse(), next_cursor: null });
     }
     const [rawId, action, rawMessageId] = (path.split('/assistant/conversations/')[1] ?? '').split('/');
     const id = decodeURIComponent(rawId);
-    if (method === 'POST' && action === 'messages') {
+    if (method === 'POST' && action === 'messages' && !rawMessageId) {
       const message: Sent = JSON.parse(String(init?.body));
       sent.push(message);
       const refusal = refusals.shift();
       if (refusal) return json({ message: refusal.message }, refusal.status);
       if (!conversations.has(id)) keep(id, message.content, []);
       const messages = histories.get(id)!;
-      // An edit, or the same message again: it takes the place of that one and everything after it.
+      // An edit, or the same message again: the new version is shown in the place of that one and what came after it.
       const at = messages.findIndex((m) => m.id === (message.replaces ?? message.id));
       if (at >= 0) messages.splice(at);
       messages.push({ id: message.id, role: 'user', content: message.content });
+      if (message.replaces && message.replaces !== message.id) {
+        const count = (versions.get(id)?.[message.replaces]?.count ?? 1) + 1;
+        versions.set(id, { ...versions.get(id), [message.id]: { index: count, count } });
+      }
       running.set(id, `run-${sent.length}`);
       return json({ run_id: running.get(id) }, 201);
+    }
+    if (method === 'POST' && action === 'messages' && path.endsWith('/version')) {
+      const { version } = JSON.parse(String(init?.body));
+      const shown = shownVersions.get(`${decodeURIComponent(rawMessageId)}/${version}`);
+      if (!shown) return json({ message: 'That message has no such version.' }, 404);
+      histories.set(id, [...shown.messages]);
+      versions.set(id, shown.versions);
+      return json({ ...conversations.get(id), run_id: null, messages: shown.messages, ratings: {}, versions: shown.versions, earlier_cursor: null });
     }
     if (method === 'PATCH' && action === 'messages') {
       const { rating } = JSON.parse(String(init?.body));
@@ -108,10 +144,14 @@ function backend(...answers: Answer[]) {
       return new Response(null, { status: 204 });
     }
     if (method === 'POST' && action === 'runs') return new Response(null, { status: 204 });
+    if (method === 'GET' && action === 'messages') return json(earlier.get(new URL(url).searchParams.get('before') ?? ''));
     const conversation = conversations.get(id);
     if (!conversation) return json({ message: 'No such conversation: it was deleted, or it expired.' }, 404);
     if (method === 'GET') {
-      return json({ ...conversation, run_id: running.get(id) ?? null, messages: histories.get(id), ratings: ratings.get(id) ?? {} });
+      return json({
+        ...conversation, run_id: running.get(id) ?? null, messages: histories.get(id), ratings: ratings.get(id) ?? {},
+        earlier_cursor: earlierFrom.get(id) ?? null, versions: versions.get(id) ?? {},
+      });
     }
     if (method === 'PATCH') {
       conversation.title = JSON.parse(String(init?.body)).title;
@@ -124,7 +164,7 @@ function backend(...answers: Answer[]) {
     return json({ message: 'Not Found' }, 404);
   }));
   return {
-    runs, sent, calls, conversations, histories, running, keep, ratings, rated,
+    runs, sent, calls, conversations, histories, running, keep, ratings, rated, earlierFrom, earlier, versions, shownVersions, uploads, files,
     refuse: (status: number, message: string) => refusals.push({ status, message }),
   };
 }
@@ -336,7 +376,8 @@ describe('chatting', () => {
 
     expect(await screen.findByText("It's Paris.")).toBeInTheDocument();
     expect(screen.queryByText('Paris.')).not.toBeInTheDocument();
-    expect(server.sent[1]).toEqual(server.sent[0]); // the same message: on the server it replaces itself
+    // The same message, answered again: on the server the old answer stays, a version before this one.
+    expect(server.sent[1]).toEqual({ ...server.sent[0], replaces: server.sent[0].id });
     expect(screen.getAllByRole('button', { name: 'Edit message' })).toHaveLength(1); // one question on screen
   });
 
@@ -348,6 +389,26 @@ describe('chatting', () => {
 
     expect(await screen.findByText('Once upon a time.', {}, { timeout: 3000 })).toBeInTheDocument();
     expect(screen.getAllByText(/Once upon/)).toHaveLength(1);
+  });
+
+  it('attaches a file: uploaded to S3 at once, then sent with the message, which shows it', async () => {
+    const server = backend(finished(...text('m1', 'Buy green tea.')));
+    renderAt('/assistant');
+    const user = userEvent.setup();
+    await user.upload(await screen.findByLabelText('Files to attach'), new File(['Buy more green tea.'], 'notes.txt', { type: 'text/plain' }));
+    const attached = within(await screen.findByRole('list', { name: 'Files attached' }));
+    expect(await attached.findByText('notes.txt')).toBeInTheDocument();
+    // Once it is up, the file alone could be sent.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+    expect(server.uploads).toHaveLength(1);
+
+    await ask('What do I need?');
+
+    expect(await screen.findByText('Buy green tea.')).toBeInTheDocument();
+    expect(server.sent).toEqual([expect.objectContaining({ content: 'What do I need?', attachments: ['f1'] })]);
+    expect(server.uploads[0].get('key')).toBe('t/u/f1/1');
+    expect(screen.getByRole('button', { name: 'Download notes.txt' })).toBeInTheDocument(); // on the message
+    expect(screen.queryByRole('list', { name: 'Files attached' })).not.toBeInTheDocument(); // the composer is clear
   });
 
   it('starts a new conversation with a new threadId', async () => {
@@ -451,7 +512,7 @@ describe('conversations', () => {
     expect(await screen.findByText('A newer answer.')).toBeInTheDocument();
   });
 
-  it('edits a message: it and what came after make way for the new one and its answer', async () => {
+  it('edits a message: it and what came after make way on screen for the new version and its answer', async () => {
     const server = backend(finished(...text('m5', 'Here are your paid orders.')));
     server.keep(THREAD, 'Order check', history);
     renderAt(`/assistant/${THREAD}`);
@@ -468,6 +529,48 @@ describe('conversations', () => {
     expect(screen.queryByText('You have no orders yet.')).not.toBeInTheDocument();
     expect(server.sent).toEqual([expect.objectContaining({ content: 'Which orders are paid?', replaces: 'u1' })]);
     expect(server.histories.get(THREAD)?.map((m) => m.content)).toEqual(['Which orders are paid?']);
+  });
+
+  it('numbers an edit as the newest version once it is answered, and shows the one before on request', async () => {
+    const server = backend(finished(...text('m5', 'Here are your paid orders.')));
+    server.keep(THREAD, 'Order check', history);
+    server.shownVersions.set(`${'edited'}/1`, { messages: history, versions: { u1: { index: 1, count: 2 } } });
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+    await screen.findByText('You have no orders yet.');
+
+    await user.click(screen.getByRole('button', { name: 'Edit message' }));
+    const editor = screen.getByRole('textbox', { name: 'Your message' });
+    await user.clear(editor);
+    await user.type(editor, 'Which orders are paid?{Enter}');
+    await screen.findByText('Here are your paid orders.');
+
+    expect(await screen.findByRole('group', { name: 'Version 2 of 2' })).toBeInTheDocument();
+    const edited = server.sent[0].id;
+    server.shownVersions.set(`${edited}/1`, { messages: history, versions: { u1: { index: 1, count: 2 } } });
+    await user.click(screen.getByRole('button', { name: 'Previous version' }));
+
+    expect(await screen.findByText('You have no orders yet.')).toBeInTheDocument();
+    expect(screen.queryByText('Here are your paid orders.')).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Version 1 of 2' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previous version' })).toBeDisabled();
+    expect(server.calls).toContain(`POST /assistant/conversations/${THREAD}/messages/${edited}/version`);
+  });
+
+  it('shows the versions an answer has, and asks for any answer again', async () => {
+    const server = backend(finished(...text('m9', 'Nothing yet, still.')));
+    server.keep(THREAD, 'Order check', [...history, { id: 'u2', role: 'user', content: 'And now?' }, { id: 'a3', role: 'assistant', content: 'Still none.' }]);
+    server.versions.set(THREAD, { a1: { index: 2, count: 2 } });
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+    await screen.findByText('Still none.');
+    expect(screen.getByRole('group', { name: 'Version 2 of 2' })).toBeInTheDocument();
+
+    await user.click(screen.getAllByRole('button', { name: 'Regenerate' })[0]); // the first answer
+
+    expect(await screen.findByText('Nothing yet, still.')).toBeInTheDocument();
+    expect(screen.queryByText('Still none.')).not.toBeInTheDocument(); // what came after it makes way
+    expect(server.sent).toEqual([expect.objectContaining({ id: 'u1', content: 'What did we order?', replaces: 'u1' })]);
   });
 
   it('rates an answer, shows the rating when it opens again, and takes it back', async () => {
@@ -490,6 +593,54 @@ describe('conversations', () => {
       { threadId: THREAD, messageId: 'a2', rating: 'up' },
       { threadId: THREAD, messageId: 'a2', rating: null },
     ]));
+  });
+
+  it('reads a long conversation back from its latest messages, a page at a time', async () => {
+    const server = backend();
+    server.keep(THREAD, 'Order check', history.slice(2)); // it opens at its latest messages
+    server.earlierFrom.set(THREAD, 'c1');
+    server.earlier.set('c1', { messages: history.slice(1, 2), ratings: {}, earlier_cursor: 'c2' });
+    server.earlier.set('c2', { messages: history.slice(0, 1), ratings: {}, earlier_cursor: null });
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+    await screen.findByText('You have no orders yet.');
+    expect(screen.queryByText('Let me check.')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Show earlier messages' }));
+    expect(await screen.findByText('Let me check.')).toBeInTheDocument();
+    expect(screen.getByText('List orders')).toBeInTheDocument(); // its result was on screen already
+    await user.click(screen.getByRole('button', { name: 'Show earlier messages' }));
+
+    expect(await screen.findByText('What did we order?')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show earlier messages' })).not.toBeInTheDocument();
+    expect(server.calls.filter((call) => call === `GET /assistant/conversations/${THREAD}/messages`)).toHaveLength(2);
+  });
+
+  it('shows the files on a message, an image as itself, and offers what an agent saved', async () => {
+    const server = backend();
+    server.files.set('f9', { name: 'receipt.png', kind: 'image' });
+    const saved = { file_id: 'f7', name: 'report.md', content_type: 'text/markdown', size: 2048, version: 2 };
+    server.keep(THREAD, 'Receipt', [
+      { id: 'u1', role: 'user', content: [
+        { type: 'text', text: 'Write up this receipt' },
+        { type: 'image', source: { type: 'file', value: 'f9', mimeType: 'image/png' }, metadata: { name: 'receipt.png', size: 2048, kind: 'image' } },
+      ] } as Message,
+      { id: 'a1', role: 'assistant', content: '', toolCalls: [{ id: 'c1', type: 'function', function: { name: 'write_file', arguments: '{"name": "report.md", "content": "# Receipt"}' } }] },
+      { id: 't1', role: 'tool', toolCallId: 'c1', content: JSON.stringify(saved) },
+      { id: 'a2', role: 'assistant', content: 'Here is the write-up.' },
+    ]);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    renderAt(`/assistant/${THREAD}`);
+    const user = userEvent.setup();
+
+    expect(await screen.findByRole('img', { name: 'Image: receipt.png' })).toHaveAttribute('src', 'https://s3.test/view/f9');
+    expect(screen.getByText('Write up this receipt')).toBeInTheDocument();
+    expect(screen.getByText(/version 2/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Download report.md' }));
+
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    expect(server.calls).toContain('GET /assistant/files/f7');
+    click.mockRestore();
   });
 
   it("says when a conversation isn't there any more", async () => {

@@ -4,8 +4,15 @@ import type {
   AssistantConversation,
   AssistantConversationDetail,
   AssistantConversationPage,
+  AssistantFileDetail,
+  AssistantFileKind,
+  AssistantFilePage,
+  AssistantMemory,
+  AssistantMemoryList,
+  AssistantMessagePage,
   AssistantRating,
   AssistantRun,
+  AssistantUpload,
 } from '@/shared/api/types';
 import { config } from '@/shared/config';
 
@@ -109,12 +116,13 @@ export function requestError(error: unknown): RunError {
 /**
  * Sends the user's message: the server saves it (creating the conversation
  * the first time) with the run that will answer it, and counts it against
- * the plan. `replaces`: an earlier message of the user's that this one takes
- * the place of, with everything after it (an edit); the same id sent again
- * replaces itself (Try again). 402 at the plan's limit; 429 at the user's
- * hourly limit; 409 while the previous answer is coming.
+ * the plan. `replaces`: an earlier message of the user's that this one is a
+ * new version of (an edit; the old one stays, with what followed it); its own
+ * id, or the newest question's sent again, answers it again (Try again,
+ * Regenerate), keeping the old answer as a version. 402 at the plan's limit;
+ * 429 at the user's hourly limit; 409 while the previous answer is coming.
  */
-export function postMessage(threadId: string, message: { id: string; content: string; agent: string; replaces?: string }) {
+export function postMessage(threadId: string, message: { id: string; content: string; agent: string; replaces?: string; attachments?: string[] }) {
   return api<AssistantRun>(`/assistant/conversations/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: message });
 }
 
@@ -141,13 +149,101 @@ export function getConversation(threadId: string, signal?: AbortSignal) {
   return api<AssistantConversationDetail>(`/assistant/conversations/${encodeURIComponent(threadId)}`, { signal });
 }
 
+/**
+ * The messages before the ones the page has (`before`: their earlier_cursor),
+ * oldest first: a long conversation scrolled back to its top.
+ */
+export function getEarlierMessages(threadId: string, before: string, signal?: AbortSignal) {
+  return api<AssistantMessagePage>(`/assistant/conversations/${encodeURIComponent(threadId)}/messages`, { query: { before }, signal });
+}
+
 export function renameConversation(threadId: string, title: string) {
   return api<AssistantConversation>(`/assistant/conversations/${encodeURIComponent(threadId)}`, { method: 'PATCH', body: { title } });
+}
+
+/**
+ * Shows another version of a message (`version`, from 1: an edit, or an
+ * answer asked for again) and what followed it; the conversation as it shows
+ * now. 409 while an answer is coming.
+ */
+export function showVersion(threadId: string, messageId: string, version: number) {
+  return api<AssistantConversationDetail>(
+    `/assistant/conversations/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/version`,
+    { method: 'POST', body: { version } },
+  );
 }
 
 /** Gone at once; the server deletes the agent's own copy in the background. */
 export function deleteConversation(threadId: string) {
   return api<void>(`/assistant/conversations/${encodeURIComponent(threadId)}`, { method: 'DELETE' });
+}
+
+/** What the assistant remembers about the user across conversations, oldest first, and whether memory is on. */
+export function listMemories(signal?: AbortSignal) {
+  return api<AssistantMemoryList>('/assistant/memories', { signal });
+}
+
+/** Something the user tells it to remember. 409 when it has the most it keeps. */
+export function addMemory(text: string) {
+  return api<AssistantMemory>('/assistant/memories', { method: 'POST', body: { text } });
+}
+
+export function editMemory(memoryId: string, text: string) {
+  return api<AssistantMemory>(`/assistant/memories/${encodeURIComponent(memoryId)}`, { method: 'PATCH', body: { text } });
+}
+
+export function deleteMemory(memoryId: string) {
+  return api<void>(`/assistant/memories/${encodeURIComponent(memoryId)}`, { method: 'DELETE' });
+}
+
+/** Forgets everything; memory stays on or off. */
+export function deleteAllMemories() {
+  return api<void>('/assistant/memories', { method: 'DELETE' });
+}
+
+/** Off: the assistant neither sees nor saves memories; what it saved stays until deleted. */
+export function setMemoryEnabled(enabled: boolean) {
+  return api<AssistantMemoryList>('/assistant/memories', { method: 'PATCH', body: { enabled } });
+}
+
+/**
+ * Attaching a file: the API gives it an id and a presigned POST, and the
+ * browser sends it to S3 there (uploadFile). It goes with the message that
+ * names it; never sent, it is deleted a day later. 400 for a type or size
+ * not taken; 429 at the hourly limit.
+ */
+export function startUpload(file: { name: string; type: string; size: number }) {
+  return api<AssistantUpload>('/assistant/files', { method: 'POST', body: { name: file.name, content_type: file.type || null, size: file.size } });
+}
+
+/** The file to S3, as the presigned POST says: its fields, then the file. Throws an ApiError when S3 refuses it. */
+export async function uploadFile(upload: AssistantUpload, file: Blob, signal?: AbortSignal): Promise<void> {
+  const form = new FormData();
+  for (const [name, value] of Object.entries(upload.fields)) form.append(name, value);
+  form.append('file', file);
+  let response: Response;
+  try {
+    response = await fetch(upload.url, { method: 'POST', body: form, signal });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new ApiError(0, 'Network error');
+  }
+  if (!response.ok) throw new ApiError(response.status, `The upload failed (HTTP ${response.status}).`);
+}
+
+/** The user's files, newest first: what the assistant made (source assistant), what they attached (upload). */
+export function listFiles(query: { source?: 'upload' | 'assistant'; kind?: AssistantFileKind; limit?: number; cursor?: string }, signal?: AbortSignal) {
+  return api<AssistantFilePage>('/assistant/files', { query, signal });
+}
+
+/** A file, with short-lived links to download it (`version`, or the newest) and, an image, to show it. */
+export function getFile(fileId: string, version?: number, signal?: AbortSignal) {
+  return api<AssistantFileDetail>(`/assistant/files/${encodeURIComponent(fileId)}`, { query: { version }, signal });
+}
+
+/** Every version of it. A message it was on still names it, as a file that is gone. */
+export function deleteFile(fileId: string) {
+  return api<void>(`/assistant/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
 }
 
 /** The first `data:` line of an SSE body, parsed. */

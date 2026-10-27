@@ -24,6 +24,8 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
                    3. agent.stream(...)   built by factory.py from its Markdown file
                         ├─ UsageMiddleware         tokens of every model call → DynamoDB, stop at the cap
                         ├─ ConversationMiddleware  repair cut-off tool calls; send recent history only
+                        ├─ AttachmentsMiddleware   the images and text files on those messages, from S3
+                        ├─ MemoryMiddleware        what it remembers about the user, in its system prompt
                         ├─ PlanToolsMiddleware     hide tools the plan doesn't include
                         ├─ Model/ToolCallLimit, ToolErrorMiddleware (built-in)
                         ├─ checkpointer      DynamoDBSaver (each agent's side of the conversation;
@@ -31,14 +33,17 @@ browser ──ID token──▶ AgentCore Runtime ── JWT authorizer (user po
                         ├─ tools ──user's own token──▶ HTTP API (/orders ...)
                         ├─ bash ──InvokeCodeInterpreter──▶ sandbox microVM (one per conversation,
                         │                                   no AWS role, no internet by default)
+                        ├─ write_file, save_file ──▶ S3 (AssistantFilesBucket), the user's files
+                        ├─ open_file ──S3──▶ writeFiles ──▶ the sandbox
                         └─ task ──▶ a subagent (fresh context, same user and sandbox, no checkpoints)
                       stops early when the user pressed Stop (asked once a second)
                       meanwhile, for a new conversation: titles.py, one small call for its title
                    4. ConversationLog.record     the history gets what streamed (AG-UI messages),
                                                  then the conversation's run is removed
 
+browser ──presigned POST──▶ S3 (AssistantFilesBucket): a file to attach, before its message
 browser ──ID token──▶ HTTP API /assistant/conversations ──▶ handler.py (Lambda): list, open, rename,
-                                                              delete, stop an answer, rate one
+                      /assistant/memories, /files            delete, stop an answer, rate one; memories; files
                                                               └─ delete ──SQS──▶ purge.py: the checkpoints
 DynamoDB TTL removes an idle conversation's META ──stream──▶ purge.py: its messages and checkpoints
 ```
@@ -57,19 +62,23 @@ src/assistant/
 ├── tools/               the tools agents can name in `tools:` (a registry in __init__.py)
 │   ├── orders.py        list_orders, get_order (the HTTP API, with the user's token)
 │   ├── usage.py         assistant_usage
-│   └── bash.py          bash (the sandbox)
-├── middleware/          one file per middleware (usage, conversation, plan_tools, errors)
+│   ├── bash.py          bash (the sandbox)
+│   ├── memory.py        remember, forget (agents with `memory: user`)
+│   └── files.py         write_file, save_file, open_file (the user's files)
+├── middleware/          one file per middleware (usage, conversation, attachments, memory, plan_tools, errors)
+├── files.py             the users' files in S3: what may be uploaded, presigned uploads and links
 ├── titles.py            names a new conversation from its first message, while the agent answers
 ├── app.py               AgentCore entry point (the SDK's AGUIApp): auth, the run, stop, history, stream
 ├── stop.py              Stop ends the run's model call, and estimates what the call cost
+├── versions.py          a conversation's versions (edits, answers asked for again): the path it shows
 ├── runs.py              this microVM's runs: each runs in a worker thread into a log any request reads
 ├── agui.py              the agent's stream → AG-UI events; Transcript: events → AG-UI messages
 ├── context.py           AgentContext: who the agents work for (runtime context, never in a prompt)
 ├── schemas.py           what the HTTP API and the AG-UI endpoint accept and return (no AG-UI import)
 ├── checkpoints.py       deletes a thread's checkpoints, as DynamoDBSaver laid them out (boto3 only)
 ├── sandbox.py           AgentCore Code Interpreter adapter: one sandbox per conversation
-├── service.py, repository.py, models.py   usage per workspace; conversations and their history
-├── api.py, handler.py   Lambda: the HTTP API for the users' conversations (sending a message too)
+├── service.py, repository.py, models.py   usage per workspace; conversations and their history; memories; files
+├── api.py, handler.py   Lambda: the HTTP API for the users' conversations (sending a message too) and memories
 ├── agent_names.py       the agents' names without loading them, for that Lambda
 ├── purge.py             Lambda: what is left of a deleted conversation or a removed member's (SQS), or an
 │                        expired one (stream)
@@ -110,9 +119,10 @@ You are a data analyst working for another agent...
 | `disallowedTools` | Removed from `tools`. |
 | `model` | `inherit` (the stack's `MODEL_ID`), `sonnet`, `opus`, `haiku` (Claude through OpenRouter), an OpenRouter model (`vendor/model`) or a Bedrock model id. |
 | `maxTurns` | Model calls per run, 1 to 50 (default 15). |
+| `memory` | `user`: Claude Code's user scope, here the signed-in user's memories (below). The agent is sent them and gets `remember` and `forget`, which no other agent gets (don't list them in `tools`). |
 | `subagents` | **This app's addition:** the agents this one may delegate to, through the `task` tool. |
 
-Other Claude Code fields (`color`, `memory`, `skills`, `hooks`, ...) are
+Other Claude Code fields (`color`, `skills`, `hooks`, ...) are
 ignored with a warning in the logs. Every file is checked when the agents
 load: a missing field, an unknown tool or subagent, or a bad model fails
 `main.py` at startup and `uv run pytest` (test_definitions.py), not a
@@ -209,13 +219,87 @@ session and agent (`thread_config()`): the client picks the session id, so
 someone sending another user's session id still gets their own conversation,
 and the table, which knows only threads, needs nothing else.
 
-There is no long-term memory across conversations: the agent knows what it
-was told in this conversation, and what the tools return.
+**Memory across conversations** works as ChatGPT's saved memories: short
+facts about the user (a preference, their role, a goal), kept until the user
+deletes them, or leaves the workspace. An agent with `memory: user` (the
+assistant) is sent all of them at the end of its system prompt, read again
+for each model call (`MemoryMiddleware`), and saves one with `remember`
+(`replaces` corrects one) when the user tells it something lasting or asks
+it to, or `forgets` one, as its prompt says; never what a tool or a file
+says, nor passwords, card numbers or health details. Saving one shows in the
+chat as a tool call ("Saved to memory"). The user sees, adds, edits and
+deletes them, or turns memory off: off, agents neither see nor save any
+(the tools are hidden and refuse), and what was saved stays until deleted.
+At most `MAX_MEMORIES` (100) of `MEMORY_CHARS` (500) each, so the prompt
+stays small; the same text again is the same memory. They live in the
+assistant table, one query for all of a user's (`MemoryRepository`), and
+their text is never logged (`Memory saved` and `Memory deleted` lines have
+the id). Each answer is sent them all: no embeddings, no search, nothing the
+user can't see; a template that wants more (search over past chats, or
+recall of the relevant few among thousands) can add DynamoDB vector search
+behind the same tools.
 
 **Tools** call the existing HTTP API with the caller's own token. The API
 checks the tenant and the role as it does for the frontend, no module imports
 another (rule 1), and the agent can never do more than the user could. The
 token reaches tools through `runtime.context`; the model never sees it.
+
+## Files (attachments, and what agents make)
+
+As in ChatGPT and Claude, a message can carry files, and an answer can leave
+files behind: a report, a table, a chart, each kept with its versions until
+the user deletes it (the web app's Files page; Guildloft's Artifacts page
+reads the same records). The bytes are in `AssistantFilesBucket`, one object
+per version (`<tenant>/<user>/<file_id>/<version>`); each file has a record in
+the assistant table (`FILE#<id>` under the user's `FILES` key: name, type,
+kind, size, versions, the conversation and the agent).
+
+- **Attaching** is two steps, so bytes never pass through a Lambda:
+  `POST /assistant/files` checks the type and size and gives a presigned
+  POST that takes exactly that file, tagged `pending`; the browser sends it
+  to S3. The message names it (`attachments`): `ConversationService.send`
+  checks each file is the user's and uploaded (HeadObject), counts the
+  message, then keeps the files (the tag goes, the record loses its TTL).
+  An upload never sent goes a day later, the record by TTL and the object by
+  the bucket's lifecycle rule on the tag. Images (PNG, JPEG, GIF, WebP) up
+  to 5 MB, the models' common limit; text, code, data (CSV, JSON, Excel),
+  documents (PDF, Word, PowerPoint) and archives up to 20 MB; 5 a message;
+  `assistant_uploads_per_user_hour` in `shared/plans.py` (Free 20, Pro 60,
+  Business 120), counted like messages.
+- **The message** keeps them as AG-UI parts: its text, then an `image` or
+  `document` part per file with a file source (`{"type": "file", "value":
+  <file id>}`, a handle only this app resolves) and its name and size. The
+  page shows them from there (`GET /assistant/files/{id}` for a link). An
+  edit keeps the message's files unless the page sends others; an answer
+  asked for again answers the message as it was saved, files and all.
+- **What the model gets** (`AttachmentsMiddleware`): the agent's state keeps
+  a line per file (name, type, size, id), never its bytes, so checkpoints
+  stay small; each model call is sent, among the messages it is sent, the
+  newest 4 images as images and text files inline, 20,000 characters each
+  and 60,000 in all (read from S3 once per version, cached in the microVM).
+  Anything else (a PDF, a spreadsheet), and whatever is past those limits,
+  the agent opens in the sandbox: `open_file` copies a file there
+  (`files/<name>`, Code Interpreter `writeFiles`) to read with code.
+- **Files agents make**: `write_file` saves text the agent wrote (Markdown,
+  CSV, JSON, HTML, SVG; no sandbox needed, so every plan has it);
+  `save_file` saves a file from the sandbox (`readFiles`): a chart drawn
+  with matplotlib, a spreadsheet. Saved under the same name in the same
+  conversation, it is the next version of that file (50 at most). The tool
+  result is the file as JSON, which the page shows as a card to download
+  (an image, shown). Each records the agent that made it (a subagent's
+  inside `task`).
+- **Downloads** are presigned GETs for 15 minutes, as attachments (`view_url`
+  shows an image inline): a file an agent wrote never opens as a page on the
+  app's origin. The bucket answers CORS for the app's origin (`CorsOrigin`),
+  for the uploads and for a text preview.
+- **Kept** until the user deletes it; deleting a conversation keeps its
+  files (the Files page links to a conversation that may be gone). A member
+  who leaves the workspace loses theirs with their conversations.
+- **IAM**: the HTTP API's role signs the uploads (`s3:PutObject`,
+  `s3:PutObjectTagging`), checks and keeps them, and links and deletes them;
+  the runtime reads attachments and writes what agents save; the purge
+  worker deletes a removed member's. `test_files.py` checks every S3 call
+  the code makes is allowed in `template.yaml`, as moto checks none.
 
 ## The terminal (bash tool)
 
@@ -236,9 +320,9 @@ The `bash` tool gives the model a Linux shell (bash, Python, Node.js) in an
   workspace data, the model fetches it with the other tools and writes a file.
 - **Plan rule**: `assistant_sandbox_sessions_per_month` in `shared/plans.py`
   (Free 0 = not included, Pro 200, Business 2,000), counted with a conditional
-  update like messages. `PlanToolsMiddleware` hides the tool from plans
-  without it, and the tool refuses anyway (a model can call a tool it wasn't
-  shown). Output is cut to 10,000 characters per stream, keeping the start and
+  update like messages. `PlanToolsMiddleware` hides the sandbox's tools
+  (`bash`, `save_file`, `open_file`) from plans without it, and they refuse
+  anyway (a model can call a tool it wasn't shown). Output is cut to 10,000 characters per stream, keeping the start and
   the end.
 - **Cost**: the sandbox is billed like Runtime ($0.0895 per vCPU-hour, $0.00945
   per GB-hour in Singapore) for the minutes it is alive, at most 15 per
@@ -315,13 +399,24 @@ token (`handler.py`, a Lambda):
 
 | Route | |
 |---|---|
-| `POST /assistant/conversations/{threadId}/messages` `{"id", "content", "agent"?, "replaces"?}` | send, or edit (`replaces`): 201 `{"run_id"}`, 402 at the plan's limit, 429 at the user's hourly limit, 409 while an answer is coming |
+| `POST /assistant/conversations/{threadId}/messages` `{"id", "content", "agent"?, "replaces"?}` | send, edit (`replaces`), or answer again (`replaces` its own id): 201 `{"run_id"}`, 402 at the plan's limit, 429 at the user's hourly limit, 409 while an answer is coming |
 | `POST /assistant/conversations/{threadId}/runs/{runId}/cancel` | stop the answer (204, even after it ended) |
 | `PATCH /assistant/conversations/{threadId}/messages/{messageId}` `{"rating": "up" \| "down" \| null}` | rate an answer, or take the rating back (204) |
+| `POST /assistant/conversations/{threadId}/messages/{messageId}/version` `{"version": n}` | show another version of a message, and what followed it: the conversation as `GET` gives it; 409 while an answer is coming |
 | `GET /assistant/conversations?limit=20&cursor=` | the caller's conversations, most recently used first |
-| `GET /assistant/conversations/{threadId}` | title, `run_id` while an answer is coming, the latest 200 messages as AG-UI messages, and `ratings` |
+| `GET /assistant/conversations/{threadId}` | title, `run_id` while an answer is coming, the latest 200 messages shown as AG-UI messages, `ratings`, `versions`, and `earlier_cursor` |
+| `GET /assistant/conversations/{threadId}/messages?before=&limit=100` | the messages before those (`before`: their `earlier_cursor`), up to 200, with their ratings and the next `earlier_cursor` (null: the first) |
 | `PATCH /assistant/conversations/{threadId}` `{"title"}` | rename (cut to 80 characters) |
 | `DELETE /assistant/conversations/{threadId}` | delete (204) |
+| `GET /assistant/memories` | what the assistant remembers about the caller, oldest first: `{enabled, items, limit}` |
+| `POST /assistant/memories` `{"text"}` | the user adds one (201; 409 at 100) |
+| `PATCH /assistant/memories` `{"enabled"}` | memory on or off |
+| `PATCH`, `DELETE /assistant/memories/{memoryId}` | edit one, delete one |
+| `DELETE /assistant/memories` | forget everything (204; on or off stays) |
+| `POST /assistant/files` `{"name", "content_type"?, "size"}` | a file to attach: 201 `{file, url, fields}`, a presigned POST to S3 (400 for a type or size not taken, 429 at the hourly limit) |
+| `GET /assistant/files?source=&kind=&limit=30&cursor=` | the caller's files, newest first: what agents made (`assistant`) and what they attached (`upload`) |
+| `GET /assistant/files/{fileId}?version=` | a file with short-lived links: `download_url`, and `view_url` for an image |
+| `DELETE /assistant/files/{fileId}` | delete it, every version (204) |
 
 - **Sending** (`ConversationService.send`) counts the message against the
   plan, then saves it, creating the conversation the first time (titled with
@@ -329,19 +424,30 @@ token (`handler.py`, a Lambda):
   since}`. From then on the conversation has it, whatever the page does: a
   reload a moment later finds the message and the run. One answer at a time
   per conversation (409).
-- **Editing and answering again**, as in ChatGPT and the Vercel chatbot (no
-  branches kept): `replaces` names an earlier message of the user's, and the
-  new one takes its place, with everything after it. The same message id sent
-  again (Try again, Regenerate) replaces itself, so the old answer goes. The
-  history is cut in one conditional update of `META` (`message_count`, which
-  must be what the service read, and no answer coming), then the message is
-  written and what came after it deleted; reads stop at `message_count`, so
-  a delete that fails half way leaves nothing anyone sees. The agent goes
-  back too (`Run.rewind_to`, `app.rewound`): its next run starts from its
-  saved state with that user message and everything after it removed. The
-  user's messages are checkpointed with their AG-UI id, which is how it
-  finds them. Only the agent the message went to goes back; other agents
-  that spoke in the conversation keep their own side of it.
+- **Editing and answering again keep the old version**, as in ChatGPT:
+  `replaces` names an earlier message of the user's, and the new one is a new
+  version of it; the message's own id (or the newest question's id sent
+  again: Try again) answers it again, and the new answer is a new version of
+  the old one. The conversation is a tree, and shows one path through it,
+  with `versions` (`{index, count}`, "‹ 2/3 ›") on each message that has
+  others; `POST .../messages/{id}/version {"version": n}` shows another, and
+  what followed it, along its newest versions from there (`versions.py`).
+  Every message has a place, a branch and a position: branch 0 is the
+  conversation as first written (the `MSG#` keys it always had), each new
+  version starts a branch at its position (`BRANCH#<n>#MSG#` keys). The
+  path is a few segments of branches, on `META` (`path`, `branches`,
+  `message_count`, its length), so reading a page of it is one query per
+  segment, and showing another version changes only `META`, in one
+  conditional update (`rev`, which every change to what it shows moves on).
+  Nothing is deleted: an answer asked for again that came to nothing leaves
+  the old one shown. The agent goes back too (`Run.rewind_to`,
+  `app.rewound`): its next run starts from its saved state with that user
+  message and everything after it removed (the user's messages are
+  checkpointed with their AG-UI id, which is how it finds them). When its
+  checkpoint is of another path (another version was shown, or another agent
+  spoke since: `META.heads`, the `rev` each agent's checkpoint is of), it
+  starts again from the history of the path shown instead (`Run.restore`,
+  `app.restored`), as an agent whose checkpoints expired does.
 - **The run** happens in the conversation's AgentCore microVM (`app.py`,
   `runs.py`). The first request for it starts it, reading the prompt from
   `META.run`; it goes on in a worker thread whatever happens to that request,
@@ -380,6 +486,11 @@ token (`handler.py`, a Lambda):
   both are added to its checkpoint.
 - **Reloading**: the page reads the conversation; with a `run_id`, it sends
   AgentCore that run and draws it from the start, then live.
+- **Long conversations** open at their latest 200 messages, as in ChatGPT
+  and Claude, and read back from there a page at a time: Show earlier
+  messages sends the page's `earlier_cursor` as `?before=`. The cursor names
+  a position on the path shown, so messages added meanwhile don't move it;
+  if another tab showed another version before it since, it answers 409.
 - **A stream that breaks** (the network, AgentCore failing a request) is
   read on from where it was, as OpenAI's background responses
   (`starting_after`) and LangGraph streams (`Last-Event-ID`) do: the page
@@ -402,11 +513,12 @@ token (`handler.py`, a Lambda):
 - **Ratings**: thumbs up or down on an answer, on its last assistant message
   (`rating` on its `MSG#` item); `null` takes it back. Each is logged as
   `Answer rated`, with the workspace, user, conversation, message, rating and
-  agents, for CloudWatch Logs Insights. Editing a message before the answer
-  deletes the answer and its rating.
+  agents, for CloudWatch Logs Insights. A rating stays with its version of
+  the answer.
 - **Stored** in the assistant table, under the user's own keys:
-  `TENANT#<t>#USER#<u>#CONV#<threadId>` with `META` and `MSG#<n>` items, and
-  the index `gsi1` for the list (`repository.py`). On a stack that had the
+  `TENANT#<t>#USER#<u>#CONV#<threadId>` with `META`, `MSG#<n>` and
+  `BRANCH#<b>#MSG#<n>` items (versions), and the index `gsi1` for the list
+  (`repository.py`). On a stack that had the
   assistant before, the deploy that adds `gsi1` finishes before DynamoDB has
   built it, and DynamoDB refuses to read an index it's still building: the
   list answers 500 for the first minutes (about 5 on dev, October 2026) while
@@ -446,9 +558,10 @@ token (`handler.py`, a Lambda):
 - **A member who leaves** the workspace, or is removed from it, loses their
   conversations there: accounts saves `MemberRemoved` with the removal (one
   transaction), EventBridge puts it on the purge queue, and the worker
-  deletes each of their conversations as a delete would, checkpoints first.
-  Only those last used before the removal: someone invited back keeps what
-  they said since, even if the event came late. The member's ID token works
+  deletes each of their conversations as a delete would, checkpoints first,
+  then what the assistant remembers about them. Only conversations last used
+  before the removal: someone invited back keeps what they said since, even
+  if the event came late. The member's ID token works
   until it expires (up to 15 minutes, as in every module): a conversation
   they use in that time, after the worker ran, is kept.
 
@@ -576,7 +689,8 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   with a TTL and S3 for large checkpoints (AWS's DynamoDB guide for LangGraph).
   The long-term memory that came with Memory (facts and preferences recalled
   before each answer) went with it: those never expired and users couldn't see
-  or delete them (see next steps).
+  or delete them. Saved memories in the assistant table replace it, which
+  users see and delete (Memory across conversations, above).
 - **Isolation.** Pool model: one runtime and one checkpoint table for every
   workspace. Every key includes `"<tenant_id>:<user_id>"` from the verified
   token: a conversation's keys, and the hash that names a checkpoint thread.
@@ -596,16 +710,13 @@ There is no authorizer locally, so the server trusts any token: never expose it.
 - **IAM-enforced isolation**: a token-vending role with tenant session tags
   (ABAC), as in AWS's pool-model post, so a bug can't read another tenant's
   conversations.
-- **Long-term memory across conversations**, if wanted again: `DynamoDBStore`
-  (semantic search on DynamoDB vector indexes, same package) or AgentCore
-  Memory's strategies, with an expiry and a page where users see and delete
-  what is remembered about them.
 - **Tools that change data**: idempotency keys plus `HumanInTheLoopMiddleware`
   (needs a resume flow in the frontend).
-- **Terminal data in and out**: a tool that writes workspace data straight into
-  the sandbox (Code Interpreter `writeFiles`), so the model doesn't retype it;
-  and an S3 bucket the sandbox can write to, one prefix per tenant, for files
-  and charts the user can download.
+- **Workspace data into the sandbox**: a tool that writes the orders (or any
+  API data) straight into the sandbox, as `open_file` does for the user's
+  files, so the model doesn't retype them.
+- **Files**: a storage quota per workspace (uploads are limited per hour
+  only), PDFs sent to models that read them, and search over files.
 - **More tools or third-party APIs**: AgentCore Gateway (MCP) with interceptors,
   and AgentCore Identity for OAuth on the user's behalf.
 - **Guardrails** (Bedrock Guardrails) for prompt injection and PII; tool output
@@ -614,9 +725,7 @@ There is no authorizer locally, so the server trusts any token: never expose it.
   not summarized. `SummarizationMiddleware` could keep their gist (its model
   calls would need to count against the token cap too). Each checkpoint holds
   the whole conversation, so a long one writes more with every message.
-- **Conversations**: older messages of a conversation past 200 (open returns
-  the latest 200), search, and branches (an edit replaces what came after
-  it; ChatGPT keeps both as a tree).
+- **Conversations**: search.
 - **Ratings with a reason**: a comment on a thumbs down, and an evaluation
   set built from rated answers (AgentCore Evaluations isn't in
   ap-southeast-1 yet).

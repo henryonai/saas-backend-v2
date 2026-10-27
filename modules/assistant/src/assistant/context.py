@@ -34,6 +34,7 @@ class AgentContext:
     user: CurrentUser
     authorization: str  # "Bearer <ID token>", passed on as-is when tools call the HTTP API
     session_id: str     # the AgentCore Runtime session: one conversation (the AG-UI threadId)
+    agent: str | None = None   # the agent at work (a subagent's, inside the task tool): what it saves is its
 
     @property
     def actor_id(self) -> str:

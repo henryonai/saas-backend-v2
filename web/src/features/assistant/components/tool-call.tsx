@@ -1,5 +1,17 @@
 import type { TFunction } from 'i18next';
-import { BotIcon, CheckIcon, ChevronRightIcon, GaugeIcon, type LucideIcon, PackageIcon, TerminalIcon, WrenchIcon } from 'lucide-react';
+import {
+  BotIcon,
+  BrainIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  FileDownIcon,
+  FileUpIcon,
+  GaugeIcon,
+  type LucideIcon,
+  PackageIcon,
+  TerminalIcon,
+  WrenchIcon,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { formatResult, type ToolCallView } from '../transcript';
@@ -10,6 +22,10 @@ const TOOLS = {
   get_order: { label: 'assistant.tool.getOrder', icon: PackageIcon },
   assistant_usage: { label: 'assistant.tool.usage', icon: GaugeIcon },
   bash: { label: 'assistant.tool.bash', icon: TerminalIcon },
+  forget: { label: 'assistant.tool.forget', icon: BrainIcon },
+  write_file: { label: 'assistant.tool.writeFile', icon: FileDownIcon },
+  save_file: { label: 'assistant.tool.saveFile', icon: FileDownIcon },
+  open_file: { label: 'assistant.tool.openFile', icon: FileUpIcon },
 } as const;
 
 function describe(call: ToolCallView, t: TFunction): { label: string; icon: LucideIcon } {
@@ -17,6 +33,10 @@ function describe(call: ToolCallView, t: TFunction): { label: string; icon: Luci
     // A subagent at work: its answer comes back as this call's result.
     const agent = call.args?.agent;
     return { label: typeof agent === 'string' ? t('assistant.tool.task', { agent }) : t('assistant.tool.taskPending'), icon: BotIcon };
+  }
+  if (call.name === 'remember') {
+    // Memory updated, as ChatGPT says: the Memory dialog has it now.
+    return { label: call.args?.replaces ? t('assistant.tool.rememberAgain') : t('assistant.tool.remember'), icon: BrainIcon };
   }
   const tool = TOOLS[call.name as keyof typeof TOOLS];
   return tool ? { label: t(tool.label), icon: tool.icon } : { label: call.name, icon: WrenchIcon };
@@ -27,6 +47,9 @@ function input(call: ToolCallView): string | null {
   if (!call.args) return null;
   if (call.name === 'bash' && typeof call.args.command === 'string') return `$ ${call.args.command}`;
   if (call.name === 'task' && typeof call.args.instructions === 'string') return call.args.instructions;
+  if (call.name === 'remember' && typeof call.args.fact === 'string') return call.args.fact;
+  // A file it wrote: its name, and what it wrote (the card under the call downloads it).
+  if (call.name === 'write_file' && typeof call.args.name === 'string') return `${call.args.name}\n\n${String(call.args.content ?? '')}`;
   return Object.keys(call.args).length > 0 ? JSON.stringify(call.args, null, 2) : null;
 }
 

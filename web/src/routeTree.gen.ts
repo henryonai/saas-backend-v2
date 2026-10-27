@@ -16,6 +16,7 @@ import { Route as DevCheckoutRouteImport } from './routes/dev-checkout'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAccountRouteImport } from './routes/_app/account'
 import { Route as AppBillingRouteImport } from './routes/_app/billing'
+import { Route as AppFilesRouteImport } from './routes/_app/files'
 import { Route as AppNotificationsRouteImport } from './routes/_app/notifications'
 import { Route as AppTeamRouteImport } from './routes/_app/team'
 import { Route as OnboardingWelcomeRouteImport } from './routes/_onboarding/welcome'
@@ -58,6 +59,11 @@ const AppAccountRoute = AppAccountRouteImport.update({
 const AppBillingRoute = AppBillingRouteImport.update({
   id: '/billing',
   path: '/billing',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppFilesRoute = AppFilesRouteImport.update({
+  id: '/files',
+  path: '/files',
   getParentRoute: () => AppRoute,
 } as any)
 const AppNotificationsRoute = AppNotificationsRouteImport.update({
@@ -121,6 +127,7 @@ export interface FileRoutesByFullPath {
   '/dev-checkout': typeof DevCheckoutRoute
   '/account': typeof AppAccountRoute
   '/billing': typeof AppBillingRoute
+  '/files': typeof AppFilesRoute
   '/notifications': typeof AppNotificationsRoute
   '/team': typeof AppTeamRoute
   '/welcome': typeof OnboardingWelcomeRoute
@@ -138,6 +145,7 @@ export interface FileRoutesByTo {
   '/dev-checkout': typeof DevCheckoutRoute
   '/account': typeof AppAccountRoute
   '/billing': typeof AppBillingRoute
+  '/files': typeof AppFilesRoute
   '/notifications': typeof AppNotificationsRoute
   '/team': typeof AppTeamRoute
   '/welcome': typeof OnboardingWelcomeRoute
@@ -158,6 +166,7 @@ export interface FileRoutesById {
   '/dev-checkout': typeof DevCheckoutRoute
   '/_app/account': typeof AppAccountRoute
   '/_app/billing': typeof AppBillingRoute
+  '/_app/files': typeof AppFilesRoute
   '/_app/notifications': typeof AppNotificationsRoute
   '/_app/team': typeof AppTeamRoute
   '/_onboarding/welcome': typeof OnboardingWelcomeRoute
@@ -178,6 +187,7 @@ export interface FileRouteTypes {
     | '/dev-checkout'
     | '/account'
     | '/billing'
+    | '/files'
     | '/notifications'
     | '/team'
     | '/welcome'
@@ -195,6 +205,7 @@ export interface FileRouteTypes {
     | '/dev-checkout'
     | '/account'
     | '/billing'
+    | '/files'
     | '/notifications'
     | '/team'
     | '/welcome'
@@ -214,6 +225,7 @@ export interface FileRouteTypes {
     | '/dev-checkout'
     | '/_app/account'
     | '/_app/billing'
+    | '/_app/files'
     | '/_app/notifications'
     | '/_app/team'
     | '/_onboarding/welcome'
@@ -284,6 +296,13 @@ declare module '@tanstack/react-router' {
       path: '/billing'
       fullPath: '/billing'
       preLoaderRoute: typeof AppBillingRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/files': {
+      id: '/_app/files'
+      path: '/files'
+      fullPath: '/files'
+      preLoaderRoute: typeof AppFilesRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/notifications': {
@@ -369,6 +388,7 @@ declare module '@tanstack/react-router' {
 interface AppRouteChildren {
   AppAccountRoute: typeof AppAccountRoute
   AppBillingRoute: typeof AppBillingRoute
+  AppFilesRoute: typeof AppFilesRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
   AppTeamRoute: typeof AppTeamRoute
   AppIndexRoute: typeof AppIndexRoute
@@ -381,6 +401,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppAccountRoute: AppAccountRoute,
   AppBillingRoute: AppBillingRoute,
+  AppFilesRoute: AppFilesRoute,
   AppNotificationsRoute: AppNotificationsRoute,
   AppTeamRoute: AppTeamRoute,
   AppIndexRoute: AppIndexRoute,

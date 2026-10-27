@@ -9,6 +9,8 @@ against the same allowance, and returns its final answer as the tool's
 result. It keeps no checkpoints, and its own words don't
 stream to the user: the calling agent tells the user what it found.
 """
+import dataclasses
+
 from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
@@ -31,7 +33,9 @@ def make_task_tool(subagents: dict[str, tuple[AgentDefinition, object]], usage: 
         if not usage.within_token_cap(runtime.context.user):
             return "Error: the workspace has used this month's assistant allowance, so the agent can't start."
         _, subagent = subagents[agent]
-        result = subagent.invoke({"messages": [HumanMessage(instructions)]}, context=runtime.context)
+        # The same user, conversation and sandbox; what it saves is the subagent's.
+        result = subagent.invoke({"messages": [HumanMessage(instructions)]},
+                                 context=dataclasses.replace(runtime.context, agent=agent))
         answers = [m for m in result["messages"] if isinstance(m, AIMessage) and m.text]
         return answers[-1].text if answers else f"{agent} finished without a result."
 

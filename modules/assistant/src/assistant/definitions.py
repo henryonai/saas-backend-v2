@@ -8,15 +8,19 @@ frontmatter, then the system prompt. One file per agent in agents/:
     tools: list_orders, bash          # optional; omitted = every tool (as in Claude Code)
     model: haiku                      # optional; sonnet | opus | haiku | inherit | an OpenRouter or Bedrock model id
     maxTurns: 10                      # optional; model calls per run (default 15)
+    memory: user                      # optional; it remembers things about the user across conversations
     subagents: [other-agent]          # optional, ours: agents it may delegate to (the task tool)
     ---
     You are ...
 
 Fields as in Claude Code: name, description, tools, disallowedTools, model,
-maxTurns. `subagents` is this app's: Claude Code lets the main agent use any
-subagent; here each agent lists the ones it may call, and a subagent can't
-call others (one level, which bounds the cost of a message). Other Claude
-Code fields (color, memory, skills, hooks...) are ignored with a warning,
+maxTurns, memory. `memory: user` is Claude Code's user scope, here the
+signed-in user's memories (service.MemoryService): the agent is sent them
+and gets the tools that save and forget them (MEMORY_TOOLS), which no agent
+gets otherwise. `subagents` is this app's: Claude Code lets the main agent
+use any subagent; here each agent lists the ones it may call, and a subagent
+can't call others (one level, which bounds the cost of a message). Other
+Claude Code fields (color, skills, hooks...) are ignored with a warning,
 since they mean something this app doesn't do.
 
 Everything is checked when the agents load, at startup: an unknown tool or
@@ -36,7 +40,8 @@ logger = Logger()
 
 DEFAULT_MAX_TURNS = 15
 NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")   # stricter than Claude Code: it appears in tool schemas and URLs
-KNOWN_FIELDS = {"name", "description", "tools", "disallowedTools", "model", "maxTurns", "subagents"}
+KNOWN_FIELDS = {"name", "description", "tools", "disallowedTools", "model", "maxTurns", "memory", "subagents"}
+MEMORY_TOOLS = {"remember", "forget"}   # tools/memory.py: only for agents with `memory: user`
 
 
 class AgentDefinitionError(ValueError):
@@ -53,6 +58,7 @@ class AgentDefinition:
     max_turns: int
     subagents: tuple[str, ...]
     source: str
+    memory: bool = False            # `memory: user`: it is sent the user's memories, and has MEMORY_TOOLS
 
 
 def load_agents(tool_names: set[str], directory: Path = AGENTS_DIR) -> dict[str, AgentDefinition]:
@@ -92,11 +98,18 @@ def parse_agent(text: str, source: str, tool_names: set[str]) -> AgentDefinition
     if ignored := sorted(set(front) - KNOWN_FIELDS):
         logger.warning("Ignoring agent fields this app doesn't support", extra={"agent": name, "fields": ignored})
 
+    memory = front.get("memory")
+    if memory not in (None, "user"):
+        raise AgentDefinitionError(f"{source}: `memory` can only be user (the signed-in user's memories)")
     tools = _names(front.get("tools"), "tools", source)
-    tools = set(tool_names) if tools is None else tools
+    if tools is not None and (listed := sorted(tools & MEMORY_TOOLS)):
+        raise AgentDefinitionError(f"{source}: {listed} come with `memory: user`; don't list them in `tools`")
+    tools = set(tool_names) - MEMORY_TOOLS if tools is None else tools
     tools -= _names(front.get("disallowedTools"), "disallowedTools", source) or set()
     if unknown := sorted(tools - tool_names):
         raise AgentDefinitionError(f"{source}: unknown tools {unknown}; available: {sorted(tool_names)}")
+    if memory:
+        tools |= MEMORY_TOOLS & tool_names
 
     max_turns = front.get("maxTurns", DEFAULT_MAX_TURNS)
     if not isinstance(max_turns, int) or isinstance(max_turns, bool) or not 1 <= max_turns <= 50:
@@ -106,6 +119,7 @@ def parse_agent(text: str, source: str, tool_names: set[str]) -> AgentDefinition
         name=name, description=" ".join(description.split()), prompt=prompt,
         tools=tuple(sorted(tools)), model=_model(front.get("model"), source), max_turns=max_turns,
         subagents=tuple(sorted(_names(front.get("subagents"), "subagents", source) or ())), source=source,
+        memory=memory == "user",
     )
 
 

@@ -1,6 +1,10 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach } from 'vitest';
+
+// A page's first test in a file loads its route's code, which, with every
+// file running in parallel, can take longer than findBy's default second.
+configure({ asyncUtilTimeout: 5000 });
 
 // What jsdom lacks and the app uses: scrolling (the router restores it), media
 // queries (the sidebar's mobile check, the theme) and ResizeObserver (Radix).
