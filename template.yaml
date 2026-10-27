@@ -220,7 +220,8 @@ Resources:
         Format: >-
           {"requestId":"$context.requestId","ip":"$context.identity.sourceIp",
           "route":"$context.routeKey","status":"$context.status","latencyMs":"$context.responseLatency",
-          "user":"$context.authorizer.claims.sub","error":"$context.integrationErrorMessage"}
+          "user":"$context.authorizer.claims.sub","tenant":"$context.request.header.x-tenant-id",
+          "error":"$context.integrationErrorMessage"}
       Auth:
         DefaultAuthorizer: CognitoJwt   # every route requires login unless stated
         Authorizers:
@@ -1594,6 +1595,61 @@ Resources:
       TreatMissingData: notBreaching      # an idle queue sends no data
       AlarmActions: [!Ref AlertsTopic]
 
+  # One page for how the stack is doing day to day; the alarms say when it broke.
+  # Assistant widgets only when the assistant is deployed.
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref AWS::StackName
+      DashboardBody: !Join
+        - ""
+        - - !Sub |
+              {"widgets":[
+              {"type":"alarm","x":0,"y":0,"width":24,"height":3,"properties":{"title":"Alarms","alarms":[
+                "${ApiErrorsAlarm.Arn}","${AccountsPreTokenErrorsAlarm.Arn}","${LambdaThrottlesAlarm.Arn}",
+                "${ApiDurationAlarm.Arn}","${WorkersDurationAlarm.Arn}","${OutboxLagAlarm.Arn}","${OutboxDLQAlarm.Arn}",
+                "${AccountsDLQAlarm.Arn}","${NotificationsDLQAlarm.Arn}"]}},
+              {"type":"metric","x":0,"y":3,"width":12,"height":6,"properties":{"title":"API requests and errors","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
+                ["AWS/ApiGateway","Count","ApiId","${HttpApi}",{"label":"requests"}],
+                ["AWS/ApiGateway","4xx","ApiId","${HttpApi}",{"label":"4xx"}],
+                ["AWS/ApiGateway","5xx","ApiId","${HttpApi}",{"label":"5xx"}]]}},
+              {"type":"metric","x":12,"y":3,"width":12,"height":6,"properties":{"title":"API latency (ms)","region":"${AWS::Region}","period":300,"view":"timeSeries","metrics":[
+                ["AWS/ApiGateway","Latency","ApiId","${HttpApi}",{"stat":"p50","label":"p50"}],
+                ["AWS/ApiGateway","Latency","ApiId","${HttpApi}",{"stat":"p99","label":"p99"}]]}},
+              {"type":"metric","x":0,"y":9,"width":12,"height":6,"properties":{"title":"Function errors","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
+                ["AWS/Lambda","Errors","FunctionName","${AccountsApiFunction}",{"label":"accounts"}],
+                ["AWS/Lambda","Errors","FunctionName","${AccountsPreTokenFunction}",{"label":"sign-in"}],
+                ["AWS/Lambda","Errors","FunctionName","${OrdersApiFunction}",{"label":"orders"}],
+                ["AWS/Lambda","Errors","FunctionName","${NotificationsApiFunction}",{"label":"notifications"}],
+                ["AWS/Lambda","Errors","FunctionName","${BillingApiFunction}",{"label":"billing"}],
+                ["AWS/Lambda","Errors","FunctionName","${BillingWebhookFunction}",{"label":"payment webhook"}],
+                ["AWS/Lambda","Errors","FunctionName","${OutboxRelayFunction}",{"label":"outbox relay"}],
+                ["AWS/Lambda","Errors","FunctionName","${AccountsSubscriptionsFunction}",{"label":"plan listener"}],
+                ["AWS/Lambda","Errors","FunctionName","${NotificationsWorkerFunction}",{"label":"notifications worker"}]]}},
+              {"type":"metric","x":12,"y":9,"width":12,"height":6,"properties":{"title":"Lambda concurrency (whole account) and throttles","region":"${AWS::Region}","period":60,"view":"timeSeries","metrics":[
+                ["AWS/Lambda","ConcurrentExecutions",{"stat":"Maximum","label":"running at once, account (dev and prod)"}],
+                ["AWS/Lambda","Throttles",{"stat":"Sum","label":"throttles, account"}]]}},
+              {"type":"metric","x":0,"y":15,"width":12,"height":6,"properties":{"title":"Messages waiting in queues","region":"${AWS::Region}","stat":"Maximum","period":300,"view":"timeSeries","metrics":[
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${AccountsQueue.QueueName}",{"label":"accounts"}],
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${NotificationsQueue.QueueName}",{"label":"notifications"}],
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${AccountsDLQ.QueueName}",{"label":"accounts DLQ"}],
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${NotificationsDLQ.QueueName}",{"label":"notifications DLQ"}],
+                ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${OutboxDLQ.QueueName}",{"label":"outbox DLQ"}]]}},
+              {"type":"metric","x":12,"y":15,"width":12,"height":6,"properties":{"title":"Events","region":"${AWS::Region}","period":300,"view":"timeSeries","metrics":[
+                ["saas-${Stage}","EventsPublished","service","outbox-relay",{"stat":"Sum","label":"published"}],
+                ["AWS/Lambda","IteratorAge","FunctionName","${OutboxRelayFunction}",{"stat":"Maximum","label":"oldest waiting (ms)","yAxis":"right"}]]}}
+          - !If
+            - HasAssistant
+            - !Sub |
+                ,{"type":"metric","x":0,"y":21,"width":24,"height":6,"properties":{"title":"Assistant","region":"${AWS::Region}","period":300,"view":"timeSeries","metrics":[
+                  ["AWS/Lambda","Invocations","FunctionName","${AssistantApiFunction}",{"stat":"Sum","label":"API calls"}],
+                  ["AWS/Lambda","Errors","FunctionName","${AssistantApiFunction}",{"stat":"Sum","label":"API errors"}],
+                  ["AWS/Lambda","Errors","FunctionName","${AssistantPurgeFunction}",{"stat":"Sum","label":"purge errors"}],
+                  ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${AssistantPurgeQueue.QueueName}",{"stat":"Maximum","label":"purge queue"}],
+                  ["AWS/SQS","ApproximateNumberOfMessagesVisible","QueueName","${AssistantPurgeDLQ.QueueName}",{"stat":"Maximum","label":"purge DLQ"}]]}}
+            - ""
+          - "]}"
+
 Outputs:
   ApiUrl:
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
@@ -1607,6 +1663,8 @@ Outputs:
     Value: !Ref EventBus
   AlertsTopicArn:
     Value: !Ref AlertsTopic
+  DashboardUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards/dashboard/${Dashboard}"
   WebUrl:
     Description: The app, once web/scripts/deploy.sh has uploaded it
     Value: !Sub "https://${WebDistribution.DomainName}"

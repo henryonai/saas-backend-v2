@@ -520,10 +520,18 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
   traceback (`Webhook failed` for the payment webhook), so a 500 in the access
   log leads to it by `correlation_id`; a message a worker or the relay
   couldn't process is a WARNING with its traceback. API Gateway access logs go
-  to their own group. Retention: `LogRetentionDays`.
+  to their own group, one JSON line per request with its user (`user`) and
+  workspace (`tenant`, from `X-Tenant-Id`), so Logs Insights can count
+  requests per workspace:
+  `stats count(*) by tenant | sort count(*) desc`. Retention: `LogRetentionDays`.
 - **Tracing:** X-Ray tracing is on for every function. (The X-Ray SDK is in
   maintenance mode; for spans inside your code, use OpenTelemetry/ADOT.)
 - **Metrics:** the relay emits `EventsPublished` to the `saas-<stage>` namespace.
+- **Dashboard:** one CloudWatch dashboard per stack (output `DashboardUrl`): the
+  alarms' state, API requests, errors and latency, errors per function, the
+  account's Lambda concurrency and throttles, messages waiting in each queue
+  and dead-letter queue, events published and how long the oldest waited, and
+  the assistant when it is deployed.
 - **Alarms** and budget alerts go to `AlertsTopic`; set `AlertEmail` to get an email.
   - `ApiErrorsAlarm`: the API answered 5xx. Start from the access log's
     `error` field, then `Unhandled error` in the app log group.
@@ -572,6 +580,15 @@ the SSM webhook secret and check prod's values in `samconfig.toml`.
   stage from then on. `AccountBudgetUsd` sets a monthly budget for the whole
   account; it alerts at 80% and when the month's forecast passes it. OpenRouter
   bills you directly, so give its key a credit limit there.
+- **Cost anomalies:** AWS turns on Cost Anomaly Detection in new accounts
+  (`Default-Services-Monitor`, a daily email to the account's address). The
+  template doesn't add a monitor, since an account can have only one per-service
+  monitor. Check its threshold under Billing > Cost Anomaly Detection: the
+  default alerts only on anomalies of $100 or more, too high for a small app.
+- **Dependency updates:** Dependabot opens one PR a week per ecosystem (uv,
+  pnpm, GitHub Actions; `.github/dependabot.yml`), checked by CI. After merging
+  a Python one, run `./scripts/export-requirements.sh` and commit the result,
+  or CI's requirements check fails.
 
 ## Adding a module
 
