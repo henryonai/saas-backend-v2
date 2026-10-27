@@ -496,5 +496,26 @@
       "submit": "Delete my account",
       "done": "Your account was deleted."
     }
+  },
+  "exports": {
+    "workspace": {
+      "title": "Export this workspace",
+      "description": "A copy of its members, invitations, orders and subscription, as JSON files."
+    },
+    "me": {
+      "title": "Download your data",
+      "description": "A copy of your memberships, notifications and assistant conversations, memories and file list, in every workspace, as JSON files."
+    },
+    "start": "Start an export",
+    "progress": "Export progress",
+    "running": "Preparing the export: {{done}} of {{total}} parts ready…",
+    "ready": "Your export is ready. The links work until {{date}}.",
+    "parts": {
+      "accounts": "Members and workspaces",
+      "orders": "Orders",
+      "billing": "Subscription",
+      "notifications": "Notifications",
+      "assistant": "Assistant"
+    }
   }
 }

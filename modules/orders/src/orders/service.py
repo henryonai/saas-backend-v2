@@ -1,6 +1,7 @@
 from shared.auth import CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached
+from shared.exports import PartWriter
 from shared.idempotency import IDEMPOTENCY, fingerprint
 from shared.plans import get_limit
 
@@ -18,13 +19,24 @@ ALLOWED_TRANSITIONS = {
 
 
 class OrderService:
-    def __init__(self, orders: OrderRepository):
+    def __init__(self, orders: OrderRepository, exports: PartWriter | None = None):
         self.orders = orders
+        self.exports = exports
 
     def handle_event(self, event_type: str, detail: dict) -> None:
         """Events from other modules (listener.py)."""
-        if event_type == "TenantDeleted":   # accounts' event, by name
+        if event_type == "TenantDeleted":   # accounts' events, by name
             self.orders.delete_tenant(detail["tenant_id"])
+        elif event_type == "ExportRequested" and detail["kind"] == "workspace":
+            self.exports.write(detail, "orders", [o.model_dump(mode="json") for o in self._all(detail["owner_id"])])
+
+    def _all(self, tenant_id: str) -> list[Order]:
+        orders, cursor = [], None
+        while True:
+            page, cursor = self.orders.list(tenant_id, 100, cursor)
+            orders += page
+            if not cursor:
+                return orders
 
     def create_order(self, user: CurrentUser, data: OrderCreate, idempotency_key: str) -> Order:
         """

@@ -533,6 +533,53 @@ Resources:
       TreatMissingData: notBreaching      # no work, no data
       AlarmActions: [!Ref AlertsTopic]
 
+  # Exports (shared/exports.py): every module writes its part here with its own role;
+  # each new part goes to EventBridge, and accounts marks it done. Gone after 7 days.
+  ExportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
+      NotificationConfiguration: { EventBridgeConfiguration: { EventBridgeEnabled: true } }
+      LifecycleConfiguration:
+        Rules:
+          - { Id: ExportsExpire, Status: Enabled, Prefix: exports/, ExpirationInDays: 7 }
+
+  ExportsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ExportsBucket
+      PolicyDocument:
+        Statement:
+          - Sid: HttpsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt ExportsBucket.Arn, !Sub "${ExportsBucket.Arn}/*"]
+            Condition: { Bool: { aws:SecureTransport: false } }
+
+  # S3 sends its events to the account's default bus, not this stack's: this rule takes
+  # the exports bucket's new parts from there to accounts' queue.
+  ExportsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source: [aws.s3]
+        detail-type: [Object Created]
+        detail: { bucket: { name: [!Ref ExportsBucket] }, object: { key: [{ prefix: exports/ }] } }
+      Targets:
+        - Id: AccountsQueue
+          Arn: !GetAtt AccountsQueue.Arn
+          RetryPolicy: { MaximumRetryAttempts: 185, MaximumEventAgeInSeconds: 3600 }
+          DeadLetterConfig: { Arn: !GetAtt AccountsDLQ.Arn }
+
+
   # =====================================================================
   # Module: accounts  (/tenants, /users, login trigger, plan listener)
   # =====================================================================
@@ -576,6 +623,8 @@ Resources:
           ACCOUNTS_TABLE: !Ref AccountsTable
           TENANT_DELETION_DAYS: !Ref TenantDeletionDays
           USER_POOL_ID: !Ref UserPool
+          EXPORTS_BUCKET: !Ref ExportsBucket
+          ASSISTANT_ENABLED: !If [HasAssistant, "true", "false"]   # the assistant writes part of a user's export
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }
         - Statement:
@@ -583,6 +632,9 @@ Resources:
               Action: [cognito-idp:AdminUserGlobalSignOut,   # on role change / removal
                        cognito-idp:AdminDeleteUser]          # a user deleting their account
               Resource: !GetAtt UserPool.Arn
+            - Effect: Allow
+              Action: [s3:GetObject]                         # signs an export's download links
+              Resource: !Sub "${ExportsBucket.Arn}/exports/*"
       Events:
         # One event per method, never ANY: an ANY route also catches the browser's CORS
         # preflight (OPTIONS) and sends it to the JWT authorizer, which answers 401. With no
@@ -593,6 +645,8 @@ Resources:
         TenantsAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: POST } }       # restore
         TenantsAnyDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: DELETE } }   # delete
         AccountDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /account, Method: DELETE } }
+        ExportsAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/exports/{proxy+}", Method: GET } }
+        ExportsAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/exports/{proxy+}", Method: POST } }
         UsersGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /users, Method: GET } }
         UsersAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: GET } }
         UsersAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: POST } }
@@ -654,7 +708,7 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [SubscriptionChanged]
+        detail-type: [SubscriptionChanged, ExportRequested]
       Targets:
         - Id: AccountsQueue
           Arn: !GetAtt AccountsQueue.Arn
@@ -681,7 +735,7 @@ Resources:
             Action: sqs:SendMessage
             Resource: !GetAtt AccountsQueue.Arn
             Condition:
-              ArnEquals: { aws:SourceArn: !GetAtt AccountsRule.Arn }
+              ArnEquals: { aws:SourceArn: [!GetAtt AccountsRule.Arn, !GetAtt ExportsRule.Arn] }
 
   AccountsDLQPolicy:                    # the rule's undelivered events (DeadLetterConfig above)
     Type: AWS::SQS::QueuePolicy
@@ -700,7 +754,7 @@ Resources:
             Action: sqs:SendMessage
             Resource: !GetAtt AccountsDLQ.Arn
             Condition:
-              ArnEquals: { aws:SourceArn: !GetAtt AccountsRule.Arn }
+              ArnEquals: { aws:SourceArn: [!GetAtt AccountsRule.Arn, !GetAtt ExportsRule.Arn] }
 
   AccountsSubscriptionsFunction:
     Type: AWS::Serverless::Function
@@ -712,11 +766,13 @@ Resources:
         Variables:
           POWERTOOLS_SERVICE_NAME: accounts
           ACCOUNTS_TABLE: !Ref AccountsTable
+          EXPORTS_BUCKET: !Ref ExportsBucket
       Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }   # the plan copy; exports: reads, marks parts done
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:UpdateItem]   # only updates the plan copy
-              Resource: !GetAtt AccountsTable.Arn
+              Action: [s3:PutObject]                            # its part of an export
+              Resource: !Sub "${ExportsBucket.Arn}/exports/*"
       Events:
         Queue:
           Type: SQS
@@ -869,7 +925,7 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [TenantDeleted]
+        detail-type: [TenantDeleted, ExportRequested]
       Targets:
         - Id: OrdersQueue
           Arn: !GetAtt OrdersQueue.Arn
@@ -924,11 +980,15 @@ Resources:
         Variables:
           POWERTOOLS_SERVICE_NAME: orders
           ORDERS_TABLE: !Ref OrdersTable
+          EXPORTS_BUCKET: !Ref ExportsBucket
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:Query, dynamodb:BatchWriteItem]   # deletes a purged workspace's orders
+              Action: [dynamodb:Query, dynamodb:BatchWriteItem]   # deletes a purged workspace's orders, exports them
               Resource: !GetAtt OrdersTable.Arn
+            - Effect: Allow
+              Action: [s3:PutObject]                            # its part of an export
+              Resource: !Sub "${ExportsBucket.Arn}/exports/*"
       Events:
         Queue:
           Type: SQS
@@ -1013,7 +1073,8 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [OrderCreated, UserInvited, SubscriptionChanged, PaymentFailed, MemberRemoved, TenantDeleted]
+        detail-type: [OrderCreated, UserInvited, SubscriptionChanged, PaymentFailed, MemberRemoved, TenantDeleted,
+                      ExportRequested, ExportReady]
       Targets:
         - Id: NotificationsQueue
           Arn: !GetAtt NotificationsQueue.Arn
@@ -1071,12 +1132,16 @@ Resources:
           NOTIFICATIONS_TABLE: !Ref NotificationsTable
           EMAIL_SENDER: !Ref EmailSender
           APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
+          EXPORTS_BUCKET: !Ref ExportsBucket
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref NotificationsTable }
         - Statement:
             - Effect: Allow
               Action: [ses:SendEmail]
               Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*   # this account's senders only
+            - Effect: Allow
+              Action: [s3:PutObject]                            # its part of a user's export
+              Resource: !Sub "${ExportsBucket.Arn}/exports/*"
       Events:
         Queue:
           Type: SQS
@@ -1208,7 +1273,7 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [TenantDeletionScheduled, TenantRestored, TenantDeleted]
+        detail-type: [TenantDeletionScheduled, TenantRestored, TenantDeleted, ExportRequested]
       Targets:
         - Id: BillingQueue
           Arn: !GetAtt BillingQueue.Arn
@@ -1263,6 +1328,7 @@ Resources:
         Variables:
           POWERTOOLS_SERVICE_NAME: billing
           BILLING_TABLE: !Ref BillingTable
+          EXPORTS_BUCKET: !Ref ExportsBucket
           PAYMENT_WEBHOOK_SECRET_PARAM: !Ref PaymentWebhookSecretParam   # not read: the settings expect it
           APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
           STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParam
@@ -1277,6 +1343,9 @@ Resources:
               Resource:
                 - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParam}"
                 - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeConfigParam}"
+            - Effect: Allow
+              Action: [s3:PutObject]                            # its part of an export
+              Resource: !Sub "${ExportsBucket.Arn}/exports/*"
       Events:
         Queue:
           Type: SQS
@@ -1770,9 +1839,13 @@ Resources:
           CHECKPOINT_TABLE: !Ref AssistantCheckpointTable
           CHECKPOINT_BUCKET: !Ref AssistantCheckpointBucket
           FILES_BUCKET: !Ref AssistantFilesBucket
+          EXPORTS_BUCKET: !Ref ExportsBucket
           REGION: !Ref AWS::Region
       Policies:
         - Statement:
+            - Effect: Allow
+              Action: [s3:PutObject]                            # the assistant's part of a user's export
+              Resource: !Sub "${ExportsBucket.Arn}/exports/*"
             - Effect: Allow
               Action: [dynamodb:Query, dynamodb:BatchWriteItem]
               Resource:
@@ -1818,7 +1891,7 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [MemberRemoved, TenantDeleted]
+        detail-type: [MemberRemoved, TenantDeleted, ExportRequested]
       Targets:
         - Id: AssistantPurgeQueue
           Arn: !GetAtt AssistantPurgeQueue.Arn

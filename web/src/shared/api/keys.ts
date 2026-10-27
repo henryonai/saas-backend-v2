@@ -13,6 +13,7 @@ export const qk = {
   sentInvitations: () => ['invitations', 'sent'] as const,
   receivedInvitations: () => ['invitations', 'received'] as const,
   billing: () => ['billing'] as const,
+  export: (kind: 'workspace' | 'me') => ['exports', kind] as const,
   notifications: () => ['notifications'] as const,
   conversations: () => ['assistant', 'conversations'] as const,
   conversation: (threadId: string) => ['assistant', 'conversation', threadId] as const,

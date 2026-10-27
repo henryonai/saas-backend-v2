@@ -150,6 +150,8 @@ fields such as `subscription_revision`).
 | `TenantRestored` | accounts (its owner restored it) | billing (it renews again) |
 | `TenantDeleted` (with `user_ids`, the members) | accounts' purge job | every module deletes what it keeps for the workspace: orders, notifications, the assistant's conversations, memories, files and usage; billing cancels the subscription |
 | `UserDeleted` (`tenant_id` empty) | accounts | none yet: for a module that keeps data per user outside any workspace |
+| `ExportRequested` (`job_id`, `kind`, `owner_id`, `tenant_ids`) | accounts | each module in the job's parts writes its part to the exports bucket: accounts, orders and billing for a workspace; accounts, notifications and the assistant for a user |
+| `ExportReady` | accounts (once every part is in the bucket) | notifications (email, and in-app for a workspace's export) |
 | `OrderCreated` | orders | notifications (in-app) |
 | `SubscriptionChanged` (with `revision`) | billing | accounts (plan copy), notifications |
 | `PaymentFailed` | billing | notifications |
@@ -214,6 +216,21 @@ conversations, memories, files and notifications there go) → their own
 records go and `UserDeleted` is published → their Cognito user is deleted,
 last, so a failure part way can be retried. Orders they created stay with the
 workspace (its records), with their user id.
+
+**Export data** (a job a user starts and watches): the owner calls
+`POST /exports/workspace` (members, invitations, orders, subscription), or any
+user `POST /exports/me` (their memberships, notifications, and assistant
+conversations, memories and file list, in every workspace; never other
+members' conversations) → accounts saves the job (`JOB#`, with the parts it
+waits for) and `ExportRequested` in one transaction (at most 3 a day per
+workspace, and per user) → each module writes its part to
+`exports/<kind>/<owner>/<job>/<module>.json` in the exports bucket with its own
+role → the bucket's "Object Created" goes through EventBridge (the default bus)
+to accounts, which marks the part done → when all are, `ExportReady` makes
+notifications tell the requester → `GET /exports/workspace` or `/exports/me`
+shows the newest job and, once done, a 15-minute download link per part. The
+bucket removes exports after 7 days, and TTL the job. Copy this for any long
+job: the job record, one part per worker, and a fan-in that marks parts done.
 
 **Upgrade:** owner calls `POST /billing/checkout` → pays on the provider's page
 (Stripe Checkout; a subscriber who changes plan gets Stripe's confirm page) →

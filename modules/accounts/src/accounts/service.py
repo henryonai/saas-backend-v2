@@ -28,12 +28,14 @@ from aws_lambda_powertools import Logger
 from shared.auth import ROLE_ADMIN, ROLE_OWNER, WORKSPACES_CLAIM, CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import Conflict, Forbidden, InvalidRequest, NotFound, PlanLimitReached, TooManyRequests
+from shared.exports import parse_key
 from shared.idempotency import IDEMPOTENCY, fingerprint
 from shared.plans import get_limit
 
 from accounts import events
+from accounts.exports import ExportStore
 from accounts.identity import IdentityProvider
-from accounts.models import Invitation, Member, Tenant
+from accounts.models import ExportJob, Invitation, Member, Tenant
 from accounts.repository import AccountRepository
 from accounts.schemas import AccountDelete, InviteRequest, TenantCreate, TenantDelete
 
@@ -48,13 +50,19 @@ class InvitationLimits:
 
 
 class AccountService:
+    EXPORT_DAYS = 7          # the bucket keeps an export's files this long
+    EXPORTS_PER_DAY = 3      # per workspace, and per user
+
     def __init__(self, accounts: AccountRepository, identity: IdentityProvider,
-                 invitation_limits: InvitationLimits, max_workspaces: int, deletion_days: float = 7):
+                 invitation_limits: InvitationLimits, max_workspaces: int, deletion_days: float = 7,
+                 exports: ExportStore | None = None, assistant_enabled: bool = False):
         self.accounts = accounts
         self.identity = identity
         self.limits = invitation_limits
         self.max_workspaces = max_workspaces   # workspaces one user can belong to
         self.deletion_days = deletion_days     # how long a deleted workspace can be restored
+        self.exports = exports
+        self.assistant_enabled = assistant_enabled   # its data is part of a user's export
 
     # ---------- tenants ----------
 
@@ -119,6 +127,65 @@ class AccountService:
                 raise Conflict("The time to restore this workspace has passed")
             raise Conflict("This workspace isn't waiting to be deleted")
         return self._tenant(tenant_id, consistent=True)
+
+    # ---------- exports ----------
+
+    def request_export(self, user: CurrentUser, kind: str) -> ExportJob:
+        """
+        Starts a copy of the workspace's data (its owner) or of the caller's own
+        (kind user: their memberships, notifications and assistant data, in every
+        workspace). Each module writes its part; the job says how far it got.
+        """
+        if kind == "workspace":
+            owner_id = self._caller(user, ROLE_OWNER).tenant_id
+            tenant_ids, parts = [owner_id], ["accounts", "orders", "billing"]
+        else:
+            owner_id = user.user_id
+            tenant_ids = [t.tenant_id for t, _ in self.accounts.workspaces_of(user.user_id) if t.active]
+            parts = ["accounts", "notifications"] + (["assistant"] if self.assistant_enabled else [])
+        job = ExportJob(kind=kind, owner_id=owner_id, requested_by=user.user_id, email=user.email.lower(),
+                        parts=parts, expires_at=int(time.time()) + self.EXPORT_DAYS * 24 * 3600)
+        try:
+            self.accounts.create_export(job, events.export_requested(job, tenant_ids), self.EXPORTS_PER_DAY)
+        except ConditionFailed:
+            raise TooManyRequests(f"You can start {self.EXPORTS_PER_DAY} exports a day. Try again tomorrow.")
+        return job
+
+    def latest_export(self, user: CurrentUser, kind: str) -> tuple[ExportJob, dict[str, str]] | None:
+        """The newest export, with a download link per part once it is done."""
+        owner_id = self._caller(user, ROLE_OWNER).tenant_id if kind == "workspace" else user.user_id
+        job = self.accounts.latest_export(kind, owner_id)
+        if not job:
+            return None
+        links = {part: self.exports.link(kind, owner_id, job.job_id, part)
+                 for part in job.parts} if job.status == "done" and self.exports else {}
+        return job, links
+
+    def write_export_part(self, detail: dict) -> None:
+        """ExportRequested: writes accounts' part, the workspace and its people, or the user's memberships."""
+        if detail["kind"] == "workspace":
+            tenant_id = detail["owner_id"]
+            tenant = self.accounts.get_tenant(tenant_id)
+            data = {"workspace": tenant.model_dump() if tenant else None,
+                    "members": [m.model_dump() for m in self.accounts.list_members(tenant_id)],
+                    "invitations": [i.model_dump() for i in self.accounts.list_invitations(tenant_id)]}
+        else:
+            data = {"user": {"user_id": detail["owner_id"], "email": detail["email"]},
+                    "workspaces": [{"tenant_id": t.tenant_id, "name": t.name, "role": m.role, "joined": m.created_at,
+                                    "status": t.status}
+                                   for t, m in self.accounts.workspaces_of(detail["owner_id"])]}
+        self.exports.write(detail, "accounts", data)
+
+    def export_part_written(self, key: str) -> None:
+        """The exports bucket has a new part: once every part is there, the job is done."""
+        parsed = parse_key(key)
+        if not parsed:
+            return
+        kind, owner_id, job_id, part = parsed
+        job = self.accounts.mark_part(kind, owner_id, job_id, part)
+        finished = job and job.status == "running" and set(job.parts) <= set(job.done)
+        if finished and self.accounts.finish_export(job, events.export_ready(job)):
+            logger.info("Export ready", extra={"job_id": job_id, "kind": kind})
 
     # ---------- deleting an account ----------
 

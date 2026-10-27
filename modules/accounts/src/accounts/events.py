@@ -7,8 +7,9 @@ payloads only by adding fields. The README's events table lists every event.
 """
 from shared.auth import CurrentUser
 from shared.events import Event
+from shared.exports import EXPORT_READY, EXPORT_REQUESTED
 
-from accounts.models import Invitation, Tenant
+from accounts.models import ExportJob, Invitation, Tenant
 
 USER_INVITED = "UserInvited"
 MEMBER_REMOVED = "MemberRemoved"
@@ -73,3 +74,17 @@ def user_deleted(user_id: str, email: str) -> Event:
     none does yet. Not about one workspace, so tenant_id is empty.
     """
     return Event(USER_DELETED, "", {"user_id": user_id, "email": email})
+
+
+def export_requested(job: ExportJob, tenant_ids: list[str]) -> Event:
+    """Every module in job.parts writes its part (shared/exports.py says how)."""
+    return Event(EXPORT_REQUESTED, job.tenant_id, {
+        "job_id": job.job_id, "kind": job.kind, "owner_id": job.owner_id, "user_id": job.requested_by,
+        "email": job.email, "tenant_ids": tenant_ids,
+    })
+
+
+def export_ready(job: ExportJob) -> Event:
+    """Every part is written: notifications tells the requester."""
+    return Event(EXPORT_READY, job.tenant_id, {"job_id": job.job_id, "kind": job.kind,
+                                                "user_id": job.requested_by, "email": job.email})

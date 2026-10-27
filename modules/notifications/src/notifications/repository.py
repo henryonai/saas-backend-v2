@@ -35,6 +35,18 @@ class NotificationRepository:
                 return False
             raise
 
+    def all(self, tenant_id: str, user_id: str) -> list[Notification]:
+        """Every notification of the user in the workspace, oldest first."""
+        found, start = [], {}
+        while True:
+            result = self.table.query(
+                KeyConditionExpression=Key("pk").eq(_pk(tenant_id, user_id)) & Key("sk").begins_with("NOTIF#"),
+                **start)
+            found += [Notification.model_validate(_clean(i)) for i in result["Items"]]
+            if "LastEvaluatedKey" not in result:
+                return found
+            start = {"ExclusiveStartKey": result["LastEvaluatedKey"]}
+
     def delete_all(self, tenant_id: str, user_id: str) -> int:
         """Deletes every notification of the user in the workspace. Safe to repeat."""
         return delete_partition(self.table, _pk(tenant_id, user_id))

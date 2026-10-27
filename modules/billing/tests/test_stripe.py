@@ -242,3 +242,16 @@ def test_a_restore_that_lands_while_the_renewal_is_being_stopped_wins(ctx, owner
 def test_a_workspace_without_a_subscription_has_nothing_to_stop(ctx):
     ctx.service.handle_event(*deletion_event("TenantDeletionScheduled", "2026-10-29T10:00:00+00:00"))
     assert ctx.stripe.calls == [] and ctx.table.scan()["Items"] == []
+
+
+def test_a_workspace_export_has_its_subscription(ctx, owner):
+    from shared.exports import FakePartWriter, part_key
+    ctx.service.exports = FakePartWriter()
+    ctx.stripe.subscribe(status="active")
+    ctx.webhook()
+    requested = with_event_ids({"tenant_id": "t1", "job_id": "job-1", "kind": "workspace", "owner_id": "t1",
+                                "user_id": "alice", "email": "alice@example.com", "tenant_ids": ["t1"]})
+    assert process_listener(sqs_event(("ExportRequested", requested)), FakeContext(), ctx.service) == \
+        {"batchItemFailures": []}
+    part = ctx.service.exports.written[part_key("workspace", "t1", "job-1", "billing")]
+    assert part["subscription"]["plan"] == "pro" and part["subscription"]["subscription_id"] == "sub_1"

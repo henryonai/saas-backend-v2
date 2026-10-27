@@ -7,6 +7,7 @@ from notifications.handler import app, handler
 from notifications.repository import NotificationRepository
 from notifications.service import NotificationService
 from notifications.worker import process_batch
+from shared.exports import FakePartWriter
 from testkit.aws import create_table
 from testkit.http import FakeContext, call
 from testkit.sqs import sqs_event
@@ -31,9 +32,10 @@ class FakeEmailSender:
 @pytest.fixture
 def ctx():
     email = FakeEmailSender()
+    exports = FakePartWriter()
     service = NotificationService(
         notifications=NotificationRepository(create_table(TABLE)), email=email,
-        app_url="https://app.test",
+        app_url="https://app.test", exports=exports,
     )
     store = idempotency_store(TABLE)
     app.dependency_overrides[get_notification_service] = lambda: service
@@ -43,6 +45,7 @@ def ctx():
 
     yield SimpleNamespace(
         email=email,
+        exports=exports,
         api=lambda *a, **kw: call(handler, *a, **kw),
         deliver=lambda event_type, detail: deliver_batch((event_type, detail)),
         deliver_batch=deliver_batch,

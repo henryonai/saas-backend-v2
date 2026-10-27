@@ -8,6 +8,7 @@ processed events so emails aren't sent twice.
 """
 from shared.auth import CurrentUser
 from shared.errors import NotFound
+from shared.exports import PartWriter
 from shared.ids import sortable_id
 
 from notifications.email import EmailSender
@@ -16,10 +17,12 @@ from notifications.repository import NotificationRepository
 
 
 class NotificationService:
-    def __init__(self, notifications: NotificationRepository, email: EmailSender, app_url: str):
+    def __init__(self, notifications: NotificationRepository, email: EmailSender, app_url: str,
+                 exports: PartWriter | None = None):
         self.notifications = notifications
         self.email = email
         self.app_url = app_url
+        self.exports = exports
 
     # ---------- API ----------
 
@@ -81,6 +84,19 @@ class NotificationService:
         for user_id in d["user_ids"]:
             self.notifications.delete_all(d["tenant_id"], user_id)
 
+    def _on_export_requested(self, d: dict) -> None:
+        if d["kind"] == "user":   # the user's notifications, in each of their workspaces
+            self.exports.write(d, "notifications", {
+                tenant_id: [n.model_dump() for n in self.notifications.all(tenant_id, d["user_id"])]
+                for tenant_id in d["tenant_ids"]})
+
+    def _on_export_ready(self, d: dict) -> None:
+        what = "your workspace's data" if d["kind"] == "workspace" else "your data"
+        if d["tenant_id"]:
+            self._in_app(d, d["user_id"], "Export ready", f"The export of {what} is ready to download.")
+        self.email.send(d["email"], "Your export is ready",
+                        f"The export of {what} is ready. Download it in the app within 7 days: {self.app_url}")
+
     HANDLERS = {
         "OrderCreated": _on_order_created,
         "UserInvited": _on_user_invited,
@@ -88,4 +104,6 @@ class NotificationService:
         "PaymentFailed": _on_payment_failed,
         "MemberRemoved": _on_member_removed,
         "TenantDeleted": _on_tenant_deleted,
+        "ExportRequested": _on_export_requested,
+        "ExportReady": _on_export_ready,
     }

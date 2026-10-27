@@ -23,3 +23,4 @@ class BillingSettings(BaseAppSettings):
     stripe_secret_key: SecretStr | None = None
     stripe_config_param: str | None = None
     stripe_config: str | None = None
+    exports_bucket: str | None = None   # the listener writes billing's part of a workspace's export there

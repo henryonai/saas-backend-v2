@@ -35,6 +35,20 @@ class FakeIdentity:
         self.deleted.append(user_id)
 
 
+class FakeExports:
+    """Stands in for the exports bucket: what each part says, by key."""
+
+    def __init__(self):
+        self.written: dict[str, object] = {}
+
+    def write(self, detail: dict, part: str, data) -> None:
+        from shared.exports import part_key
+        self.written[part_key(detail["kind"], detail["owner_id"], detail["job_id"], part)] = data
+
+    def link(self, kind: str, owner_id: str, job_id: str, part: str) -> str:
+        return f"https://exports.test/{kind}/{owner_id}/{job_id}/{part}.json?signed"
+
+
 def api(method: str, path: str, *args, headers: dict | None = None, **kwargs):
     """
     testkit's call. A POST /tenants gets a new Idempotency-Key, as the web app
@@ -49,8 +63,9 @@ def api(method: str, path: str, *args, headers: dict | None = None, **kwargs):
 def ctx():
     table = create_table("accounts-test", with_gsi1=True)
     identity = FakeIdentity()
+    exports = FakeExports()
     service = AccountService(accounts=AccountRepository(table), identity=identity, invitation_limits=LIMITS,
-                             max_workspaces=MAX_WORKSPACES)
+                             max_workspaces=MAX_WORKSPACES, exports=exports, assistant_enabled=True)
     app.dependency_overrides[get_account_service] = lambda: service
 
     def token(user_id: str) -> dict:
@@ -62,7 +77,7 @@ def ctx():
         """The workspaces the user's next token lists: {tenant_id: {"role": ..., "plan": ...}}."""
         return json.loads(token(user_id).get("workspaces", "{}"))
 
-    yield SimpleNamespace(table=table, service=service, identity=identity, token=token, login=login,
+    yield SimpleNamespace(table=table, service=service, identity=identity, exports=exports, token=token, login=login,
                           events=lambda: outbox_events(table),
                           api=api)
     app.dependency_overrides.clear()

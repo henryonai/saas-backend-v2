@@ -48,3 +48,4 @@ class PurgeSettings(BaseAppSettings):
     checkpoint_bucket: str
     files_bucket: str        # a removed member's files
     region: str              # set in template.yaml, as the runtime's
+    exports_bucket: str | None = None   # where it writes the assistant's part of a user's export
