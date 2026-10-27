@@ -46,5 +46,9 @@ gates:
 deploy:
   workflow: deploy.yml
 
+# The model ship-builder writes each part of a build on; the session reviews and commits it.
+models:
+  builder: sonnet
+
 worktrees:
   dir: .claude/worktrees
