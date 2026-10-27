@@ -13,7 +13,7 @@ users and calls every endpoint, printing PASS/FAIL per check:
   what, leaving and removing members, tenant isolation, users in several
   workspaces (X-Tenant-Id), plan limits, and deleting, restoring and (with
   TenantDeletionDays of a few minutes at most, as on dev) purging a workspace, deleting an
-  account, and exports (a workspace's and a user's).
+  account, exports (a workspace's and a user's) and the audit log.
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
@@ -446,6 +446,15 @@ check("each plan change notified once, however many updates Stripe sent",
       sorted(plan_changes) == ["Plan changed to business", "Plan changed to free", "Plan changed to pro"],
       plan_changes)
 stripe_api.v1.customers.delete(customer.id)   # test mode: leave nothing behind in Stripe
+
+print("Audit log")
+types = lambda: {e["type"] for e in owner("GET", "/audit").json().get("items", [])}   # noqa: E731
+got = wait_for(lambda: {"TenantCreated", "UserInvited", "RoleChanged", "OrderCreated"} <= (t := types()) and t)
+check("GET /audit: who created, invited, changed roles, ordered", bool(got), types())
+r = owner("GET", "/audit")
+promoted = next((e for e in r.json().get("items", []) if e["type"] == "RoleChanged"), None) if r.ok else None
+check("an entry says who did it", bool(promoted) and promoted["actor_email"] == owner.email, promoted)
+check("without a workspace named -> 403", owner("GET", "/audit", tenant=None).status_code == 403)
 
 print("Exports")
 r = owner("POST", "/exports/workspace")
