@@ -50,5 +50,37 @@ deploy:
 models:
   builder: sonnet
 
+# What a review of a change here checks first (ship-review hands it to the reviewer).
+security:
+  identity: >-
+    The caller and their role come only from the ID token's claims (get_current_user in
+    layers/shared/layer/shared/auth.py), never from the body, path or query. A request names its
+    workspace (the X-Tenant-Id header; the assistant's forwardedProps.tenantId), and only a
+    workspace the token lists is accepted: the request picks, the token decides.
+  isolation: >-
+    A workspace's items are keyed under TENANT#<tenant_id>, and one user's under
+    TENANT#<tenant_id>#USER#<user_id>. Keys outside a tenant (USER#, EMAIL#, OUTBOX#,
+    IDEMPOTENCY#) are lookups and system records that never hand back another tenant's data.
+  sensitive:
+    - layers/shared/**
+    - modules/accounts/**
+    - modules/billing/**
+    - "modules/*/src/*/repository.py"
+    - modules/assistant/src/assistant/tools/**
+    - modules/assistant/src/assistant/middleware/**
+    - modules/assistant/src/assistant/agents/**
+    - modules/assistant/src/assistant/sandbox.py
+    - modules/assistant/src/assistant/files.py
+    - modules/assistant/src/assistant/purge.py
+    - template.yaml
+    - .github/deploy-role.yaml
+  rules:
+    - Every write checks the caller's role on the server; the accounts module re-checks roles in its table for changes to who has access.
+    - A payment webhook's signature is checked before its payload is trusted (modules/billing/src/billing/webhook.py), and handling it twice changes nothing.
+    - Plan limits, seats and memberships are enforced with DynamoDB conditions, not read-then-write code.
+    - The assistant's tools act only with the calling user's rights in the calling workspace; its bash sandbox reaches neither the runtime's credentials nor another tenant's files.
+    - No token, secret, conversation text or personal data is logged.
+    - IAM in template.yaml stays least-privilege, and no change replaces or deletes a table or the user pool.
+
 worktrees:
   dir: .claude/worktrees
