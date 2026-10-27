@@ -1,4 +1,15 @@
 {
+  "extraKnownMarketplaces": {
+    "slipway": {
+      "source": {
+        "source": "github",
+        "repo": "henryonai/slipway"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "slipway@slipway": true
+  },
   "permissions": {
     "deny": [
       "Read(./.env)",
