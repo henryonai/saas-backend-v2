@@ -150,6 +150,7 @@ fields such as `subscription_revision`).
 | `TenantDeletionScheduled` | accounts (its owner deleted the workspace) | billing (the Stripe subscription stops renewing) |
 | `TenantRestored` | accounts (its owner restored it) | billing (it renews again) |
 | `TenantDeleted` (with `user_ids`, the members) | accounts' purge job | every module deletes what it keeps for the workspace: orders, notifications, the assistant's conversations, memories, files and usage; billing cancels the subscription |
+| `UserDeleted` (`tenant_id` empty) | accounts | none yet: for a module that keeps data per user outside any workspace |
 | `OrderCreated` | orders | notifications (in-app) |
 | `SubscriptionChanged` (with `revision`) | billing | accounts (plan copy), notifications |
 | `PaymentFailed` | billing | notifications |
@@ -205,6 +206,15 @@ memberships and the workspace's own items → each module deletes its data (see
 the events table); billing cancels the Stripe subscription now, without a
 refund, and keeps a tombstone for 90 days so Stripe's late webhooks can't bring
 it back. A purge that fails half way is finished by the next run.
+
+**Delete an account:** the user calls `DELETE /account` with
+`{"email": "<their email>"}` (typed again to confirm) → refused while they own
+an active workspace (ownership can't be handed over: they delete it first) →
+they leave every other workspace as leaving does (`MemberRemoved`, so their
+conversations, memories, files and notifications there go) → their own
+records go and `UserDeleted` is published → their Cognito user is deleted,
+last, so a failure part way can be retried. Orders they created stay with the
+workspace (its records), with their user id.
 
 **Upgrade:** owner calls `POST /billing/checkout` → pays on the provider's page
 (Stripe Checkout; a subscriber who changes plan gets Stripe's confirm page) →

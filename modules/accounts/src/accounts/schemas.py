@@ -25,6 +25,11 @@ class TenantDelete(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
+class AccountDelete(BaseModel):
+    """The account's email address, typed again to confirm."""
+    email: str = Field(min_length=3, max_length=254)
+
+
 class InviteRequest(BaseModel):
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=254)
     role: Literal["admin", "member"] = "member"  # exactly one owner per tenant

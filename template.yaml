@@ -587,7 +587,8 @@ Resources:
         - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }
         - Statement:
             - Effect: Allow
-              Action: [cognito-idp:AdminUserGlobalSignOut]   # on role change / removal
+              Action: [cognito-idp:AdminUserGlobalSignOut,   # on role change / removal
+                       cognito-idp:AdminDeleteUser]          # a user deleting their account
               Resource: !GetAtt UserPool.Arn
       Events:
         # One event per method, never ANY: an ANY route also catches the browser's CORS

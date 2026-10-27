@@ -13,6 +13,7 @@ from accounts.models import Invitation, Tenant
 USER_INVITED = "UserInvited"
 MEMBER_REMOVED = "MemberRemoved"
 TENANT_DELETED = "TenantDeleted"
+USER_DELETED = "UserDeleted"
 TENANT_DELETION_SCHEDULED = "TenantDeletionScheduled"
 TENANT_RESTORED = "TenantRestored"
 
@@ -63,3 +64,12 @@ def tenant_deletion_scheduled(tenant: Tenant, delete_after: int, actor: CurrentU
 def tenant_restored(tenant_id: str, actor: CurrentUser) -> Event:
     """Its owner restored a deleted workspace before it was purged."""
     return Event(TENANT_RESTORED, tenant_id, _actor(actor))
+
+
+def user_deleted(user_id: str, email: str) -> Event:
+    """
+    The user deleted their account, after leaving every workspace (each one a
+    MemberRemoved). For modules that keep data per user outside a workspace;
+    none does yet. Not about one workspace, so tenant_id is empty.
+    """
+    return Event(USER_DELETED, "", {"user_id": user_id, "email": email})

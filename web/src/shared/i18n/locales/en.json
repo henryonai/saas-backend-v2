@@ -492,6 +492,16 @@
       "submit": "Change password",
       "changed": "Password changed.",
       "wrongCurrent": "The current password isn't right."
+    },
+    "delete": {
+      "title": "Delete your account",
+      "description": "Your login goes, and so do your conversations, files and notifications in every workspace. Delete the workspaces you own first.",
+      "open": "Delete account",
+      "confirmTitle": "Delete your account?",
+      "confirmDescription": "You leave every workspace you're in and are signed out. This can't be undone.",
+      "typeEmail": "Type {{email}} to confirm",
+      "submit": "Delete my account",
+      "done": "Your account was deleted."
     }
   }
 }

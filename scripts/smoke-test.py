@@ -12,7 +12,7 @@ users and calls every endpoint, printing PASS/FAIL per check:
   workers), invitations (send, cancel, accept, decline), roles and who may do
   what, leaving and removing members, tenant isolation, users in several
   workspaces (X-Tenant-Id), plan limits, and deleting, restoring and (with
-  TenantDeletionDays of a few minutes at most, as on dev) purging a workspace.
+  TenantDeletionDays of a few minutes at most, as on dev) purging a workspace, and deleting an account.
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
@@ -528,6 +528,26 @@ if grace <= 300:   # a test stack's few seconds or minutes (dev: about 90 second
     check("her workspace count went down (she can create another)", r.status_code == 201, show(r))
 else:
     print("  (purge not checked: TenantDeletionDays is more than a few minutes on this stack)")
+
+print("Deleting an account")
+doomed = Person("doomed")
+r = doomed("POST", "/tenants", tenant=None, json={"name": "Doomed Co"}, headers=new_key())
+check("they create a workspace", r.status_code == 201, show(r))
+doomed.sign_in()
+r = doomed("DELETE", "/account", tenant=None, json={"email": "someone@example.com"})
+check("deleting needs their exact email -> 400", r.status_code == 400, show(r))
+r = doomed("DELETE", "/account", tenant=None, json={"email": doomed.email})
+check("an owner of a workspace can't -> 409", r.status_code == 409 and "Doomed Co" in r.text, show(r))
+r = doomed("DELETE", "/tenants/me", json={"name": "Doomed Co"})
+check("they delete their workspace first", r.ok, show(r))
+r = doomed("DELETE", "/account", tenant=None, json={"email": doomed.email})
+check("DELETE /account", r.status_code == 204, show(r))
+try:
+    doomed.sign_in()
+    check("their login is gone", False, "signed in")
+except Exception as e:   # pycognito raises Cognito's UserNotFoundException / NotAuthorizedException
+    check("their login is gone", "NotFound" in type(e).__name__ or "NotAuthorized" in type(e).__name__,
+          type(e).__name__)
 
 print(f"\n{'ALL PASSED' if not failures else f'{len(failures)} FAILED: ' + ', '.join(failures)}")
 print(f"Test users saved to {creds}")
