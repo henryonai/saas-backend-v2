@@ -599,6 +599,7 @@ Resources:
         TenantsAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: GET } }
         TenantsAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: POST } }       # restore
         TenantsAnyDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: DELETE } }   # delete
+        AccountDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /account, Method: DELETE } }
         UsersGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /users, Method: GET } }
         UsersAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: GET } }
         UsersAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: POST } }
