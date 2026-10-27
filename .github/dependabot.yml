@@ -1,0 +1,19 @@
+# Weekly dependency updates, one PR per ecosystem; CI checks each one.
+# Python: uv.lock (run ./scripts/export-requirements.sh after merging, before sam build).
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      python: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /web
+    schedule: { interval: weekly }
+    groups:
+      web: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
