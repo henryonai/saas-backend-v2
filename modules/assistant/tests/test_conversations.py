@@ -1315,10 +1315,10 @@ def member_removed(tenant_id: str, user_id: str, occurred_at: str) -> dict:
 def test_a_removed_members_conversations_memories_and_files_go(ctx, checkpoints):
     alice, bob = claims("alice", "t1", "member"), claims("bob", "t1", "member")
     for user in (alice, bob):
-        ctx.memories.remember(user_from_claims(user), "Likes short answers")
-        ctx.files.save(user_from_claims(user), name="report.md", data=b"# Hi", content_type=None, thread_id=THREAD,
-                       agent="assistant")
-    ctx.memories.set_enabled(user_from_claims(alice), False)
+        ctx.memories.remember(user_from_claims(user, only_workspace(user)), "Likes short answers")
+        ctx.files.save(user_from_claims(user, only_workspace(user)), name="report.md", data=b"# Hi",
+                       content_type=None, thread_id=THREAD, agent="assistant")
+    ctx.memories.set_enabled(user_from_claims(alice, only_workspace(alice)), False)
     start(ctx, thread(1), "2026-10-24T08:00:00.000Z")
     start(ctx, thread(2), "2026-10-24T09:00:00.000Z", expires_in=-60)   # expired, TTL hasn't removed it yet
     start(ctx, thread(3), "2026-10-24T08:00:00.000Z", user_id="bob")    # someone else's
@@ -1335,10 +1335,10 @@ def test_a_removed_members_conversations_memories_and_files_go(ctx, checkpoints)
 
     assert {i["pk"] for i in ctx.table.scan()["Items"] if "#CONV#" in i["pk"]} == {
         f"TENANT#t1#USER#alice#CONV#{thread(4)}", f"TENANT#t1#USER#bob#CONV#{thread(3)}"}
-    assert ctx.memories.read(user_from_claims(alice)) == (True, [])   # memories and setting
-    assert len(ctx.memories.read(user_from_claims(bob))[1]) == 1
-    assert ctx.files.list(user_from_claims(alice), 10)[0] == []
-    assert len(ctx.files.list(user_from_claims(bob), 10)[0]) == 1
+    assert ctx.memories.read(user_from_claims(alice, only_workspace(alice))) == (True, [])   # memories and setting
+    assert len(ctx.memories.read(user_from_claims(bob, only_workspace(bob)))[1]) == 1
+    assert ctx.files.list(user_from_claims(alice, only_workspace(alice)), 10)[0] == []
+    assert len(ctx.files.list(user_from_claims(bob, only_workspace(bob)), 10)[0]) == 1
     objects = ctx.s3.list_objects_v2(Bucket="assistant-files-test")["Contents"]
     assert [o["Key"].split("/")[1] for o in objects] == ["bob"]
     assert checkpoints.left(mine) == {} and checkpoints.left(bobs) != {}

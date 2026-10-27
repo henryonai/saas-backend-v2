@@ -108,16 +108,24 @@ class Person:
                               UserAttributes=[{"Name": "email", "Value": self.email},
                                               {"Name": "email_verified", "Value": "true"}])
         idp.admin_set_user_password(UserPoolId=POOL, Username=self.email, Password=self.password, Permanent=True)
+        self.workspace: str | None = None   # the one they work in: X-Tenant-Id, forwardedProps.tenantId
         self.sign_in()
         if not joins:
             r = self("POST", "/tenants", json={"name": f"Smoke assistant {name}"})
             assert r.status_code == 201, show(r)
-            self.sign_in()   # the token now carries the workspace
+            self.sign_in()   # the token now lists the workspace
+            self.workspace = r.json()["tenant_id"]
 
     def sign_in(self) -> "Person":
+        """New tokens, listing every workspace the user is in (with their role and its plan)."""
         self.cognito = Cognito(POOL, CLIENT, user_pool_region=region, username=self.email)
         self.cognito.authenticate(password=self.password)
         return self
+
+    @property
+    def workspaces(self) -> dict:
+        """What the token lists: {tenant_id: {"role": ..., "plan": ...}}."""
+        return json.loads(self.claims.get("workspaces") or "{}")
 
     @property
     def token(self) -> str:
@@ -131,15 +139,19 @@ class Person:
     @property
     def keys(self) -> str:
         """TENANT#<t>#USER#<u>: how the assistant table keys this user's records."""
-        return f"TENANT#{self.claims['tenant_id']}#USER#{self.claims['sub']}"
+        return f"TENANT#{self.workspace}#USER#{self.claims['sub']}"
 
     @property
     def prefix(self) -> str:
         """Where this user's files are in the bucket."""
-        return f"{self.claims['tenant_id']}/{self.claims['sub']}/"
+        return f"{self.workspace}/{self.claims['sub']}/"
 
     def __call__(self, method: str, path: str, **kw) -> requests.Response:
-        return requests.request(method, API + path, headers={"Authorization": f"Bearer {self.token}"}, timeout=30, **kw)
+        """As this person, in the workspace they work in (X-Tenant-Id, as a browser tab sends it)."""
+        headers = {"Authorization": f"Bearer {self.token}"}
+        if self.workspace:
+            headers["X-Tenant-Id"] = self.workspace
+        return requests.request(method, API + path, headers=headers, timeout=30, **kw)
 
 
 # ---------- what is stored ----------
@@ -165,7 +177,7 @@ def meta(person: Person, thread: str) -> dict:
 
 def checkpoints_of(person: Person, thread: str, agent: str = "assistant") -> int:
     """How many checkpoint records the agent's thread has (context.checkpoint_session: user, session, agent, hashed)."""
-    actor = f"{person.claims['tenant_id']}:{person.claims['sub']}"
+    actor = f"{person.workspace}:{person.claims['sub']}"
     hashed = hashlib.sha256(f"{actor}/{thread}/{agent}".encode()).hexdigest()
     return CHECKPOINTS.query(KeyConditionExpression=Key("PK").eq(f"CHECKPOINT_{hashed}"), Select="COUNT")["Count"]
 
@@ -200,7 +212,7 @@ def stream(person: Person, thread: str, run_id: str) -> list[dict]:
     try:
         r = requests.post(AGENT, stream=True, timeout=(10, 300), json={
             "threadId": thread, "runId": run_id, "state": {}, "messages": [], "tools": [], "context": [],
-            "forwardedProps": {}}, headers={
+            "forwardedProps": {"tenantId": person.workspace}}, headers={
             "Authorization": f"Bearer {person.token}", "Accept": "text/event-stream",
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": thread})
     except requests.RequestException as e:
@@ -330,7 +342,7 @@ def file_record(person: Person, file_id: str) -> dict:
 print(f"Assistant smoke test on {STACK} ({region}): {API}")
 alice, pat, bob = Person("alice"), Person("pat"), Person("bob", joins=True)
 accounts = dynamodb.Table(resources["AccountsTable"])
-accounts.update_item(Key={"pk": f"TENANT#{pat.claims['tenant_id']}", "sk": "PROFILE"},
+accounts.update_item(Key={"pk": f"TENANT#{pat.workspace}", "sk": "PROFILE"},
                      UpdateExpression="SET #plan = :pro", ExpressionAttributeNames={"#plan": "plan"},
                      ExpressionAttributeValues={":pro": "pro"})
 pat.sign_in()
@@ -340,7 +352,7 @@ saved = json.loads(creds.read_text()) if creds.exists() else {}
 saved[f"assistant-{RUN}"] = {who: {"email": p.email, "password": p.password}
                              for who, p in (("free", alice), ("pro", pat), ("member", bob))}
 creds.write_text(json.dumps(saved, indent=2))
-print(f"  test users: {creds} (assistant-{RUN}); pro plan: {pat.claims.get('plan')}")
+print(f"  test users: {creds} (assistant-{RUN}); pro plan: {pat.workspaces[pat.workspace]['plan']}")
 
 # ----- conversations: create, read, update, delete -----
 print("\nA conversation: send, open, list, rename, rate, delete")
@@ -569,7 +581,7 @@ check("an .exe can't be attached",
 check("an image over 5 MB can't be attached",
       alice("POST", "/assistant/files", json={"name": "big.png", "content_type": "image/png",
                                               "size": 6 * 1024 * 1024}).status_code == 400)
-hour = {"pk": f"TENANT#{alice.claims['tenant_id']}",
+hour = {"pk": f"TENANT#{alice.workspace}",
         "sk": f"USER#{alice.claims['sub']}#UPLOADS#{datetime.now(UTC):%Y-%m-%dT%H}"}
 uploads_before = number(TABLE.get_item(Key=hour, ConsistentRead=True).get("Item", {}).get("messages")) or 0
 NOTE = b"The secret code word is marmalade-77."
@@ -710,9 +722,10 @@ if csv:
 print("\nA member who leaves: the purge worker deletes their conversations, memories, files and checkpoints")
 r = alice("POST", "/users/invite", json={"email": bob.email, "role": "member"})
 check("alice invites bob", r.status_code == 201, show(r))
-r = bob("POST", f"/invitations/{alice.claims['tenant_id']}/accept")
+r = bob("POST", f"/invitations/{alice.workspace}/accept")
 check("bob accepts", r.ok, show(r))
 bob.sign_in()
+bob.workspace = alice.workspace
 bobs = new_thread()
 answered("bob chats", chat(bob, bobs, "Reply with exactly: hello"))
 bob("POST", "/assistant/memories", json={"text": "Bob likes green tea"})

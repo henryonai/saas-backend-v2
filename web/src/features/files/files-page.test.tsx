@@ -37,7 +37,8 @@ function backend(items: AssistantFile[]) {
     const { pathname, searchParams } = new URL(url);
     calls.push(`${method} ${pathname}${searchParams.size ? `?${searchParams}` : ''}`);
     if (pathname === '/tenants/me') return json({ tenant_id: 'tenant-1', name: 'Acme Coffee', plan: 'free' });
-    if (pathname === '/notifications') return json([]);
+    if (pathname === '/tenants') return json([{ tenant_id: 'tenant-1', name: 'Acme Coffee', role: 'owner', plan: 'free' }]);
+    if (pathname === '/notifications' || pathname === '/invitations') return json([]);
     if (pathname === '/assistant/files') {
       const source = searchParams.get('source');
       const kind = searchParams.get('kind');

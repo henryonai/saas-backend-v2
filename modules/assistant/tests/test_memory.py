@@ -11,7 +11,7 @@ from langchain_core.messages import SystemMessage
 from assistant.definitions import AgentDefinitionError, parse_agent
 from assistant.service import MAX_MEMORIES
 from shared.auth import user_from_claims
-from testkit.http import call, claims
+from testkit.http import call, claims, only_workspace
 from testkit.logs import captured_logs
 
 import assistant.service
@@ -131,7 +131,7 @@ def test_each_user_has_their_own_memories(ctx, alice):
 def test_memories_are_short_and_few(ctx, alice):
     assert call(handler, "POST", "/assistant/memories", alice, body={"text": "x" * 501})[0] == 422
     assert call(handler, "POST", "/assistant/memories", alice, body={"text": "   "})[0] == 400
-    user = user_from_claims(alice)
+    user = user_from_claims(alice, only_workspace(alice))
     for n in range(MAX_MEMORIES):
         ctx.memories.remember(user, f"Fact {n}")
 

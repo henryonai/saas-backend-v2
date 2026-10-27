@@ -17,7 +17,7 @@ from assistant.context import AgentContext
 from assistant.factory import thread_config
 from assistant.handler import handler
 from shared.auth import user_from_claims
-from testkit.http import call, claims
+from testkit.http import call, claims, only_workspace
 
 THREAD = "11111111-2222-3333-4444-555555555555"   # conftest's SESSION
 FILES_BUCKET = "assistant-files-test"            # conftest's
@@ -93,8 +93,8 @@ def test_an_image_is_sent_to_the_model_as_an_image_and_kept_as_a_line(ctx, alice
     assert picture["type"] == "image" and picture["mime_type"] == "image/png" and picture["base64"]
     assert text["text"].startswith("[Attached file: receipt.png (image/png")
     # The agent's state names the file; its bytes never go into a checkpoint.
-    config = thread_config(AgentContext(user=user_from_claims(alice), authorization="", session_id=THREAD),
-                           "assistant")
+    caller = AgentContext(user=user_from_claims(alice, only_workspace(alice)), authorization="", session_id=THREAD)
+    config = thread_config(caller, "assistant")
     saved = ctx.state.checkpointer.get_tuple(config).checkpoint["channel_values"]["messages"][0]
     assert isinstance(saved.content, str) and saved.additional_kwargs["attachments"][0]["file_id"] == image["file_id"]
     assert ctx.title_model.calls[-1][1].content == "receipt.png"   # what it's titled from
@@ -110,7 +110,8 @@ def test_a_file_the_model_cant_read_is_named_and_opened_in_the_sandbox(ctx):
     assert len(question_sent(ctx).content) == 1   # the line only
     result = next(e["content"] for e in events if e["type"] == "TOOL_CALL_RESULT")
     assert result == "report.pdf is at files/report.pdf (in a new sandbox: files from before are gone)."
-    conversation_id = AgentContext(user=user_from_claims(user), authorization="", session_id=THREAD).conversation_id
+    caller = AgentContext(user=user_from_claims(user, only_workspace(user)), authorization="", session_id=THREAD)
+    conversation_id = caller.conversation_id
     assert ctx.sandbox.files[conversation_id, "files/report.pdf"] == b"%PDF-1.7 ..."
 
 
@@ -192,7 +193,8 @@ def test_the_assistant_writes_a_file_and_saves_it_again_as_a_new_version(ctx, al
 
 def test_the_assistant_saves_a_chart_from_the_sandbox(ctx):
     user = pro()
-    conversation_id = AgentContext(user=user_from_claims(user), authorization="", session_id=THREAD).conversation_id
+    caller = AgentContext(user=user_from_claims(user, only_workspace(user)), authorization="", session_id=THREAD)
+    conversation_id = caller.conversation_id
     ctx.sandbox.started.append(conversation_id)
     ctx.sandbox.files[conversation_id, "out/chart.png"] = PNG
     ctx.script(ctx.tool_call("save_file", {"path": "out/chart.png"}), ctx.answer("Here is the chart."))
