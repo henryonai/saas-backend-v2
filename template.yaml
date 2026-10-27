@@ -1660,7 +1660,8 @@ Resources:
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:UpdateItem]   # the subscription: its renewal, then its tombstone
+              Action: [dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:PutItem]   # the subscription: its renewal,
+                                                                                  # its tombstone; a granted plan's event (outbox)
               Resource: !GetAtt BillingTable.Arn
             - Effect: Allow
               Action: [ssm:GetParameter]                        # Stripe's key, to stop the renewal or cancel
