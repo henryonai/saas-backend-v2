@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MoreHorizontalIcon } from 'lucide-react';
 import { type FormEvent, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -55,6 +55,13 @@ export function AdminPage() {
   );
 }
 
+/** Refreshes now, and again once billing and accounts have applied the change (a few seconds). */
+function refreshSoon(queryClient: QueryClient) {
+  for (const delay of [0, 3000, 8000]) {
+    setTimeout(() => void queryClient.invalidateQueries({ queryKey: ['admin'] }), delay);
+  }
+}
+
 function usePaged<T>(key: readonly unknown[], path: string) {
   return useInfiniteQuery({
     queryKey: key,
@@ -74,7 +81,7 @@ function Workspaces() {
     mutationFn: (tenantId: string) => api<void>(`/admin/tenants/${encodeURIComponent(tenantId)}/unsuspend`, { method: 'POST' }),
     onSuccess: () => {
       toast.success(t('admin.applied'));
-      void queryClient.invalidateQueries({ queryKey: ['admin'] });
+      refreshSoon(queryClient);
     },
     onError: (error) => toastError(error, t),
   });
@@ -163,7 +170,7 @@ function ActionDialog({ action, onClose }: { action: Action; onClose: () => void
         : api<void>(`/admin/tenants/${encodeURIComponent(tenantId)}/suspend`, { method: 'POST', body: { reason: text } }),
     onSuccess: () => {
       toast.success(t('admin.applied'));
-      void queryClient.invalidateQueries({ queryKey: ['admin'] });
+      refreshSoon(queryClient);
       setText('');
       onClose();
     },
@@ -241,7 +248,11 @@ function Log() {
               <TableCell className="whitespace-nowrap text-muted-foreground">{formatDateTime(entry.at)}</TableCell>
               <TableCell>{entry.admin_email}</TableCell>
               <TableCell>
-                {t(`admin.actions.${entry.action}`, { tenant: entry.tenant_id, ...(entry.details as Record<string, string>) })}
+                {t(`admin.actions.${entry.action}`, {
+                  ...(entry.details as Record<string, string>),
+                  tenant: entry.tenant_name || entry.tenant_id,
+                  plan: getPlan(String(entry.details.plan ?? '')).name,
+                })}
               </TableCell>
             </TableRow>
           ))}
