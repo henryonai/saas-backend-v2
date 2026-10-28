@@ -33,4 +33,5 @@ class AdminAction(BaseModel):
     admin_email: str
     action: Literal["grant_plan", "suspend", "unsuspend"]
     tenant_id: str
+    tenant_name: str = ""   # entries saved before it was added have none: the page shows the id
     details: dict = {}

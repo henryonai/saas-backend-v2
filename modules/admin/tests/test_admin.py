@@ -60,3 +60,4 @@ def test_an_admin_grants_a_plan_suspends_and_unsuspends_and_each_is_logged(ctx, 
     assert [(a["action"], a["admin_email"]) for a in log["items"]] == [
         ("unsuspend", "ops@example.com"), ("suspend", "ops@example.com"), ("grant_plan", "ops@example.com")]
     assert log["items"][2]["details"] == {"plan": "pro", "note": "partner"}
+    assert {a["tenant_name"] for a in log["items"]} == {"Acme"}               # the log names the workspace

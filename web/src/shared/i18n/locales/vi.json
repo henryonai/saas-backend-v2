@@ -528,7 +528,7 @@
   "exports": {
     "workspace": {
       "title": "Xuất dữ liệu không gian làm việc",
-      "description": "Bản sao thành viên, lời mời, đơn hàng và gói đăng ký của nó, dưới dạng tệp JSON."
+      "description": "Bản sao thành viên, lời mời, đơn hàng, gói đăng ký và nhật ký hoạt động của nó, dưới dạng tệp JSON."
     },
     "me": {
       "title": "Tải dữ liệu của bạn",
@@ -543,7 +543,8 @@
       "orders": "Đơn hàng",
       "billing": "Gói đăng ký",
       "notifications": "Thông báo",
-      "assistant": "Trợ lý"
+      "assistant": "Trợ lý",
+      "audit": "Nhật ký hoạt động"
     }
   },
   "admin": {

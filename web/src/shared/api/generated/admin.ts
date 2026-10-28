@@ -128,6 +128,11 @@ export interface components {
             /** Tenant Id */
             tenant_id: string;
             /**
+             * Tenant Name
+             * @default
+             */
+            tenant_name: string;
+            /**
              * Details
              * @default {}
              */

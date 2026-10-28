@@ -81,23 +81,25 @@ class AdminService:
         admin.require_platform_admin()
         if not is_plan(plan):
             raise InvalidRequest(f"Unknown plan {plan!r}")
-        self._workspace(tenant_id)
-        self.admin.act(self._action(admin, "grant_plan", tenant_id, {"plan": plan, "note": note}),
+        workspace = self._workspace(tenant_id)
+        self.admin.act(self._action(admin, "grant_plan", workspace, {"plan": plan, "note": note}),
                        events.plan_granted(tenant_id, plan, note, admin))
 
     def suspend(self, admin: CurrentUser, tenant_id: str, reason: str) -> None:
         """Nobody can work in it until it is unsuspended: accounts takes it out of every token."""
         admin.require_platform_admin()
-        if self._workspace(tenant_id).status == "suspended":
+        workspace = self._workspace(tenant_id)
+        if workspace.status == "suspended":
             raise Conflict("This workspace is suspended already")
-        self.admin.act(self._action(admin, "suspend", tenant_id, {"reason": reason}),
+        self.admin.act(self._action(admin, "suspend", workspace, {"reason": reason}),
                        events.tenant_suspended(tenant_id, reason, admin))
 
     def unsuspend(self, admin: CurrentUser, tenant_id: str) -> None:
         admin.require_platform_admin()
-        if self._workspace(tenant_id).status != "suspended":
+        workspace = self._workspace(tenant_id)
+        if workspace.status != "suspended":
             raise Conflict("This workspace isn't suspended")
-        self.admin.act(self._action(admin, "unsuspend", tenant_id), events.tenant_unsuspended(tenant_id, admin))
+        self.admin.act(self._action(admin, "unsuspend", workspace), events.tenant_unsuspended(tenant_id, admin))
 
     def log(self, admin: CurrentUser, limit: int, cursor: str | None):
         admin.require_platform_admin()
@@ -113,6 +115,7 @@ class AdminService:
         return summary
 
     @staticmethod
-    def _action(admin: CurrentUser, action: str, tenant_id: str, details: dict | None = None) -> AdminAction:
+    def _action(admin: CurrentUser, action: str, workspace: WorkspaceSummary,
+                details: dict | None = None) -> AdminAction:
         return AdminAction(admin_id=admin.user_id, admin_email=admin.email.lower(), action=action,
-                           tenant_id=tenant_id, details=details or {})
+                           tenant_id=workspace.tenant_id, tenant_name=workspace.name, details=details or {})

@@ -528,7 +528,7 @@
   "exports": {
     "workspace": {
       "title": "Export this workspace",
-      "description": "A copy of its members, invitations, orders and subscription, as JSON files."
+      "description": "A copy of its members, invitations, orders, subscription and activity log, as JSON files."
     },
     "me": {
       "title": "Download your data",
@@ -543,7 +543,8 @@
       "orders": "Orders",
       "billing": "Subscription",
       "notifications": "Notifications",
-      "assistant": "Assistant"
+      "assistant": "Assistant",
+      "audit": "Activity log"
     }
   },
   "admin": {

@@ -18,6 +18,7 @@ def test_create_list_get(ctx, alice):
 
     [event] = ctx.events()  # saved with the order, published later by the outbox relay
     assert event["type"] == "OrderCreated" and event["detail"]["item"] == "Book"
+    assert event["detail"]["actor_email"] == "alice@example.com"           # the audit log names who
     assert event["detail"]["event_id"] and event["detail"]["tenant_id"] == "t1"
 
     _, page = ctx.api("GET", "/orders", alice)

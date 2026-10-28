@@ -54,7 +54,8 @@ class OrderService:
         # The limit is checked inside the same transaction that saves the order.
         max_orders = get_limit(user.plan, "max_orders")
         try:
-            self.orders.create(order, events.order_created(order), max_orders, idempotency=(idempotency_key, request))
+            self.orders.create(order, events.order_created(order, user.email), max_orders,
+                               idempotency=(idempotency_key, request))
         except ConditionFailed as e:
             if IDEMPOTENCY in e.failed:   # before the limit: the order it made is counted already
                 return self.get_order(user, self.orders.order_for_key(tenant_id, user.user_id, idempotency_key,

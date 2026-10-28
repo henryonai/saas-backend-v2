@@ -12,6 +12,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/
 import { Spinner } from '@/shared/components/ui/spinner';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/components/ui/table';
 import { formatDateTime } from '@/shared/lib/format';
+import { getPlan } from '@/shared/lib/plans';
 
 /** Owners and admins: who did what in the workspace, newest first (GET /audit). */
 export function ActivityTab() {
@@ -81,5 +82,6 @@ function describe(entry: AuditEntry, t: TFunction): string {
   // A type the app doesn't know yet (added to the backend first) shows its name.
   const key = `team.activity.events.${entry.type}` as 'team.activity.events.TenantCreated';
   const role = typeof d.role === 'string' ? t(`roles.${d.role}` as 'roles.member') : undefined;
-  return String(t(key, { ...d, role, defaultValue: entry.type }));
+  const plan = typeof d.plan === 'string' ? getPlan(d.plan).name : undefined;
+  return String(t(key, { ...d, role, plan, defaultValue: entry.type }));
 }
