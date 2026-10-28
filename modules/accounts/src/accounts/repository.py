@@ -175,15 +175,18 @@ class AccountRepository:
                 return False
             raise
 
-    def restore(self, tenant_id: str) -> bool:
-        """Makes a deleting workspace active again. False if it isn't deleting (or already purging)."""
+    def restore(self, tenant_id: str, now: int) -> bool:
+        """
+        Makes a deleting workspace active again. False if it isn't deleting
+        (or already purging), or its delete_after has passed.
+        """
         try:
             self.table.update_item(
                 Key=_profile(tenant_id),
                 UpdateExpression="SET #st = :active REMOVE delete_after, gsi1pk, gsi1sk",
-                ConditionExpression="#st = :deleting",
+                ConditionExpression="#st = :deleting AND delete_after > :now",
                 ExpressionAttributeNames={"#st": "status"},
-                ExpressionAttributeValues={":deleting": "deleting", ":active": "active"},
+                ExpressionAttributeValues={":deleting": "deleting", ":active": "active", ":now": now},
             )
             return True
         except ClientError as e:

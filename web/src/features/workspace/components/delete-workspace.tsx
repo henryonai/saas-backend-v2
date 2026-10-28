@@ -20,7 +20,7 @@ import { Field, FieldLabel } from '@/shared/components/ui/field';
 import { Input } from '@/shared/components/ui/input';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { errorMessage } from '@/shared/lib/errors';
-import { formatDate } from '@/shared/lib/format';
+import { formatDateTime } from '@/shared/lib/format';
 import { useDeleteTenant, useTenant } from '../hooks';
 
 /**
@@ -46,7 +46,7 @@ export function DeleteWorkspace() {
     setApiError(null);
     try {
       const deleted = await remove.mutateAsync(typed);
-      toast.success(t('workspaces.delete.done', { workspace: name, date: formatDate(deleted.delete_after ?? Date.now() / 1000) }));
+      toast.success(t('workspaces.delete.done', { workspace: name, date: formatDateTime(deleted.delete_after ?? Date.now() / 1000) }));
       setOpen(false);
       const user = await refreshSession();
       if (user) await navigate({ to: user.tenantId ? '/' : '/welcome' });

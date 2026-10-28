@@ -5,7 +5,7 @@ import { Button } from '@/shared/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card';
 import { Spinner } from '@/shared/components/ui/spinner';
 import { toastError } from '@/shared/lib/errors';
-import { formatDate } from '@/shared/lib/format';
+import { formatDateTime } from '@/shared/lib/format';
 import { useRestoreTenant, useWorkspaces } from '../hooks';
 
 /**
@@ -32,7 +32,7 @@ export function DeletedWorkspaces() {
               <p className="truncate font-medium">{workspace.name}</p>
               <p className="text-xs text-muted-foreground">
                 {workspace.status === 'deleting' && workspace.delete_after
-                  ? t('workspaces.deleted.until', { date: formatDate(workspace.delete_after) })
+                  ? t('workspaces.deleted.until', { date: formatDateTime(workspace.delete_after) })
                   : t('workspaces.deleted.purging')}
               </p>
             </div>

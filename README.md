@@ -194,7 +194,7 @@ longer lists that workspace.
 `deleting`: every member's next token leaves it out (the owner's app refreshes
 at once; others' tokens within 15 minutes), `GET /tenants` still lists it with
 its `status` and `delete_after`, and its owner can bring it back with
-`POST /tenants/<tenant_id>/restore` until `TenantDeletionDays` (7; dev: 0)
+`POST /tenants/<tenant_id>/restore` until `TenantDeletionDays` (7; dev: 0.001, about 90 seconds)
 have passed → the hourly purge job (`accounts/purge.py`) finds it in a sparse
 index, publishes `TenantDeleted` with its members, and removes the
 memberships and the workspace's own items → each module deletes its data (see

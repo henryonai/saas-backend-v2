@@ -49,7 +49,7 @@ class InvitationLimits:
 
 class AccountService:
     def __init__(self, accounts: AccountRepository, identity: IdentityProvider,
-                 invitation_limits: InvitationLimits, max_workspaces: int, deletion_days: int = 7):
+                 invitation_limits: InvitationLimits, max_workspaces: int, deletion_days: float = 7):
         self.accounts = accounts
         self.identity = identity
         self.limits = invitation_limits
@@ -97,22 +97,25 @@ class AccountService:
         tenant = self._tenant(self._caller(user, ROLE_OWNER).tenant_id)
         if data.name != tenant.name:
             raise InvalidRequest("Type the workspace's name exactly as it is to delete it")
-        delete_after = int(time.time()) + self.deletion_days * 24 * 3600
+        delete_after = int(time.time() + self.deletion_days * 24 * 3600)
         if not self.accounts.schedule_deletion(tenant.tenant_id, delete_after):
             raise Conflict("This workspace is being deleted already")
         return tenant.model_copy(update={"status": "deleting", "delete_after": delete_after})
 
     def restore_tenant(self, user: CurrentUser, tenant_id: str) -> Tenant:
         """
-        Its owner restores a deleted workspace before it is purged. Named in
-        the path, since the token no longer lists it. The app then refreshes the token.
+        Its owner restores a deleted workspace until its delete_after, even if
+        the purge job hasn't run yet. Named in the path, since the token no
+        longer lists it. The app then refreshes the token.
         """
         member = self.accounts.get_member(tenant_id, user.user_id)
         if not member:
             raise NotFound("Workspace not found")
         if member.role != ROLE_OWNER:
             raise Forbidden("Only the workspace's owner can restore it")
-        if not self.accounts.restore(tenant_id):
+        if not self.accounts.restore(tenant_id, int(time.time())):
+            if self._tenant(tenant_id, consistent=True).status == "deleting":
+                raise Conflict("The time to restore this workspace has passed")
             raise Conflict("This workspace isn't waiting to be deleted")
         return self._tenant(tenant_id, consistent=True)
 

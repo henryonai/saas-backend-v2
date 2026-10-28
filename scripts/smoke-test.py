@@ -12,7 +12,7 @@ users and calls every endpoint, printing PASS/FAIL per check:
   workers), invitations (send, cancel, accept, decline), roles and who may do
   what, leaving and removing members, tenant isolation, users in several
   workspaces (X-Tenant-Id), plan limits, and deleting, restoring and (with
-  TenantDeletionDays=0, as on dev) purging a workspace.
+  TenantDeletionDays of a few minutes at most, as on dev) purging a workspace.
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
@@ -510,19 +510,24 @@ check("GET /tenants lists it as deleting",
 r = carol("POST", f"/tenants/{other_id}/restore", tenant=None)
 check("POST /tenants/{id}/restore", r.ok and r.json()["status"] == "active", show(r))
 check("restored: her token lists it again", other_id in carol.sign_in().workspaces, carol.workspaces)
-if params.get("TenantDeletionDays") == "0":
+grace = float(params.get("TenantDeletionDays", "7")) * 24 * 3600
+if grace <= 300:   # a test stack's few seconds or minutes (dev: about 90 seconds)
     carol("DELETE", "/tenants/me", tenant=other_id, json={"name": "Other Co"})
     job = session.client("cloudformation").describe_stack_resource(
         StackName=STACK, LogicalResourceId="AccountsPurgeFunction")["StackResourceDetail"]["PhysicalResourceId"]
-    result = session.client("lambda").invoke(FunctionName=job)   # as the hourly schedule does, but now
-    ran = json.loads(result["Payload"].read())
-    check("the purge job removes it", "FunctionError" not in result and ran.get("purged", 0) >= 1, ran)
+
+    def purge() -> dict:
+        result = session.client("lambda").invoke(FunctionName=job)   # as the hourly schedule does, but now
+        return {"error": True} if "FunctionError" in result else json.loads(result["Payload"].read())
+
+    ran = wait_for(lambda: (p := purge()).get("purged", 0) >= 1 and p, timeout=int(grace) + 60, every=10)
+    check("once its time to restore has passed, the purge job removes it", bool(ran), ran or purge())
     r = carol("GET", "/tenants", tenant=None)
     check("GET /tenants no longer lists it", r.ok and other_id not in {w["tenant_id"] for w in r.json()}, show(r))
     r = carol("POST", "/tenants", json={"name": "After Co"}, headers=new_key())
     check("her workspace count went down (she can create another)", r.status_code == 201, show(r))
 else:
-    print("  (purge not checked: TenantDeletionDays isn't 0 on this stack)")
+    print("  (purge not checked: TenantDeletionDays is more than a few minutes on this stack)")
 
 print(f"\n{'ALL PASSED' if not failures else f'{len(failures)} FAILED: ' + ', '.join(failures)}")
 print(f"Test users saved to {creds}")

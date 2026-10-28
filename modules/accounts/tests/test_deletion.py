@@ -123,3 +123,19 @@ def test_the_scheduled_handler_runs_the_purge_with_the_lambdas_remaining_time(ct
     ctx.api("POST", f"/tenants/{owner['tenant_id']}/restore", claims("alice"))
     delete(ctx, owner)                                                        # deleted again, due now
     assert purge.run(SimpleNamespace(get_remaining_time_in_millis=lambda: 300_000), ctx.service) == {"purged": 1}
+
+
+def test_a_workspace_cant_be_restored_once_its_time_has_passed_even_before_the_purge(ctx, owner):
+    delete(ctx, owner)
+    tenant_id = owner["tenant_id"]
+    item = ctx.table.get_item(Key={"pk": f"TENANT#{tenant_id}", "sk": "PROFILE"})["Item"]
+    ctx.table.put_item(Item={**item, "delete_after": int(time.time()) - 1})   # due; the hourly job hasn't run
+    status, body = ctx.api("POST", f"/tenants/{tenant_id}/restore", claims("alice"))
+    assert status == 409 and "passed" in body["message"]
+    assert ctx.service.accounts.get_tenant(tenant_id).status == "deleting"
+
+
+def test_a_test_stacks_grace_period_can_be_a_fraction_of_a_day(ctx, owner):
+    ctx.service.deletion_days = 0.001                                  # about 90 seconds, as on dev
+    _, tenant = delete(ctx, owner)
+    assert time.time() + 80 < tenant["delete_after"] <= time.time() + 87

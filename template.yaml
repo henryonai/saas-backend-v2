@@ -104,7 +104,8 @@ Parameters:
     MinValue: 0
     Description: >-
       Days the owner of a deleted workspace can restore it before the purge job removes
-      it and its data in every module. 0 = at the next hourly run.
+      it and its data in every module, a fraction for a test stack (0.001 is about 90
+      seconds). The purge job runs hourly, so it removes it at the first run after that.
   AssistantConversationDays:
     Type: Number
     Default: 0
