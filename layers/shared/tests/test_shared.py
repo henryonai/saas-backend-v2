@@ -250,3 +250,26 @@ def test_platform_admins_are_the_user_pool_group(groups):
     assert not user_from_claims(claims("alice", "t1", "owner")).platform_admin
     with pytest.raises(Forbidden):
         user_from_claims(claims("alice", "t1", "owner")).require_platform_admin()
+
+
+def test_a_modules_copy_of_a_workspaces_status_ignores_older_events():
+    from shared.workspace_status import WorkspaceInactive, active_condition, check_active, save
+    table = create_table("status-test")
+    check_active(table, "t1")                                          # no copy: active
+    save(table, "TenantSuspended", {"tenant_id": "t1", "occurred_at": "2026-10-28T10:00:00+00:00"})
+    save(table, "TenantRestored", {"tenant_id": "t1", "occurred_at": "2026-10-28T09:00:00+00:00"})   # older: late
+    with pytest.raises(WorkspaceInactive, match="suspended") as e:
+        check_active(table, "t1")
+    assert e.value.status_code == 403
+    with pytest.raises(ConditionFailed) as failed:                     # in a transaction, as orders does
+        transact(table, active=active_condition(table, "t1"),
+                 item={"Put": {"Item": {"pk": "TENANT#t1", "sk": "X"}}})
+    assert failed.value.failed == {"active"}
+
+    save(table, "TenantUnsuspended", {"tenant_id": "t1", "occurred_at": "2026-10-28T11:00:00+00:00"})
+    check_active(table, "t1")
+    transact(table, active=active_condition(table, "t1"), item={"Put": {"Item": {"pk": "TENANT#t1", "sk": "X"}}})
+    save(table, "TenantDeletionScheduled", {"tenant_id": "t1", "occurred_at": "2026-10-28T12:00:00+00:00"})
+    with pytest.raises(WorkspaceInactive, match="being deleted"):
+        check_active(table, "t1")
+    check_active(table, "t2")                                          # other workspaces are untouched

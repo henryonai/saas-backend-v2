@@ -3,7 +3,9 @@ Listens to events from other modules (EventBridge -> SQS -> this Lambda):
 TenantDeletionScheduled stops the subscription renewing while its workspace can
 still be restored, TenantRestored lets it renew again, and TenantDeleted, when
 the workspace is purged, cancels it; ExportRequested, for a workspace's export,
-writes its subscription (shared/exports.py).
+writes its subscription (shared/exports.py). TenantSuspended, TenantUnsuspended,
+TenantDeletionScheduled and TenantRestored also keep the workspace's status, so a
+checkout is refused while it isn't active.
 
 Events can arrive twice or late; each is applied only if nothing newer was (service.py).
 Failed messages are retried and end up in the dead-letter queue.

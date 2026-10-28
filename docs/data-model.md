@@ -20,6 +20,12 @@ is deleted (`DeletionPolicy: Retain`) and is deletion-protected in prod. Rules
 that must hold under concurrent requests (seats, limits, memberships, one
 `ExportReady`) are DynamoDB conditions, not read-then-write code.
 
+A module that changes a workspace's data keeps a copy of the workspace's
+status (`TENANT#<t>` / `STATUS`, `shared/workspace_status.py`) from accounts'
+and admin's events, and refuses changes while it says suspended or being
+deleted: tokens still list the workspace for up to 15 minutes. No item means
+active.
+
 | Table | Module | Index | TTL attribute | Stream |
 |---|---|---|---|---|
 | Accounts | accounts | `gsi1` (ALL) | `expires_at` | NEW_IMAGE → outbox relay |
@@ -75,19 +81,21 @@ assistant's passes only TTL's removal of a conversation's `META`.
 | `TENANT#<t>` | `ORDER#<order_id>` | an order (ids sort by creation time) | no |
 | `TENANT#<t>` | `COUNTER` | `order_count`, checked against the plan's `max_orders` | no |
 | `TENANT#<t>` | `IDEMPOTENCY#<u>#<key>` | the order a `POST /orders` with that key made | 24 hours |
+| `TENANT#<t>` | `STATUS` | the workspace's status (`active`, `suspended`, `deleting`; no item: active): changes are refused unless active | no (deleted with the workspace) |
 | `OUTBOX#<event_id>` | `OUTBOX` | an event waiting to be published | 7 days |
 
 | Access pattern | Query |
 |---|---|
 | `GET /orders` (newest first, paged) | Query `TENANT#<t>` begins_with `ORDER#`, descending |
 | `GET /orders/<id>`, `PATCH .../status` | GetItem; UpdateItem with the expected status as a condition |
-| `POST /orders` | one transaction: counter (limit), order, outbox, idempotency key |
+| `POST /orders` | one transaction: counter (limit), order, outbox, idempotency key, a condition check on `STATUS` |
 
 ## Billing
 
 | pk | sk | What | Expires |
 |---|---|---|---|
 | `TENANT#<t>` | `SUBSCRIPTION` | plan, status, revision, the provider's ids; while the workspace is being deleted, `deleting`, `deleting_at` and `renewal_stopped`; `deleted_at` once purged | 90 days after the workspace is purged |
+| `TENANT#<t>` | `STATUS` | the workspace's status (`active`, `suspended`, `deleting`; no item: active): changes are refused unless active | no (deleted with the workspace) |
 | `OUTBOX#<event_id>` | `OUTBOX` | an event waiting to be published | 7 days |
 
 Access: GetItem by tenant (`GET /billing`, webhooks, checkout); a webhook's
@@ -119,6 +127,7 @@ listener writes with `attribute_not_exists`, so a repeated event adds nothing.
 | `TENANT#<t>` | `USAGE#<YYYY-MM>` | the workspace's messages and tokens that month | about 13 months |
 | `TENANT#<t>` | `USER#<u>#HOUR#<YYYY-MM-DDTHH>` | messages a user sent that hour | after the hour |
 | `TENANT#<t>` | `USER#<u>#UPLOADS#<YYYY-MM-DDTHH>` | files they uploaded that hour | after the hour |
+| `TENANT#<t>` | `STATUS` | the workspace's status (`active`, `suspended`, `deleting`; no item: active): changes are refused unless active | no (deleted with the workspace) |
 | `TENANT#<t>#USER#<u>#CONV#<thread>` | `META` | a conversation, and its run while one answers | `CONVERSATION_DAYS` after its last message, or never |
 | `…#CONV#<thread>` | `MSG#<000001>` | a message at its position | with the conversation |
 | `…#CONV#<thread>` | `BRANCH#<0001>#MSG#<000004>` | a message in a later version | with the conversation |

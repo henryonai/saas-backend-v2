@@ -158,7 +158,10 @@ details the main conversation doesn't need: analysis, reports, research.
 
 1. When the message is sent (the HTTP API, `ConversationService.send`),
    `UsageService.start_message()` counts it in conditional DynamoDB updates,
-   like orders' plan limit (rule 8). First the user's hour: 429, with when to
+   like orders' plan limit (rule 8). First the workspace: 403 while it is
+   suspended or being deleted (the purge worker keeps its status, `TENANT#<t>`
+   / `STATUS`, from accounts' and admin's events; tokens list it for up to 15
+   minutes more); uploads and saving a memory check it too. Then the user's hour: 429, with when to
    try again, once they have sent the plan's messages this hour (UTC), so one
    person can't use up the workspace's month in an afternoon; a fixed window,
    so at most twice the limit fits in an hour that straddles two. Then the
@@ -399,7 +402,7 @@ token (`handler.py`, a Lambda):
 
 | Route | |
 |---|---|
-| `POST /assistant/conversations/{threadId}/messages` `{"id", "content", "agent"?, "replaces"?}` | send, edit (`replaces`), or answer again (`replaces` its own id): 201 `{"run_id"}`, 402 at the plan's limit, 429 at the user's hourly limit, 409 while an answer is coming |
+| `POST /assistant/conversations/{threadId}/messages` `{"id", "content", "agent"?, "replaces"?}` | send, edit (`replaces`), or answer again (`replaces` its own id): 201 `{"run_id"}`, 402 at the plan's limit, 403 while the workspace is suspended or being deleted, 429 at the user's hourly limit, 409 while an answer is coming |
 | `POST /assistant/conversations/{threadId}/runs/{runId}/cancel` | stop the answer (204, even after it ended) |
 | `PATCH /assistant/conversations/{threadId}/messages/{messageId}` `{"rating": "up" \| "down" \| null}` | rate an answer, or take the rating back (204) |
 | `POST /assistant/conversations/{threadId}/messages/{messageId}/version` `{"version": n}` | show another version of a message, and what followed it: the conversation as `GET` gives it; 409 while an answer is coming |

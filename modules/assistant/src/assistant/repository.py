@@ -11,6 +11,8 @@ Assistant table:
                                                                  or an answer asked for again, versions.py)
   pk = TENANT#<t>                         sk = USER#<u>#HOUR#<YYYY-MM-DDTHH>  messages a user sent that hour (UTC)
   pk = TENANT#<t>                         sk = USER#<u>#UPLOADS#<YYYY-MM-DDTHH>  files they uploaded that hour
+  pk = TENANT#<t>                         sk = STATUS            the workspace's status (no item: active)
+                                                                (shared/workspace_status.py)
   pk = TENANT#<t>#USER#<u>#MEMORY         sk = MEM#<id>          something the assistant remembers about the user
                                                                  (models.Memory)
   pk = TENANT#<t>#USER#<u>#MEMORY         sk = SETTINGS          whether it remembers anything (enabled)
@@ -46,6 +48,7 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from shared.dynamo import is_condition_failure
+from shared.workspace_status import check_active
 
 from assistant.models import Conversation, File, FileVersion, Memory, Rating, Run, TitleSource, Usage
 from assistant.versions import Node, Tree
@@ -82,6 +85,10 @@ def _usage(item: dict) -> Usage:
 class UsageRepository:
     def __init__(self, table):
         self.table = table
+
+    def check_active(self, tenant_id: str) -> None:
+        """Raises WorkspaceInactive (403) while the workspace is suspended or being deleted."""
+        check_active(self.table, tenant_id)
 
     def add_message(self, tenant_id: str, month: str, max_messages: int | None, max_tokens: int | None) -> Usage:
         """

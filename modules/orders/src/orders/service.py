@@ -4,6 +4,7 @@ from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached
 from shared.exports import PartWriter
 from shared.idempotency import IDEMPOTENCY, fingerprint
 from shared.plans import get_limit
+from shared.workspace_status import STATUS_EVENTS
 
 from orders import events
 from orders.models import Order, OrderStatus
@@ -27,6 +28,8 @@ class OrderService:
         """Events from other modules (listener.py)."""
         if event_type == "TenantDeleted":   # accounts' events, by name
             self.orders.delete_tenant(detail["tenant_id"])
+        elif event_type in STATUS_EVENTS:   # suspended, being deleted, or active again
+            self.orders.save_status(event_type, detail)
         elif event_type == "ExportRequested" and detail["kind"] == "workspace":
             self.exports.write(detail, "orders", [o.model_dump(mode="json") for o in self._all(detail["owner_id"])])
 
@@ -60,6 +63,8 @@ class OrderService:
             if IDEMPOTENCY in e.failed:   # before the limit: the order it made is counted already
                 return self.get_order(user, self.orders.order_for_key(tenant_id, user.user_id, idempotency_key,
                                                                       request))
+            if "active" in e.failed:
+                self.orders.check_active(tenant_id)   # raises WorkspaceInactive
             if "limit" not in e.failed:
                 raise
             raise PlanLimitReached(f"Your {user.plan} plan allows {max_orders} orders. Upgrade for more.")
@@ -79,6 +84,7 @@ class OrderService:
         order = self.get_order(user, order_id)
         if new_status not in ALLOWED_TRANSITIONS[order.status]:
             raise InvalidRequest(f"Cannot change order from '{order.status.value}' to '{new_status.value}'")
+        self.orders.check_active(order.tenant_id)
         if not self.orders.update_status(order.tenant_id, order_id, new_status, expected=order.status):
             raise Conflict("The order was changed by someone else. Reload it and try again.")
         return order.model_copy(update={"status": new_status})

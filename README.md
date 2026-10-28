@@ -166,9 +166,10 @@ route. Each `repository.py` starts with its own key design; change both together
 | `ExportRequested` (`job_id`, `kind`, `owner_id`, `tenant_ids`) | accounts | each module in the job's parts writes its part to the exports bucket: accounts, orders and billing for a workspace; accounts, notifications and the assistant for a user |
 | `ExportReady` | accounts (once every part is in the bucket) | notifications (email, and in-app for a workspace's export) |
 | `OrderCreated` | orders | notifications (in-app) |
-| `TenantCreated`, `MemberJoined`, `RoleChanged`, `InvitationCancelled` (`declined`), `TenantDeletionScheduled`, `TenantRestored` | accounts | audit, admin (its summaries) |
+| `TenantCreated`, `MemberJoined`, `RoleChanged`, `InvitationCancelled` (`declined`) | accounts | audit, admin (its summaries) |
+| `TenantDeletionScheduled`, `TenantRestored` | accounts | audit, admin; orders, billing and the assistant (their copy of the workspace's status) |
 | `PlanGranted` (`plan`, `note`) | admin | billing (gives the plan without payment, `comped`, until Stripe changes it), audit |
-| `TenantSuspended` (`reason`), `TenantUnsuspended` | admin | accounts (a suspended workspace leaves every token), admin, audit |
+| `TenantSuspended` (`reason`), `TenantUnsuspended` | admin | accounts (a suspended workspace leaves every token), admin, audit; orders, billing and the assistant (their copy of the workspace's status) |
 
 Every event about a workspace is also written to its **audit log** (the audit
 module, `GET /audit` for owners and admins, an "Activity" tab on Team): who did
@@ -231,6 +232,19 @@ memberships and the workspace's own items → each module deletes its data (see
 the events table); billing cancels the Stripe subscription now, without a
 refund, and keeps a tombstone for 90 days so Stripe's late webhooks can't bring
 it back. A purge that fails half way is finished by the next run.
+
+**A suspended workspace, or one being deleted, takes no changes**, though
+members' tokens list it for up to 15 more minutes: accounts checks the
+workspace itself, and orders, billing and the assistant each keep a copy of its
+status in their own table (`TENANT#<t>` / `STATUS`, from the events above,
+seconds behind; `shared/workspace_status.py`). Changes get `403` ("This
+workspace is suspended" / "is being deleted"): new orders and order status
+changes, checkout, assistant messages, uploads and memories, invitations, role
+changes, removing members and workspace exports. Reading still works, a member
+can still leave, the billing portal stays open (to fix a payment or cancel),
+and users can still delete their own conversations, memories and files. A stack
+that had suspended or deleted workspaces before these copies existed writes
+them once with `uv run scripts/backfill-workspace-status.py --stack <stack>`.
 
 **Delete an account:** the user calls `DELETE /account` with
 `{"email": "<their email>"}` (typed again to confirm) → refused while they own

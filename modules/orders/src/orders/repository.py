@@ -4,6 +4,8 @@ Orders table:
   pk = TENANT#<tenant_id>   sk = COUNTER            order_count, for the plan limit
   pk = TENANT#<tenant_id>   sk = IDEMPOTENCY#<user_id>#<key>   the order a create with that Idempotency-Key
                                                     made (shared/idempotency.py)
+  pk = TENANT#<tenant_id>   sk = STATUS             the workspace's status (no item: active)
+                                                    (shared/workspace_status.py)
   pk = OUTBOX#<event_id>    sk = OUTBOX             events to publish (shared/outbox.py)
 
 The tenant is part of every key, so one tenant can never read another's orders.
@@ -15,6 +17,7 @@ from shared.dynamo import delete_partition, is_condition_failure, transact
 from shared.events import Event
 from shared.idempotency import idempotency_put, replay
 from shared.outbox import outbox_put
+from shared.workspace_status import active_condition, check_active, save
 
 from orders.models import Order, OrderStatus
 
@@ -35,11 +38,19 @@ class OrderRepository:
         """Deletes every item of a deleted workspace (orders, counter, keys). Safe to repeat."""
         return delete_partition(self.table, _pk(tenant_id))
 
+    def save_status(self, event_type: str, detail: dict) -> None:
+        save(self.table, event_type, detail)
+
+    def check_active(self, tenant_id: str) -> None:
+        """Raises WorkspaceInactive (403) while the workspace is suspended or being deleted."""
+        check_active(self.table, tenant_id)
+
     def create(self, order: Order, event: Event, max_orders: int | None, idempotency: tuple[str, str]) -> None:
         """
         Saves the order and its event, and counts it against the plan limit,
         all in one transaction. Raises ConditionFailed({"limit"}) when the
-        tenant already has max_orders orders (None = unlimited).
+        tenant already has max_orders orders (None = unlimited), and
+        ConditionFailed({"active"}) while the workspace isn't active.
 
         `idempotency` is the client's (key, request fingerprint): saved in the
         same transaction, so a retry with the key raises
@@ -60,6 +71,7 @@ class OrderRepository:
             order={"Put": {"Item": item, "ConditionExpression": "attribute_not_exists(pk)"}},
             event=outbox_put(event),
             idempotency=idempotency_put(_pk(order.tenant_id), order.created_by, *idempotency, order.order_id),
+            active=active_condition(self.table, order.tenant_id),
         )
 
     def order_for_key(self, tenant_id: str, user_id: str, key: str, request: str) -> str:

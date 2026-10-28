@@ -951,7 +951,8 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [TenantDeleted, ExportRequested]
+        detail-type: [TenantDeleted, ExportRequested,
+                      TenantSuspended, TenantUnsuspended, TenantDeletionScheduled, TenantRestored]   # its status copy
       Targets:
         - Id: OrdersQueue
           Arn: !GetAtt OrdersQueue.Arn
@@ -1010,7 +1011,8 @@ Resources:
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:Query, dynamodb:BatchWriteItem]   # deletes a purged workspace's orders, exports them
+              Action: [dynamodb:Query, dynamodb:BatchWriteItem,   # deletes a purged workspace's orders, exports them
+                       dynamodb:PutItem]                         # the workspace's status copy
               Resource: !GetAtt OrdersTable.Arn
             - Effect: Allow
               Action: [s3:PutObject]                            # its part of an export
@@ -1597,7 +1599,8 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [TenantDeletionScheduled, TenantRestored, TenantDeleted, ExportRequested, PlanGranted]
+        detail-type: [TenantDeleted, ExportRequested, PlanGranted,
+                      TenantSuspended, TenantUnsuspended, TenantDeletionScheduled, TenantRestored]   # its status copy
       Targets:
         - Id: BillingQueue
           Arn: !GetAtt BillingQueue.Arn
@@ -1660,8 +1663,9 @@ Resources:
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:PutItem]   # the subscription: its renewal,
-                                                                                  # its tombstone; a granted plan's event (outbox)
+              Action: [dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:PutItem,   # the subscription: its renewal,
+                       dynamodb:DeleteItem]                                       # its tombstone; a granted plan's event
+                                                                                  # (outbox); the workspace's status copy
               Resource: !GetAtt BillingTable.Arn
             - Effect: Allow
               Action: [ssm:GetParameter]                        # Stripe's key, to stop the renewal or cancel
@@ -2178,6 +2182,9 @@ Resources:
                 - !GetAtt AssistantTable.Arn
                 - !Sub "${AssistantTable.Arn}/index/ConversationsByUser"   # a removed member's conversations
             - Effect: Allow
+              Action: [dynamodb:PutItem]                        # the workspace's status copy
+              Resource: !GetAtt AssistantTable.Arn
+            - Effect: Allow
               Action: [s3:ListBucket]
               Resource: [!GetAtt AssistantCheckpointBucket.Arn, !GetAtt AssistantFilesBucket.Arn]
             - Effect: Allow
@@ -2208,7 +2215,7 @@ Resources:
 
   # A member who left a workspace, or was removed (accounts' MemberRemoved), and a
   # deleted workspace being purged (TenantDeleted): the purge worker deletes their
-  # conversations there.
+  # conversations there. It also keeps the workspace's status (shared/workspace_status.py).
   AssistantMembersRule:
     Type: AWS::Events::Rule
     Condition: HasAssistant
@@ -2216,7 +2223,8 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [MemberRemoved, TenantDeleted, ExportRequested]
+        detail-type: [MemberRemoved, TenantDeleted, ExportRequested,
+                      TenantSuspended, TenantUnsuspended, TenantDeletionScheduled, TenantRestored]   # its status copy
       Targets:
         - Id: AssistantPurgeQueue
           Arn: !GetAtt AssistantPurgeQueue.Arn

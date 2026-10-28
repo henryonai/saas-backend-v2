@@ -26,6 +26,7 @@ from shared.dynamo import ConditionFailed
 from shared.errors import Conflict, InvalidRequest, ServiceBusy
 from shared.exports import PartWriter
 from shared.plans import DEFAULT_PLAN, is_plan
+from shared.workspace_status import STATUS_EVENTS
 
 from billing import events
 from billing.models import Subscription
@@ -50,6 +51,7 @@ class BillingService:
     def start_checkout(self, user: CurrentUser, plan: str) -> str:
         """The page where the owner pays for a plan (or confirms a plan change)."""
         tenant_id = user.require_role(ROLE_OWNER)  # only the owner pays
+        self.subscriptions.check_active(tenant_id)  # the portal stays open: to fix a payment or cancel
         self.subscriptions.save_owner(tenant_id, user.user_id, user.email)
         sub = self.subscriptions.get(tenant_id) or Subscription(tenant_id=tenant_id)
         if sub.plan == plan and sub.status == "active":
@@ -106,9 +108,11 @@ class BillingService:
         """Events from other modules (listener.py)."""
         if event_type == "TenantDeleted":   # accounts' events, by name
             self.delete_tenant(detail["tenant_id"])
-        elif event_type in ("TenantDeletionScheduled", "TenantRestored"):
-            self.workspace_deleting(detail["tenant_id"], event_type == "TenantDeletionScheduled",
-                                    detail["occurred_at"])
+        elif event_type in STATUS_EVENTS:   # suspended, being deleted, or active again
+            self.subscriptions.save_status(event_type, detail)
+            if event_type in ("TenantDeletionScheduled", "TenantRestored"):
+                self.workspace_deleting(detail["tenant_id"], event_type == "TenantDeletionScheduled",
+                                        detail["occurred_at"])
         elif event_type == "PlanGranted":   # the admin module's
             self.grant_plan(detail["tenant_id"], detail["plan"], detail["event_id"], detail["occurred_at"])
         elif event_type == "ExportRequested" and detail["kind"] == "workspace":
