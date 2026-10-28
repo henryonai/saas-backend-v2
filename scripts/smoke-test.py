@@ -488,10 +488,23 @@ check("a workspace owner can't open it -> 403", owner("GET", "/admin/tenants", t
 summary = wait_for(lambda: (r := ops("GET", f"/admin/tenants/{other_id}", tenant=None)).ok and r.json())
 check("GET /admin/tenants/{id}: Other Co's summary, from events",
       bool(summary) and summary["name"] == "Other Co" and summary["owner_id"] == carol.id, summary)
+carol.sign_in()
+before = carol.token   # issued while Other Co is active: it lists Other Co for up to 15 minutes more
+
+
+def order_in_other_co(token: str) -> requests.Response:
+    return call("POST", "/orders", token, json=widget,
+                headers={"X-Tenant-Id": other_id, **new_key()})
+
+
 r = ops("POST", f"/admin/tenants/{other_id}/suspend", tenant=None, json={"reason": "smoke test"})
 check("POST .../suspend", r.status_code == 202, show(r))
 gone = wait_for(lambda: other_id not in carol.sign_in().workspaces)
 check("a suspended workspace leaves its owner's token", bool(gone), carol.workspaces)
+# A requests.Response is falsy for a 4xx: poll the text, not the response.
+refused = wait_for(lambda: (r := order_in_other_co(before)).status_code == 403 and r.text)
+check("a token issued before the suspension can't add an order -> 403", bool(refused) and "suspended" in refused,
+      refused or show(order_in_other_co(before)))
 r = ops("POST", f"/admin/tenants/{other_id}/plan", tenant=None, json={"plan": "pro", "note": "smoke test"})
 check("POST .../plan (grant pro)", r.status_code == 202, show(r))
 back = wait_for(lambda: ops("GET", f"/admin/tenants/{other_id}", tenant=None).json().get("status") == "suspended"
@@ -499,6 +512,8 @@ back = wait_for(lambda: ops("GET", f"/admin/tenants/{other_id}", tenant=None).js
 check("POST .../unsuspend", bool(back))
 back = wait_for(lambda: (w := carol.sign_in().workspaces.get(other_id)) and w["plan"] == "pro" and w)
 check("unsuspended, it's back in her token, on the granted plan", bool(back), carol.workspaces)
+added = wait_for(lambda: carol("POST", "/orders", tenant=other_id, json=widget, headers=new_key()).status_code == 201)
+check("unsuspended, it takes orders again", bool(added))
 r = ops("GET", "/admin/log", tenant=None)
 check("GET /admin/log has the three actions", r.ok and [a["action"] for a in r.json()["items"]][:3] ==
       ["unsuspend", "grant_plan", "suspend"], show(r))
