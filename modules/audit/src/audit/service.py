@@ -24,7 +24,7 @@ NOT_DETAILS = {"tenant_id", "event_id", "occurred_at", "actor_id", "actor_email"
 
 
 class AuditService:
-    def __init__(self, entries: AuditRepository, retention_days: int, exports: PartWriter | None = None):
+    def __init__(self, entries: AuditRepository, retention_days: int, exports: PartWriter):
         self.entries = entries
         self.retention_days = retention_days
         self.exports = exports
