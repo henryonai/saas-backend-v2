@@ -225,9 +225,8 @@ r = via_app("POST", "/orders", owner, json={"item": ""}, headers=new_key())
 check("POST /api/orders: the body goes through (an invalid one -> 422)", r.status_code == 422 and is_json(r), show(r))
 r = via_app("GET", "/tenants/me")
 check("no token -> 401 from the API, not the app's page", r.status_code == 401 and is_json(r), show(r))
-r = via_app("GET", "/tenants/me", owner, tenant="not-mine")
-check("a workspace not in the token -> 403 from the API, not the app's page",
-      r.status_code == 403 and is_json(r), show(r))
+r = via_app("GET", "/admin/tenants", owner)
+check("not a platform admin -> 403 from the API, not the app's page", r.status_code == 403 and is_json(r), show(r))
 r = via_app("GET", "/no-such-route", owner)
 check("an unknown API route -> 404 from the API, not the app's page", r.status_code == 404 and is_json(r), show(r))
 r = requests.get(f"{WEB}/orders/123", timeout=30)
@@ -598,10 +597,14 @@ if grace <= 300:   # a test stack's few seconds or minutes (dev: about 90 second
         result = session.client("lambda").invoke(FunctionName=job)   # as the hourly schedule does, but now
         return {"error": True} if "FunctionError" in result else json.loads(result["Payload"].read())
 
-    ran = wait_for(lambda: (p := purge()).get("purged", 0) >= 1 and p, timeout=int(grace) + 60, every=10)
-    check("once its time to restore has passed, the purge job removes it", bool(ran), ran or purge())
-    r = carol("GET", "/tenants", tenant=None)
-    check("GET /tenants no longer lists it", r.ok and other_id not in {w["tenant_id"] for w in r.json()}, show(r))
+    def gone() -> bool:
+        listed = carol("GET", "/tenants", tenant=None)
+        return listed.ok and other_id not in {w["tenant_id"] for w in listed.json()}
+
+    # Until this workspace is gone: a run moments earlier leaves its own deleted ones for this purge too.
+    ran = wait_for(lambda: "error" not in purge() and gone(), timeout=int(grace) + 60, every=10)
+    check("once its time to restore has passed, the purge job removes it (GET /tenants no longer lists it)",
+          bool(ran), carol("GET", "/tenants", tenant=None).text[:200])
     r = carol("POST", "/tenants", json={"name": "After Co"}, headers=new_key())
     check("her workspace count went down (she can create another)", r.status_code == 201, show(r))
     ended = wait_for(lambda: (st := stripe_api.v1.subscriptions.retrieve(other_sub.id).status) == "canceled" and st)
