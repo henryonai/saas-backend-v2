@@ -55,6 +55,7 @@ stack = session.client("cloudformation").describe_stacks(StackName=STACK)["Stack
 out = {o["OutputKey"]: o["OutputValue"] for o in stack["Outputs"]}
 params = {p["ParameterKey"]: p["ParameterValue"] for p in stack["Parameters"]}
 API, POOL, CLIENT = out["ApiUrl"], out["UserPoolId"], out["UserPoolClientId"]
+WEB = out["WebUrl"]   # the app, and the API at WEB/api through CloudFront
 idp = session.client("cognito-idp")
 RUN = int(time.time())
 
@@ -198,6 +199,40 @@ check("GET /tenants/me", r.ok and r.json()["plan"] == "free" and r.json()["seats
 r = owner("GET", "/tenants", tenant=None)
 check("GET /tenants (no X-Tenant-Id needed)", r.ok and [w["tenant_id"] for w in r.json()] == [tenant_id], show(r))
 check("invalid name -> 422", carol("POST", "/tenants", json={"name": ""}, headers=new_key()).status_code == 422)
+
+print("The app's address: the API at /api through CloudFront, the app's routes")
+
+
+def via_app(method: str, path: str, person: Person | None = None, tenant=..., **kw) -> requests.Response:
+    """As the deployed app calls the API: WebUrl/api, with the person's token and workspace."""
+    headers = kw.pop("headers", {})
+    if person:
+        headers["Authorization"] = f"Bearer {person.token}"
+        workspace = person.workspace if tenant is ... else tenant
+        if workspace:
+            headers["X-Tenant-Id"] = workspace
+    return requests.request(method, f"{WEB}/api{path}", headers=headers, timeout=30, **kw)
+
+
+def is_json(r: requests.Response) -> bool:
+    return r.headers.get("content-type", "").startswith("application/json")
+
+
+r = via_app("GET", "/tenants/me", owner)
+check("GET /api/tenants/me: the token and X-Tenant-Id go through",
+      r.ok and r.json().get("tenant_id") == tenant_id, show(r))
+r = via_app("POST", "/orders", owner, json={"item": ""}, headers=new_key())
+check("POST /api/orders: the body goes through (an invalid one -> 422)", r.status_code == 422 and is_json(r), show(r))
+r = via_app("GET", "/tenants/me")
+check("no token -> 401 from the API, not the app's page", r.status_code == 401 and is_json(r), show(r))
+r = via_app("GET", "/tenants/me", owner, tenant="not-mine")
+check("a workspace not in the token -> 403 from the API, not the app's page",
+      r.status_code == 403 and is_json(r), show(r))
+r = via_app("GET", "/no-such-route", owner)
+check("an unknown API route -> 404 from the API, not the app's page", r.status_code == 404 and is_json(r), show(r))
+r = requests.get(f"{WEB}/orders/123", timeout=30)
+check("an app route (/orders/123) -> the app's page",
+      r.ok and r.headers.get("content-type", "").startswith("text/html"), show(r))
 
 print("Orders")
 widget, key = {"item": "Widget", "quantity": 2, "price_cents": 1999}, new_key()

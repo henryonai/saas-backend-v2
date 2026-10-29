@@ -44,7 +44,7 @@ parameter_overrides = [
   "StripeSecretKeyParam=/saas/prod/stripe-secret-key",
   "StripeConfigParam=/saas/prod/stripe-config",
   'AppUrl=""',                        # empty: links open the app this stack hosts (WebUrl)
-  'CorsOrigin=""',                    # empty: only that app may call the API
+  'CorsOrigin=""',                    # empty: no CORS (the app calls the API on its own address, /api)
   # With your own domain verified in SES, add EmailSender=no-reply@<domain> and
   # SesIdentity=<domain>. Until then app emails (invitations too) are only logged,
   # and Cognito sends sign-up codes itself (about 50 a day).

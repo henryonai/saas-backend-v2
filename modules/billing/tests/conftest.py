@@ -87,7 +87,7 @@ def ctx():
     table = create_table("billing-test")
     fake = FakeStripe()
     service = BillingService(SubscriptionRepository(table), StripePaymentProvider(
-        client=lambda: fake, config=lambda: CONFIG, webhook_secret=lambda: SECRET, app_url="http://app.test"))
+        client=lambda: fake, config=lambda: CONFIG, webhook_secret=lambda: SECRET, app_url=lambda: "http://app.test"))
     app.dependency_overrides[get_billing_service] = lambda: service
     ids, clock = itertools.count(1), itertools.count(1_700_000_000)
 

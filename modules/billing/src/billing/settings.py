@@ -5,6 +5,10 @@ from shared.settings import BaseAppSettings
 
 class BillingSettings(BaseAppSettings):
     billing_table: str
+    # The app's address, for Stripe's return links: in AWS the name of an SSM String
+    # the stack writes (APP_URL_PARAM: the address is CloudFront's, which the API's
+    # functions can't name directly), locally the address itself.
+    app_url_param: str | None = None
     app_url: str = "http://localhost:5173"
 
     # Payments go through Stripe (stripe_provider.py); a test stack uses Stripe's test mode.

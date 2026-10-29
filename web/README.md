@@ -33,7 +33,10 @@ the Assistant page says it isn't set up.
 ## Deploying
 
 Each stack hosts the app: a private S3 bucket behind CloudFront (the `Web*`
-resources in `template.yaml`), at the stack's `WebUrl` output.
+resources in `template.yaml`), at the stack's `WebUrl` output. The deployed app
+calls the API on that same address, at `/api` (CloudFront sends `/api/*` to the
+HTTP API, uncached, with every header), so it needs no CORS; `WebApiUrl` is
+that address. A local dev server calls the HTTP API directly (`ApiUrl`).
 
 ```bash
 ./scripts/deploy.sh saas-dev   # build with the stack's settings, upload, clear the CDN cache
@@ -44,9 +47,9 @@ uses the stack's outputs, not `.env.local`. Files with a hash in their name
 are cached for a year; `index.html` is checked on every visit, so a new
 deploy shows at once.
 
-`AppUrl` (checkout and invitation links) and `CorsOrigin` default to `WebUrl`.
-To serve the app from your own domain, add the domain and its certificate to
-`WebDistribution`, then set both parameters to it.
+`AppUrl` (checkout and invitation links) defaults to `WebUrl`. To serve the app
+from your own domain, add the domain and its certificate to `WebDistribution`,
+then set `AppUrl` to it; `/api` follows the domain.
 
 ## Layout
 

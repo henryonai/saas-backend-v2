@@ -15,8 +15,9 @@ distribution=$(stack_output "$stack" WebDistributionId)
 web_url=$(stack_output "$stack" WebUrl)
 
 # The stack's settings for this build only: they win over .env.local, which stays as it is.
+# The app calls the API on its own address, /api, which CloudFront sends to the HTTP API.
 echo "Building for $stack"
-VITE_API_URL=$(stack_output "$stack" ApiUrl) \
+VITE_API_URL=/api \
 VITE_USER_POOL_ID=$(stack_output "$stack" UserPoolId) \
 VITE_USER_POOL_CLIENT_ID=$(stack_output "$stack" UserPoolClientId) \
 VITE_ASSISTANT_URL=$(stack_output_or_empty "$stack" AssistantUrl) \

@@ -35,6 +35,12 @@ def webhook_secret(settings: BillingSettings) -> str:
                      "PAYMENT_WEBHOOK_SECRET_PARAM (AWS) or PAYMENT_WEBHOOK_SECRET (local)")
 
 
+def app_url(settings: BillingSettings) -> str:
+    if settings.app_url_param:
+        return parameters.get_parameter(settings.app_url_param, max_age=300)
+    return settings.app_url
+
+
 def stripe_secret_key(settings: BillingSettings) -> str:
     return _from_ssm(settings.stripe_secret_key, settings.stripe_secret_key_param,
                      "STRIPE_SECRET_KEY_PARAM (AWS) or STRIPE_SECRET_KEY (local)")
@@ -56,7 +62,7 @@ def payment_provider(settings: BillingSettings) -> PaymentProvider:
     return StripePaymentProvider(client=lambda: stripe_client(stripe_secret_key(settings)),
                                  config=lambda: stripe_config(settings),
                                  webhook_secret=lambda: webhook_secret(settings),
-                                 app_url=settings.app_url)
+                                 app_url=lambda: app_url(settings))
 
 
 @lru_cache

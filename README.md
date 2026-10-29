@@ -483,7 +483,19 @@ uv run python scripts/migrate-memberships.py cleanup --stack saas-dev   # after
 Outputs: `ApiUrl`, `UserPoolId`, `UserPoolClientId` (for the React app),
 `WebhookUrl` (for the payment provider), `EventBusName`, `AlertsTopicArn`,
 `WebUrl`, `WebBucketName`, `WebDistributionId` (where `web/scripts/deploy.sh`
-publishes the app), and `AssistantUrl` when the assistant is deployed.
+publishes the app), `WebApiUrl` (the API on the app's address, which the
+deployed app calls), and `AssistantUrl` when the assistant is deployed.
+
+**The API behind CloudFront:** the app's CloudFront distribution sends `/api/*`
+to the HTTP API (`/api/orders` → `/orders`, a CloudFront Function), with nothing
+cached and every header but `Host`, so the app and its API share one address
+and need no CORS. App routes (`/orders/123`) get `index.html` from another
+CloudFront Function, so the API's own 403 and 404 reach the app unchanged.
+The HTTP API's own address (`ApiUrl`) still works, protected as before by the
+JWT check and its throttle: scripts, the assistant's tools and Stripe's webhook
+(`WebhookUrl`) use it. Behind CloudFront, the access log's `ip` is CloudFront's.
+A WAF can go on the distribution later to rate-limit at the edge; it isn't there
+now, to keep the cost at CloudFront's (free up to 1 TB and 10 million requests a month).
 
 The tables and the user pool are kept when the stack is deleted (and can't be
 deleted at all in prod), so data survives mistakes. Delete them by hand if you
@@ -753,8 +765,9 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
 ## Before production
 
 - Check prod's values in `samconfig.toml`. `AppUrl` and `CorsOrigin` are
-  empty, so the app runs at its CloudFront address (`WebUrl`); for your own
-  domain, add it and its certificate to `WebDistribution` and set both to it.
+  empty, so the app runs at its CloudFront address (`WebUrl`) and calls its API
+  there (`/api`), with no CORS; for your own domain, add it and its certificate
+  to `WebDistribution` and set `AppUrl` to it.
   Set `AlertEmail` to your address for alarms and budget alerts, and confirm
   its subscription email after the first deploy. Set `AccountBudgetUsd` to
   what you expect the account to spend in a month (dev's spending counts too
