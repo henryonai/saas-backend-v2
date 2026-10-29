@@ -23,6 +23,7 @@ from aws_lambda_powertools import Logger
 from shared.auth import ROLE_OWNER, CurrentUser
 from shared.dynamo import ConditionFailed
 from shared.errors import Conflict, InvalidRequest, ServiceBusy
+from shared.exports import PartWriter
 from shared.plans import DEFAULT_PLAN, is_plan
 
 from billing import events
@@ -34,9 +35,11 @@ logger = Logger(child=True)
 
 
 class BillingService:
-    def __init__(self, subscriptions: SubscriptionRepository, provider: PaymentProvider):
+    def __init__(self, subscriptions: SubscriptionRepository, provider: PaymentProvider,
+                 exports: PartWriter | None = None):
         self.subscriptions = subscriptions
         self.provider = provider
+        self.exports = exports
 
     def get_subscription(self, user: CurrentUser) -> Subscription:
         """The tenant's subscription (Free until the first webhook arrives)."""
@@ -103,6 +106,10 @@ class BillingService:
         elif event_type in ("TenantDeletionScheduled", "TenantRestored"):
             self.workspace_deleting(detail["tenant_id"], event_type == "TenantDeletionScheduled",
                                     detail["occurred_at"])
+        elif event_type == "ExportRequested" and detail["kind"] == "workspace":
+            sub = self.subscriptions.get(detail["owner_id"])
+            self.exports.write(detail, "billing", {"subscription": sub.model_dump(include={
+                "plan", "status", "owner_email", "customer_id", "subscription_id"}) if sub else None})
 
     def workspace_deleting(self, tenant_id: str, deleting: bool, at: str) -> None:
         """

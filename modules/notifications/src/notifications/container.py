@@ -4,6 +4,8 @@ from functools import lru_cache
 import boto3
 from aws_lambda_powertools.utilities.idempotency import DynamoDBPersistenceLayer
 
+from shared.exports import S3PartWriter
+
 from notifications.email import EmailSender, LogOnlyEmailSender, SesEmailSender
 from notifications.repository import NotificationRepository
 from notifications.service import NotificationService
@@ -44,4 +46,5 @@ def get_notification_service() -> NotificationService:
         ),
         email=_email_sender(settings),
         app_url=settings.app_url,
+        exports=S3PartWriter(boto3.client("s3"), settings.exports_bucket),
     )

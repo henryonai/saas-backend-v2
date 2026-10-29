@@ -496,5 +496,26 @@
       "submit": "Xóa tài khoản của tôi",
       "done": "Tài khoản của bạn đã bị xóa."
     }
+  },
+  "exports": {
+    "workspace": {
+      "title": "Xuất dữ liệu không gian làm việc",
+      "description": "Bản sao thành viên, lời mời, đơn hàng và gói đăng ký của nó, dưới dạng tệp JSON."
+    },
+    "me": {
+      "title": "Tải dữ liệu của bạn",
+      "description": "Bản sao tư cách thành viên, thông báo, cuộc trò chuyện với trợ lý, ghi nhớ và danh sách tệp của bạn trong mọi không gian làm việc, dưới dạng tệp JSON."
+    },
+    "start": "Bắt đầu xuất",
+    "progress": "Tiến độ xuất",
+    "running": "Đang chuẩn bị bản xuất: {{done}}/{{total}} phần đã sẵn sàng…",
+    "ready": "Bản xuất đã sẵn sàng. Các liên kết dùng được đến {{date}}.",
+    "parts": {
+      "accounts": "Thành viên và không gian làm việc",
+      "orders": "Đơn hàng",
+      "billing": "Gói đăng ký",
+      "notifications": "Thông báo",
+      "assistant": "Trợ lý"
+    }
   }
 }

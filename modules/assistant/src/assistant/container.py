@@ -21,6 +21,8 @@ from functools import lru_cache
 import boto3
 from botocore.config import Config
 
+from shared.exports import S3PartWriter
+
 from assistant.checkpoints import CheckpointPurge
 from assistant.files import S3FileStore
 from assistant.repository import ConversationRepository, FileRepository, MemoryRepository, UsageRepository
@@ -187,6 +189,13 @@ def get_purged_memories() -> MemoryRepository:
     """For the purge worker: a removed member's memories."""
     settings = PurgeSettings()
     return MemoryRepository(_table(settings.assistant_table, settings.region))
+
+
+@lru_cache
+def get_export_writer() -> S3PartWriter:
+    """For the purge worker: the assistant's part of a user's export (shared/exports.py)."""
+    settings = PurgeSettings()
+    return S3PartWriter(boto3.client("s3", region_name=settings.region), settings.exports_bucket)
 
 
 @lru_cache

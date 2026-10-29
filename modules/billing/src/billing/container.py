@@ -5,6 +5,8 @@ import boto3
 from aws_lambda_powertools.utilities import parameters
 from pydantic import SecretStr
 
+from shared.exports import S3PartWriter
+
 from billing.provider import PaymentProvider
 from billing.repository import SubscriptionRepository
 from billing.service import BillingService
@@ -63,4 +65,5 @@ def get_billing_service() -> BillingService:
     return BillingService(
         subscriptions=SubscriptionRepository(boto3.resource("dynamodb").Table(settings.billing_table)),
         provider=payment_provider(settings),
+        exports=S3PartWriter(boto3.client("s3"), settings.exports_bucket),
     )

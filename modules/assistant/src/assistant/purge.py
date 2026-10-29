@@ -12,6 +12,10 @@ Three ways a conversation goes, one Lambda for all:
     remembers about them, and their files; when a deleted workspace is
     purged (accounts' TenantDeleted), the same for each of its members, then
     the workspace's usage counters;
+  - and one that writes rather than deletes: a user's export (accounts'
+    ExportRequested), the assistant's part of it: their conversations (every
+    message, versions too), memories and the list of their files, in each
+    of their workspaces (shared/exports.py);
   - expired, on a stack that keeps conversations for a while
     (CONVERSATION_DAYS): DynamoDB's TTL removes its META some days after its
     last message (repository.py), and the assistant table's stream brings
@@ -30,10 +34,19 @@ from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.batch import BatchProcessor, EventType, process_partial_response
 from aws_lambda_powertools.utilities.data_classes.dynamo_db_stream_event import DynamoDBRecord, DynamoDBRecordEventName
 
+from boto3.dynamodb.conditions import Key
+
 from shared.dynamo import delete_partition
+from shared.exports import PartWriter, clean
 
 from assistant.checkpoints import CheckpointPurge
-from assistant.container import get_checkpoint_purge, get_purged_conversations, get_purged_files, get_purged_memories
+from assistant.container import (
+    get_checkpoint_purge,
+    get_export_writer,
+    get_purged_conversations,
+    get_purged_files,
+    get_purged_memories,
+)
 from assistant.context import checkpoint_session
 from assistant.models import iso
 from assistant.repository import ConversationRepository, MemoryRepository, conversation_of
@@ -45,11 +58,13 @@ logger = Logger()
 TTL = {"type": "Service", "principalId": "dynamodb.amazonaws.com"}
 MEMBER_REMOVED = "MemberRemoved"   # accounts' events, by name (modules never import each other)
 TENANT_DELETED = "TenantDeleted"
+EXPORT_REQUESTED = "ExportRequested"
 
 
 def process_batch(event: dict, context, checkpoints: CheckpointPurge,
                   conversations: ConversationRepository | None = None,
-                  memories: MemoryRepository | None = None, files: FileService | None = None) -> dict:
+                  memories: MemoryRepository | None = None, files: FileService | None = None,
+                  exports: PartWriter | None = None) -> dict:
     """SQS: conversations their users deleted (the HTTP API's), and members removed (EventBridge's)."""
     def record_handler(record) -> None:
         body = json.loads(record.body)
@@ -58,6 +73,10 @@ def process_batch(event: dict, context, checkpoints: CheckpointPurge,
             return
         if body.get("detail-type") == TENANT_DELETED:
             purge_tenant(body["detail"], checkpoints, conversations, memories, files)
+            return
+        if body.get("detail-type") == EXPORT_REQUESTED:
+            if body["detail"]["kind"] == "user":
+                export_user(body["detail"], conversations, memories, files, exports)
             return
         threads = body["threads"]
         deleted = sum(checkpoints.delete(thread) for thread in threads)
@@ -110,6 +129,36 @@ def purge_tenant(detail: dict, checkpoints: CheckpointPurge, conversations: Conv
                                                      "counters": counters})
 
 
+def export_user(detail: dict, conversations: ConversationRepository, memories: MemoryRepository,
+                files: FileService, exports: PartWriter) -> None:
+    """The assistant's part of a user's export, by workspace. File contents stay on the Files page."""
+    user_id, data = detail["user_id"], {}
+    for tenant_id in detail["tenant_ids"]:
+        threads = []
+        for conversation in conversations.last_used_by(tenant_id, user_id, "9999"):   # all of them
+            pk = f"TENANT#{tenant_id}#USER#{user_id}#CONV#{conversation.thread_id}"
+            items, start = [], {}
+            while True:
+                result = conversations.table.query(KeyConditionExpression=Key("pk").eq(pk), **start)
+                items += [{"sk": item["sk"], **clean(item)} for item in result["Items"]]
+                if "LastEvaluatedKey" not in result:
+                    break
+                start = {"ExclusiveStartKey": result["LastEvaluatedKey"]}
+            threads.append({"thread_id": conversation.thread_id, "records": items})
+        enabled, remembered = memories.read(tenant_id, user_id)
+        listed, cursor = [], None
+        while True:
+            page, cursor = files.files.list(tenant_id, user_id, 100, cursor)
+            listed += [f.model_dump(mode="json") for f in page]
+            if not cursor:
+                break
+        data[tenant_id] = {"conversations": threads, "memory_enabled": enabled,
+                           "memories": [m.model_dump(mode="json") for m in remembered], "files": listed}
+    exports.write(detail, "assistant", data)
+    logger.info("Wrote the assistant's part of an export", extra={"job_id": detail["job_id"],
+                                                                   "workspaces": len(data)})
+
+
 def process_expired(event: dict, context, checkpoints: CheckpointPurge,
                     conversations: ConversationRepository) -> dict:
     """The assistant table's stream: conversations whose TTL ran out."""
@@ -139,4 +188,4 @@ def handler(event: dict, context) -> dict:
     if records[0].get("eventSource") == "aws:dynamodb":
         return process_expired(event, context, get_checkpoint_purge(), get_purged_conversations())
     return process_batch(event, context, get_checkpoint_purge(), get_purged_conversations(), get_purged_memories(),
-                         get_purged_files())
+                         get_purged_files(), get_export_writer())

@@ -10,6 +10,7 @@ from functools import lru_cache
 
 import boto3
 
+from accounts.exports import S3ExportStore
 from accounts.identity import CognitoIdentity
 from accounts.repository import AccountRepository
 from accounts.service import AccountService, InvitationLimits
@@ -34,4 +35,6 @@ def get_account_service() -> AccountService:
         ),
         max_workspaces=settings.max_workspaces_per_user,
         deletion_days=settings.tenant_deletion_days,
+        exports=S3ExportStore(boto3.client("s3"), settings.exports_bucket),
+        assistant_enabled=settings.assistant_enabled,
     )

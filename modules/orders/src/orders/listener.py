@@ -1,8 +1,10 @@
 """
 Listens to events from other modules (EventBridge -> SQS -> this Lambda):
-TenantDeleted, when a deleted workspace is purged, removes its orders.
+TenantDeleted, when a deleted workspace is purged, removes its orders;
+ExportRequested, for a workspace's export, writes its orders (shared/exports.py).
 
-Events can arrive twice; deleting what is gone already changes nothing.
+Events can arrive twice; deleting what is gone already changes nothing, and
+writing an export's part again replaces it.
 Failed messages are retried and end up in the dead-letter queue.
 """
 import json

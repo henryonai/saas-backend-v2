@@ -1406,3 +1406,29 @@ def test_a_purged_workspaces_conversations_memories_files_and_usage_go(ctx, chec
 
     assert {i["pk"] for i in ctx.table.scan()["Items"]} == {f"TENANT#t2#USER#alice#CONV#{thread(3)}", "TENANT#t2"}
     assert ctx.memories.read(user_from_claims(bob, only_workspace(bob))) == (True, [])
+
+
+def test_a_users_export_has_their_conversations_memories_and_files_in_each_workspace(ctx, checkpoints):
+    from shared.exports import FakePartWriter, part_key
+    alice = claims("alice", "t1", "member")
+    ctx.memories.remember(user_from_claims(alice, only_workspace(alice)), "Likes short answers")
+    ctx.files.save(user_from_claims(alice, only_workspace(alice)), name="report.md", data=b"# Hi",
+                   content_type=None, thread_id=THREAD, agent="assistant")
+    start(ctx, thread(1), "2026-10-24T08:00:00.000Z", title="First")
+    start(ctx, thread(2), "2026-10-24T08:00:00.000Z", user_id="bob")              # someone else's
+    requested = {**member_removed("t1", "alice", "2026-10-24T10:00:00.000000+00:00"),
+                 "detail-type": "ExportRequested"}
+    requested["detail"] = {"tenant_id": "", "event_id": "e1", "occurred_at": "2026-10-24T10:00:00+00:00",
+                           "job_id": "job-1", "kind": "user", "owner_id": "alice", "user_id": "alice",
+                           "email": "alice@example.com", "tenant_ids": ["t1"]}
+    writer = FakePartWriter()
+    assert process_batch(sqs(requested), FakeContext(), checkpoints.purge, ctx.conversations,
+                         ctx.memories.memories, ctx.files, writer) == {"batchItemFailures": []}
+
+    part = writer.written[part_key("user", "alice", "job-1", "assistant")]["t1"]
+    assert [c["thread_id"] for c in part["conversations"]] == [thread(1)]
+    records = part["conversations"][0]["records"]
+    assert any(r["sk"] == "META" for r in records)
+    assert any(r.get("message", {}).get("content") == "First" for r in records)
+    assert [m["text"] for m in part["memories"]] == ["Likes short answers"]
+    assert [f["name"] for f in part["files"]] == ["report.md"]

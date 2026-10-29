@@ -21,6 +21,8 @@ export type Member = Sent<Accounts['schemas']['Member']>;
 export type Invitation = Sent<Accounts['schemas']['Invitation']>;
 export type InviteRequest = Accounts['schemas']['InviteRequest'];
 export type RoleUpdate = Accounts['schemas']['RoleUpdate'];
+/** A copy of a workspace's data, or of the user's own; `files` links each part once it is done. */
+export type DataExport = Sent<Accounts['schemas']['ExportOut']>;
 
 export type Order = Sent<Orders['schemas']['Order']>;
 export type OrderStatus = Orders['schemas']['OrderStatus'];

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from shared.auth import Role
 
-from accounts.models import Member, Tenant, TenantStatus
+from accounts.models import ExportJob, Member, Tenant, TenantStatus
 
 
 # ---------- requests ----------
@@ -71,3 +71,20 @@ class WorkspaceOut(BaseModel):
     def of(cls, tenant: Tenant, member: Member) -> "WorkspaceOut":
         return cls(tenant_id=tenant.tenant_id, name=tenant.name, role=member.role, plan=tenant.plan,
                    status=tenant.status, delete_after=tenant.delete_after)
+
+
+class ExportOut(BaseModel):
+    """An export and how far it got; `files` has a short-lived link per part once it is done."""
+    job_id: str
+    kind: Literal["workspace", "user"]
+    status: Literal["running", "done"]
+    parts: list[str]
+    done: list[str]
+    created_at: str
+    expires_at: int
+    files: dict[str, str] = {}
+
+    @classmethod
+    def of(cls, job: ExportJob, files: dict[str, str] | None = None) -> "ExportOut":
+        return cls(**job.model_dump(include={"job_id", "kind", "status", "parts", "done", "created_at", "expires_at"}),
+                   files=files or {})

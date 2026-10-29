@@ -124,3 +124,25 @@ def test_a_purged_workspace_loses_every_members_notifications(ctx):
     ctx.deliver("TenantDeleted", with_event_ids({"tenant_id": "t1", "user_ids": ["alice", "bob"]}))
     assert notes(ctx) == [] and notes(ctx, claims("bob", "t1", "member")) == []
     assert len(notes(ctx, claims("alice", "t2", "owner"))) == 1
+
+
+def test_a_users_export_has_their_notifications_in_each_workspace(ctx):
+    from shared.exports import part_key
+    ctx.deliver("OrderCreated", order_created())
+    ctx.deliver("OrderCreated", order_for("alice", "t2"))
+    ctx.deliver("OrderCreated", order_for("bob"))
+    ctx.deliver("ExportRequested", with_event_ids({
+        "tenant_id": "", "job_id": "job-1", "kind": "user", "owner_id": "alice", "user_id": "alice",
+        "email": "alice@example.com", "tenant_ids": ["t1", "t2"]}))
+    part = ctx.exports.written[part_key("user", "alice", "job-1", "notifications")]
+    assert {t: [n["title"] for n in notes] for t, notes in part.items()} == {"t1": ["Order created"],
+                                                                             "t2": ["Order created"]}
+
+
+def test_the_requester_hears_when_an_export_is_ready(ctx):
+    ctx.deliver("ExportReady", with_event_ids({"tenant_id": "t1", "job_id": "job-1", "kind": "workspace",
+                                               "user_id": "alice", "email": "alice@example.com"}))
+    ctx.deliver("ExportReady", with_event_ids({"tenant_id": "", "job_id": "job-2", "kind": "user",
+                                               "user_id": "alice", "email": "alice@example.com"}))
+    assert [n["title"] for n in notes(ctx)] == ["Export ready"]           # in-app only in a workspace
+    assert [m[1] for m in ctx.email.sent] == ["Your export is ready"] * 2

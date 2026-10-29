@@ -15,6 +15,7 @@ from accounts.container import get_account_service
 from accounts.models import Invitation, Member
 from accounts.schemas import (
     AccountDelete,
+    ExportOut,
     InviteRequest,
     RoleUpdate,
     TenantCreate,
@@ -96,6 +97,34 @@ def remove_user(user_id: str, user: User, service: Service):
 def delete_my_account(body: AccountDelete, user: User, service: Service):
     service.delete_account(user, body)
     return Response(status_code=204)
+
+
+# ---------- exports ----------
+
+# The owner starts a copy of the workspace's data (X-Tenant-Id); the caller, of their own.
+# Each module writes its part; GET shows the newest export, with download links once done.
+@router.post("/exports/workspace")
+def export_workspace(user: User, service: Service) -> Response[ExportOut]:
+    return Response(status_code=202, content_type=content_types.APPLICATION_JSON,
+                    body=ExportOut.of(service.request_export(user, "workspace")).model_dump())
+
+
+@router.get("/exports/workspace")
+def latest_workspace_export(user: User, service: Service) -> ExportOut | None:
+    found = service.latest_export(user, "workspace")
+    return ExportOut.of(*found) if found else None
+
+
+@router.post("/exports/me")
+def export_my_data(user: User, service: Service) -> Response[ExportOut]:
+    return Response(status_code=202, content_type=content_types.APPLICATION_JSON,
+                    body=ExportOut.of(service.request_export(user, "user")).model_dump())
+
+
+@router.get("/exports/me")
+def latest_my_export(user: User, service: Service) -> ExportOut | None:
+    found = service.latest_export(user, "user")
+    return ExportOut.of(*found) if found else None
 
 
 # ---------- invitations sent by this workspace ----------

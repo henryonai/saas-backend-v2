@@ -12,6 +12,9 @@ Key design:
   TENANT#<tenant_id>  INVITES_SENT#<day>  invitations sent that day (rate limit, expires)
   USER#<user_id>      WORKSPACE#<tenant>  one of the user's workspaces (one item per membership)
   USER#<user_id>      WORKSPACES          how many workspaces the user belongs to (count, limited)
+  TENANT#<tenant_id>  JOB#<job_id>        an export of the workspace (models.ExportJob; expires)
+  USER#<user_id>      JOB#<job_id>        an export of the user's own data (the same; expires)
+  TENANT# or USER#    EXPORTS#<day>       exports started that day (a limit, expires)
   USER#<user_id>      IDEMPOTENCY#<user_id>#<key>  the workspace a POST /tenants with that key created
                                           (shared/idempotency.py; expires)
   (A deleted account's USER# items go, except the memberships of workspaces it
@@ -32,7 +35,7 @@ from shared.events import Event
 from shared.idempotency import idempotency_put, replay
 from shared.outbox import outbox_put
 
-from accounts.models import Invitation, Member, Tenant
+from accounts.models import ExportJob, Invitation, Member, Tenant
 
 KEY_FIELDS = ("pk", "sk", "gsi1pk", "gsi1sk")
 DAY_SECONDS = 24 * 60 * 60
@@ -61,6 +64,14 @@ def _workspace_key(user_id: str, tenant_id: str) -> dict:
 
 def _workspace_count_key(user_id: str) -> dict:
     return {"pk": f"USER#{user_id}", "sk": "WORKSPACES"}
+
+
+def _export_pk(kind: str, owner_id: str) -> str:
+    return _tenant_pk(owner_id) if kind == "workspace" else f"USER#{owner_id}"
+
+
+def _export(item: dict) -> ExportJob:
+    return ExportJob.model_validate({**_clean(item), "done": sorted(item.get("done", set()))})
 
 
 def _invite_key(tenant_id: str, email: str) -> dict:
@@ -249,6 +260,75 @@ class AccountRepository:
         """
         transact(self.table, event=outbox_put(event))
         return delete_partition(self.table, f"USER#{user_id}", keep=lambda sk: sk.startswith("WORKSPACE#"))
+
+    # ---------- exports ----------
+
+    def create_export(self, job: ExportJob, event: Event, per_day: int) -> None:
+        """
+        Saves the job and ExportRequested, and counts it against the day's
+        limit, in one transaction. Raises ConditionFailed({"daily_limit"}).
+        """
+        pk = _export_pk(job.kind, job.owner_id)
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        item = {"pk": pk, "sk": f"JOB#{job.job_id}", **job.model_dump(exclude={"done"})}
+        transact(
+            self.table,
+            job={"Put": {"Item": item}},
+            daily_limit={"Update": {
+                "Key": {"pk": pk, "sk": f"EXPORTS#{day}"},
+                "UpdateExpression": "ADD started :one SET expires_at = :expires",
+                "ConditionExpression": "attribute_not_exists(started) OR started < :limit",
+                "ExpressionAttributeValues": {":one": 1, ":limit": per_day,
+                                              ":expires": int(time.time()) + 2 * DAY_SECONDS},
+            }},
+            event=outbox_put(event),
+        )
+
+    def latest_export(self, kind: str, owner_id: str) -> ExportJob | None:
+        result = self.table.query(
+            KeyConditionExpression=Key("pk").eq(_export_pk(kind, owner_id)) & Key("sk").begins_with("JOB#"),
+            ScanIndexForward=False, Limit=1, ConsistentRead=True,
+        )
+        return _export(result["Items"][0]) if result["Items"] else None
+
+    def get_export(self, kind: str, owner_id: str, job_id: str) -> ExportJob | None:
+        item = self.table.get_item(Key={"pk": _export_pk(kind, owner_id), "sk": f"JOB#{job_id}"},
+                                   ConsistentRead=True).get("Item")
+        return _export(item) if item else None
+
+    def mark_part(self, kind: str, owner_id: str, job_id: str, part: str) -> ExportJob | None:
+        """Adds a written part to the job; returns it as it is now, or None if there is no such job."""
+        try:
+            item = self.table.update_item(
+                Key={"pk": _export_pk(kind, owner_id), "sk": f"JOB#{job_id}"},
+                UpdateExpression="ADD done :part",
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeValues={":part": {part}},
+                ReturnValues="ALL_NEW",
+            )["Attributes"]
+            return _export(item)
+        except ClientError as e:
+            if is_condition_failure(e):
+                return None
+            raise
+
+    def finish_export(self, job: ExportJob, event: Event) -> bool:
+        """running -> done, with ExportReady, once. False if another part finished it already."""
+        try:
+            transact(
+                self.table,
+                job={"Update": {
+                    "Key": {"pk": _export_pk(job.kind, job.owner_id), "sk": f"JOB#{job.job_id}"},
+                    "UpdateExpression": "SET #st = :done",
+                    "ConditionExpression": "#st = :running",
+                    "ExpressionAttributeNames": {"#st": "status"},
+                    "ExpressionAttributeValues": {":done": "done", ":running": "running"},
+                }},
+                event=outbox_put(event),
+            )
+            return True
+        except ConditionFailed:
+            return False
 
     # ---------- members ----------
 

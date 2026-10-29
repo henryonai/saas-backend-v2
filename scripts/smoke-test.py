@@ -12,7 +12,8 @@ users and calls every endpoint, printing PASS/FAIL per check:
   workers), invitations (send, cancel, accept, decline), roles and who may do
   what, leaving and removing members, tenant isolation, users in several
   workspaces (X-Tenant-Id), plan limits, and deleting, restoring and (with
-  TenantDeletionDays of a few minutes at most, as on dev) purging a workspace, and deleting an account.
+  TenantDeletionDays of a few minutes at most, as on dev) purging a workspace, deleting an
+  account, and exports (a workspace's and a user's).
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
@@ -445,6 +446,30 @@ check("each plan change notified once, however many updates Stripe sent",
       sorted(plan_changes) == ["Plan changed to business", "Plan changed to free", "Plan changed to pro"],
       plan_changes)
 stripe_api.v1.customers.delete(customer.id)   # test mode: leave nothing behind in Stripe
+
+print("Exports")
+r = owner("POST", "/exports/workspace")
+check("POST /exports/workspace", r.status_code == 202 and r.json()["parts"] == ["accounts", "orders", "billing"],
+      show(r))
+started = time.time()
+job = wait_for(lambda: (j := owner("GET", "/exports/workspace").json()) and j["status"] == "done" and j)
+check("every module wrote its part, and the export is done", bool(job),
+      f"{time.time() - started:.0f}s" if job else owner("GET", "/exports/workspace").text)
+if job:
+    orders = requests.get(job["files"]["orders"], timeout=30)
+    check("the orders part downloads, with the workspace's orders",
+          orders.ok and {o["order_id"] for o in orders.json()} >= {order1, order2}, orders.status_code)
+    got = wait_for(lambda: "Export ready" in (t := titles(owner)) and t)
+    check("notifications: export ready", bool(got), titles(owner))
+check("only the owner exports a workspace -> 403",
+      bob("POST", "/exports/workspace", tenant=tenant_id).status_code in (401, 403))
+r = carol("POST", "/exports/me", tenant=None)
+check("POST /exports/me", r.status_code == 202, show(r))
+job = wait_for(lambda: (j := carol("GET", "/exports/me", tenant=None).json()) and j["status"] == "done" and j)
+check("carol's own export is done", bool(job), carol("GET", "/exports/me", tenant=None).text)
+if job:
+    mine = requests.get(job["files"]["accounts"], timeout=30)
+    check("it lists her workspaces", mine.ok and mine.json()["user"]["email"] == carol.email, mine.status_code)
 
 print("Deleting a workspace")
 r = carol("POST", "/orders", tenant=other_id, json={"item": "Doomed", "quantity": 1, "price_cents": 100},

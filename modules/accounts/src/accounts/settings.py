@@ -18,3 +18,6 @@ class AccountsSettings(BaseAppSettings):
     # Days the owner of a deleted workspace can restore it before the purge job removes it
     # (a fraction for a test stack: 0.001 is about 90 seconds).
     tenant_deletion_days: float = Field(default=7, ge=0)
+    # Where exports are written (shared/exports.py), and whether the assistant writes a part of a user's.
+    exports_bucket: str | None = None
+    assistant_enabled: bool = False
