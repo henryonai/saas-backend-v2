@@ -47,6 +47,7 @@ saas-backend-v2/
 │   ├── check-assistant-data.py # the assistant's table against its data model (read-only)
 │   ├── replay-outbox.py        # publish saved events again after an outage
 │   ├── migrate-memberships.py  # once, for stacks from before users had several workspaces
+│   ├── backfill-admin.py       # once, for stacks from before the admin module: its summaries
 │   └── rename-project.py       # give a new copy of the template its own name
 ├── layers/shared/              # package "saas-shared"
 │   ├── pyproject.toml          # powertools, pydantic, pydantic-settings
@@ -82,6 +83,8 @@ saas-backend-v2/
 │       └── tests/
 │   (modules/audit only listens and lists: it keeps who did what in a
 │    workspace, from the other modules' events, for GET /audit.
+│    modules/admin is the back-office for platform admins: a read model of
+│    every workspace, built from events, and the admin log.
 │    modules/assistant's chat runs on AgentCore Runtime: app.py, with its
 │    agents as Markdown files in src/assistant/agents/; its handler.py serves
 │    the users' conversations on the HTTP API)
@@ -163,7 +166,10 @@ route. Each `repository.py` starts with its own key design; change both together
 | `ExportRequested` (`job_id`, `kind`, `owner_id`, `tenant_ids`) | accounts | each module in the job's parts writes its part to the exports bucket: accounts, orders and billing for a workspace; accounts, notifications and the assistant for a user |
 | `ExportReady` | accounts (once every part is in the bucket) | notifications (email, and in-app for a workspace's export) |
 | `OrderCreated` | orders | notifications (in-app) |
-| `TenantCreated`, `MemberJoined`, `RoleChanged`, `InvitationCancelled` (`declined`), `TenantDeletionScheduled`, `TenantRestored` | accounts | audit |
+| `TenantCreated`, `MemberJoined`, `RoleChanged`, `InvitationCancelled` (`declined`) | accounts | audit, admin (its summaries) |
+| `TenantDeletionScheduled`, `TenantRestored` | accounts | audit, admin; orders, billing and the assistant (their copy of the workspace's status) |
+| `PlanGranted` (`plan`, `note`) | admin | billing (gives the plan without payment, `comped`, until Stripe changes it), audit |
+| `TenantSuspended` (`reason`), `TenantUnsuspended` | admin | accounts (a suspended workspace leaves every token), admin, audit; orders, billing and the assistant (their copy of the workspace's status) |
 
 Every event about a workspace is also written to its **audit log** (the audit
 module, `GET /audit` for owners and admins, an "Activity" tab on Team): who did
@@ -227,6 +233,19 @@ the events table); billing cancels the Stripe subscription now, without a
 refund, and keeps a tombstone for 90 days so Stripe's late webhooks can't bring
 it back. A purge that fails half way is finished by the next run.
 
+**A suspended workspace, or one being deleted, takes no changes**, though
+members' tokens list it for up to 15 more minutes: accounts checks the
+workspace itself, and orders, billing and the assistant each keep a copy of its
+status in their own table (`TENANT#<t>` / `STATUS`, from the events above,
+seconds behind; `shared/workspace_status.py`). Changes get `403` ("This
+workspace is suspended" / "is being deleted"): new orders and order status
+changes, checkout, assistant messages, uploads and memories, invitations, role
+changes, removing members and workspace exports. Reading still works, a member
+can still leave, the billing portal stays open (to fix a payment or cancel),
+and users can still delete their own conversations, memories and files. A stack
+that had suspended or deleted workspaces before these copies existed writes
+them once with `uv run scripts/backfill-workspace-status.py --stack <stack>`.
+
 **Delete an account:** the user calls `DELETE /account` with
 `{"email": "<their email>"}` (typed again to confirm) → refused while they own
 an active workspace (ownership can't be handed over: they delete it first) →
@@ -235,6 +254,21 @@ conversations, memories, files and notifications there go) → their own
 records go and `UserDeleted` is published → their Cognito user is deleted,
 last, so a failure part way can be retried. Orders they created stay with the
 workspace (its records), with their user id.
+
+**Back-office** (platform admins: the people who run the product): add
+someone with `aws cognito-idp admin-add-user-to-group --user-pool-id
+<UserPoolId> --username <their email> --group-name platform-admins`; their next
+token's `cognito:groups` lists it, and the app shows "Admin" (`/admin`). The
+admin module keeps a summary of every workspace (name, owner, plan, status,
+members, orders) from events, never reading other modules' tables; each event
+is applied once (a marker in the same transaction), and a late plan revision is
+skipped. `GET /admin/tenants`, `GET /admin/tenants/<id>`, `GET /admin/log`; acting
+publishes an event that the owning module applies, and logs it:
+`POST /admin/tenants/<id>/plan` (`PlanGranted`: billing gives the plan without
+payment until Stripe changes it), `.../suspend` with a reason and
+`.../unsuspend` (accounts takes the workspace out of every token, as deleting
+does; its data stays). A stack that had workspaces before the admin module
+fills the summaries once with `uv run scripts/backfill-admin.py --stack <stack>`.
 
 **Export data** (a job a user starts and watches): the owner calls
 `POST /exports/workspace` (members, invitations, orders, subscription), or any

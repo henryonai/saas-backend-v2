@@ -22,6 +22,10 @@ Three ways a conversation goes, one Lambda for all:
     that removal here (template.yaml filters the stream down to these): its
     messages and each agent's thread go.
 
+It also keeps the workspace's status (accounts' and admin's TenantSuspended,
+TenantUnsuspended, TenantDeletionScheduled, TenantRestored), so no message
+is answered while it isn't active (shared/workspace_status.py).
+
 One SQS message per Lambda run (BatchSize 1 in template.yaml); a failed or
 timed-out run is retried, and picks up where the last one stopped, since what
 it deleted is gone. So is a failed stream record. After several failures
@@ -38,6 +42,7 @@ from boto3.dynamodb.conditions import Key
 
 from shared.dynamo import delete_partition
 from shared.exports import PartWriter, clean
+from shared.workspace_status import STATUS_EVENTS, save
 
 from assistant.checkpoints import CheckpointPurge
 from assistant.container import (
@@ -73,6 +78,9 @@ def process_batch(event: dict, context, checkpoints: CheckpointPurge,
             return
         if body.get("detail-type") == TENANT_DELETED:
             purge_tenant(body["detail"], checkpoints, conversations, memories, files)
+            return
+        if body.get("detail-type") in STATUS_EVENTS:   # suspended, being deleted, or active again
+            save(conversations.table, body["detail-type"], body["detail"])
             return
         if body.get("detail-type") == EXPORT_REQUESTED:
             if body["detail"]["kind"] == "user":

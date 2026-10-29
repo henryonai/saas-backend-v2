@@ -2,6 +2,8 @@
 Listens to events from other modules (EventBridge -> SQS -> this Lambda):
 TenantDeleted, when a deleted workspace is purged, removes its orders;
 ExportRequested, for a workspace's export, writes its orders (shared/exports.py).
+TenantSuspended, TenantUnsuspended, TenantDeletionScheduled and TenantRestored keep
+the workspace's status, so orders refuses changes while it isn't active.
 
 Events can arrive twice; deleting what is gone already changes nothing, and
 writing an export's part again replaces it.

@@ -5,6 +5,7 @@ requires-python = "==3.13.*"
 [manifest]
 members = [
     "saas-accounts",
+    "saas-admin",
     "saas-assistant",
     "saas-audit",
     "saas-backend",
@@ -2003,6 +2004,25 @@ wheels = [
 name = "saas-accounts"
 version = "0.1.0"
 source = { editable = "modules/accounts" }
+dependencies = [
+    { name = "saas-shared" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "saas-testkit" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "saas-shared", editable = "layers/shared" }]
+
+[package.metadata.requires-dev]
+dev = [{ name = "saas-testkit", editable = "testkit" }]
+
+[[package]]
+name = "saas-admin"
+version = "0.1.0"
+source = { editable = "modules/admin" }
 dependencies = [
     { name = "saas-shared" },
 ]

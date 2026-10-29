@@ -32,6 +32,9 @@ vi.mock('@/shared/auth/session', async (importOriginal) => {
   };
 });
 
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+vi.mock('sonner', () => ({ toast }));
+
 const fetchMock = vi.fn<typeof fetch>();
 let invitations: unknown[] = [];
 let deleted: unknown[] = [];
@@ -39,6 +42,7 @@ let deleted: unknown[] = [];
 beforeEach(() => {
   invitations = [];
   deleted = [];
+  toast.error.mockReset();
   vi.stubGlobal('fetch', fetchMock);
   fetchMock.mockReset().mockImplementation(async (input, init) => {
     const path = new URL(String(input), 'http://app.test').pathname;
@@ -50,7 +54,10 @@ beforeEach(() => {
         ...deleted,
       ]);
     }
-    if (path === '/tenants/tenant-3/restore') return json({ tenant_id: 'tenant-3', name: 'Old Shop', status: 'active' });
+    if (path === '/tenants/tenant-3/restore') {
+      deleted = [];   // listed among the others from now on
+      return json({ tenant_id: 'tenant-3', name: 'Old Shop', status: 'active' });
+    }
     if (path === '/tenants/me') return json({ tenant_id: 'tenant-1', name: 'Acme Coffee', plan: 'free' });
     if (path === '/invitations') return json(invitations);
     return json({ message: 'not found' }, 404);
@@ -147,5 +154,30 @@ describe('WorkspaceSwitcher', () => {
     await waitFor(() => expect(sessionStore.getState().user?.tenantId).toBe('tenant-3'));
     const restore = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/tenants/tenant-3/restore'));
     expect(restore?.[1]?.method).toBe('POST');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());   // nothing left in it
+  });
+
+  it("offers no restore once a deleted workspace's time to restore has passed", async () => {
+    deleted = [{ tenant_id: 'tenant-3', name: 'Old Shop', role: 'owner', plan: 'free', status: 'deleting', delete_after: 1_000 }];
+    const user = await openMenu();
+    await user.click(await screen.findByRole('menuitem', { name: 'Deleted workspaces (1)' }));
+    expect(await screen.findByText('Being deleted for good')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
+  });
+
+  it('says so in its own words when the time to restore passed while the list was open', async () => {
+    deleted = [{ tenant_id: 'tenant-3', name: 'Old Shop', role: 'owner', plan: 'free', status: 'deleting', delete_after: 2_000_000_000 }];
+    const restore = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).endsWith('/tenants/tenant-3/restore')
+        ? json({ message: 'The time to restore this workspace has passed' }, 409)
+        : restore(input, init),
+    );
+    const user = await openMenu();
+    await user.click(await screen.findByRole('menuitem', { name: 'Deleted workspaces (1)' }));
+    await user.click(await screen.findByRole('button', { name: 'Restore' }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('Old Shop can no longer be restored: its time to restore has passed.'),
+    );
   });
 });

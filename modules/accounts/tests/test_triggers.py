@@ -52,3 +52,34 @@ def test_broken_message_is_retried_alone(ctx, owner):
     ), FakeContext(), ctx.service)
     assert result == {"batchItemFailures": [{"itemIdentifier": "m1"}]}
     assert ctx.login("alice")[owner["tenant_id"]]["plan"] == "pro"
+
+
+def test_a_suspended_workspace_leaves_every_token_until_it_is_unsuspended(ctx, owner, join):
+    join("bob")
+    tenant_id = owner["tenant_id"]
+    suspended = ("TenantSuspended", {"tenant_id": tenant_id, "reason": "abuse", "event_id": "e1"})
+    assert process_batch(sqs_event(suspended, suspended), FakeContext(), ctx.service) == {"batchItemFailures": []}
+    assert ctx.login("alice") == {} and ctx.login("bob") == {}
+    _, mine = ctx.api("GET", "/tenants", claims("alice"))
+    assert [w["status"] for w in mine] == ["suspended"]
+    assert ctx.api("DELETE", "/tenants/me", owner, {"name": "Acme"})[0] == 409   # can't delete it meanwhile
+
+    process_batch(sqs_event(("TenantUnsuspended", {"tenant_id": tenant_id, "event_id": "e2"})), FakeContext(),
+                  ctx.service)
+    assert set(ctx.login("bob")) == {tenant_id}
+
+
+def test_a_suspended_workspace_takes_no_changes_from_tokens_issued_before(ctx, owner, join):
+    """The tokens below still list it (up to 15 minutes): accounts checks the workspace itself."""
+    join("bob")
+    carol = join("carol")
+    tenant_id = owner["tenant_id"]
+    process_batch(sqs_event(("TenantSuspended", {"tenant_id": tenant_id, "reason": "abuse", "event_id": "e1"})),
+                  FakeContext(), ctx.service)
+    status, body = ctx.api("POST", "/users/invite", owner, {"email": "dave@example.com"})
+    assert status == 403 and "suspended" in body["message"]
+    assert ctx.api("PATCH", "/users/bob/role", owner, {"role": "admin"})[0] == 403
+    assert ctx.api("DELETE", "/users/bob", owner)[0] == 403
+    assert ctx.api("POST", "/exports/workspace", owner)[0] == 403
+    assert ctx.api("GET", "/users", owner)[0] == 200                  # reading still works
+    assert ctx.api("DELETE", "/users/carol", carol)[0] == 204         # and a member can still leave

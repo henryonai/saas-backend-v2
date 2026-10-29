@@ -9,6 +9,7 @@ import { createAppRouter } from './router';
 import { createQueryClient } from './shared/api/query-client';
 import { configureAmplify } from './shared/auth/amplify';
 import { listenToAuthEvents, loadSession, sessionStore } from './shared/auth/session';
+import { WorkspaceScope } from './shared/auth/workspace-scope';
 import { TooltipProvider } from './shared/components/ui/tooltip';
 import { missingConfig } from './shared/config';
 import { followSystemTheme } from './shared/theme/theme';
@@ -36,7 +37,8 @@ async function bootstrap(container: HTMLElement) {
 
   sessionStore.subscribe((state, previous) => {
     const workspaceChanged = state.user?.tenantId !== previous.user?.tenantId;
-    // Nothing from one workspace (or user) may show in the next.
+    // Nothing from one workspace (or user) may show in the next (WorkspaceScope
+    // then renders the page again, so it loads the new one's data).
     if (workspaceChanged || state.status === 'signed-out') queryClient.clear();
     // Signed out from anywhere (a revoked session, a 401), or moved to another
     // workspace: run the route guards again. Sign-in pages navigate on their own.
@@ -49,7 +51,9 @@ async function bootstrap(container: HTMLElement) {
     <StrictMode>
       <TooltipProvider>
         <QueryClientProvider client={queryClient}>
-          <RouterProvider router={router} />
+          <WorkspaceScope>
+            <RouterProvider router={router} />
+          </WorkspaceScope>
         </QueryClientProvider>
       </TooltipProvider>
     </StrictMode>,

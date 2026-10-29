@@ -4,6 +4,8 @@ Billing table:
                                                 deleting, deleting_at, renewal_stopped; once it is
                                                 purged: deleted_at, and TTL removes it after
                                                 DELETED_KEEP_SECONDS)
+  pk = TENANT#<tenant_id>   sk = STATUS         the workspace's status (no item: active)
+                                                (shared/workspace_status.py)
   pk = OUTBOX#<event_id>    sk = OUTBOX         events to publish (shared/outbox.py)
 """
 from botocore.exceptions import ClientError
@@ -11,6 +13,7 @@ from botocore.exceptions import ClientError
 from shared.dynamo import is_condition_failure, transact
 from shared.events import Event
 from shared.outbox import outbox_put
+from shared.workspace_status import STATUS_SK, check_active, save
 
 from billing.models import Subscription
 
@@ -32,6 +35,13 @@ class SubscriptionRepository:
             return None
         return Subscription.model_validate({k: v for k, v in item.items() if k not in ("pk", "sk")})
 
+    def save_status(self, event_type: str, detail: dict) -> None:
+        save(self.table, event_type, detail)
+
+    def check_active(self, tenant_id: str) -> None:
+        """Raises WorkspaceInactive (403) while the workspace is suspended or being deleted."""
+        check_active(self.table, tenant_id)
+
     def mark_deleted(self, tenant_id: str, now: int) -> None:
         """
         The workspace was purged: the subscription is cancelled and forgets
@@ -45,6 +55,7 @@ class SubscriptionRepository:
             ExpressionAttributeValues={":t": tenant_id, ":free": "free", ":cancelled": "cancelled", ":now": now,
                                        ":expires": now + DELETED_KEEP_SECONDS, ":none": ""},
         )
+        self.table.delete_item(Key={"pk": f"TENANT#{tenant_id}", "sk": STATUS_SK})
 
     def save_deleting(self, tenant_id: str, deleting: bool, at: str) -> bool:
         """
@@ -94,7 +105,7 @@ class SubscriptionRepository:
             "UpdateExpression": ("SET tenant_id = :t, #p = :p, #s = :s, revision = :rev, "
                                  "plan_changed_at = :pat, plan_event_id = :pid, "
                                  "status_changed_at = :sat, status_event_id = :sid, "
-                                 "customer_id = :cid, subscription_id = :subid"),
+                                 "customer_id = :cid, subscription_id = :subid, comped = :comped"),
             "ConditionExpression": ("attribute_not_exists(pk) OR attribute_not_exists(revision)"
                                     " OR revision = :expected"),
             "ExpressionAttributeNames": {"#p": "plan", "#s": "status"},
@@ -102,7 +113,7 @@ class SubscriptionRepository:
                 ":t": sub.tenant_id, ":p": sub.plan, ":s": sub.status, ":rev": sub.revision,
                 ":pat": sub.plan_changed_at, ":pid": sub.plan_event_id,
                 ":sat": sub.status_changed_at, ":sid": sub.status_event_id, ":expected": expected_revision,
-                ":cid": sub.customer_id, ":subid": sub.subscription_id,
+                ":cid": sub.customer_id, ":subid": sub.subscription_id, ":comped": sub.comped,
             },
         }}
         events_ops = {f"event_{i}": outbox_put(e) for i, e in enumerate(events)}

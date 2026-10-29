@@ -404,7 +404,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "active" | "deleting" | "purging";
+            status: "active" | "deleting" | "purging" | "suspended";
             /** Delete After */
             delete_after?: number | null;
         };
@@ -436,7 +436,7 @@ export interface components {
              * @default active
              * @enum {string}
              */
-            status: "active" | "deleting" | "purging";
+            status: "active" | "deleting" | "purging" | "suspended";
             /** Delete After */
             delete_after?: number | null;
         };

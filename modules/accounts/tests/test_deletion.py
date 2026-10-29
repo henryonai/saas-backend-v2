@@ -72,7 +72,7 @@ def test_deleting_and_restoring_publish_their_events(ctx, owner):
 def test_a_deleted_workspace_takes_no_invitations(ctx, owner):
     assert ctx.api("POST", "/users/invite", owner, {"email": "dave@example.com"})[0] == 201
     delete(ctx, owner)
-    assert ctx.api("POST", "/users/invite", owner, {"email": "erin@example.com"})[0] == 409
+    assert ctx.api("POST", "/users/invite", owner, {"email": "erin@example.com"})[0] == 403
     assert ctx.api("POST", f"/invitations/{owner['tenant_id']}/accept", claims("dave"))[0] == 404
 
 

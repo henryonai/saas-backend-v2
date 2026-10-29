@@ -18,9 +18,10 @@ def now_iso() -> str:
 
 
 # active; deleting: its owner deleted it, and it can be restored until delete_after;
-# purging: the purge job is removing it (purge.py). Items saved before deletion
-# existed have no status, which reads as active.
-TenantStatus = Literal["active", "deleting", "purging"]
+# purging: the purge job is removing it (purge.py); suspended: a platform admin
+# stopped it (the admin module's TenantSuspended). Only active workspaces are in
+# tokens. Items saved before deletion existed have no status, which reads as active.
+TenantStatus = Literal["active", "deleting", "purging", "suspended"]
 
 
 class Tenant(BaseModel):

@@ -32,10 +32,14 @@ def test_a_workspace_sees_only_its_own_log(ctx):
 
 
 def test_the_actor_of_events_without_actor_id(ctx):
-    ctx.deliver(("OrderCreated", event(user_id="bob", item="Book")),
+    ctx.deliver(("OrderCreated", event(user_id="bob", actor_email="bob@example.com", item="Book")),
+                ("ExportRequested", event(job_id="job-1", kind="user", owner_id="carol", user_id="carol",
+                                          email="carol@example.com", tenant_ids=["t1"])),
                 ("SubscriptionChanged", event(plan="pro", status="active", revision=2, owner_email="a@x.com")))
     items = ctx.api("GET", "/audit", OWNER)[1]["items"]
-    assert {e["type"]: e["actor_id"] for e in items} == {"OrderCreated": "bob", "SubscriptionChanged": ""}
+    assert {e["type"]: (e["actor_id"], e["actor_email"]) for e in items} == {
+        "OrderCreated": ("bob", "bob@example.com"), "ExportRequested": ("carol", "carol@example.com"),
+        "SubscriptionChanged": ("", "")}
     assert "owner_email" not in next(e for e in items if e["type"] == "SubscriptionChanged")["details"]
 
 

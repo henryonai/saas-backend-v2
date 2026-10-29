@@ -12,8 +12,10 @@ users and calls every endpoint, printing PASS/FAIL per check:
   workers), invitations (send, cancel, accept, decline), roles and who may do
   what, leaving and removing members, tenant isolation, users in several
   workspaces (X-Tenant-Id), plan limits, and deleting, restoring and (with
-  TenantDeletionDays of a few minutes at most, as on dev) purging a workspace, deleting an
-  account, exports (a workspace's and a user's) and the audit log.
+  TenantDeletionDays of a few minutes at most, as on dev) purging a workspace
+  (its Stripe subscription stops renewing, renews again, then is cancelled),
+  deleting an account, exports (a workspace's and a user's), the audit log and
+  the back-office.
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
@@ -480,10 +482,62 @@ if job:
     mine = requests.get(job["files"]["accounts"], timeout=30)
     check("it lists her workspaces", mine.ok and mine.json()["user"]["email"] == carol.email, mine.status_code)
 
+print("Back-office (platform admins)")
+ops = Person("ops")
+idp.admin_add_user_to_group(UserPoolId=POOL, Username=ops.email, GroupName="platform-admins")
+ops.sign_in()
+check("a workspace owner can't open it -> 403", owner("GET", "/admin/tenants", tenant=None).status_code == 403)
+summary = wait_for(lambda: (r := ops("GET", f"/admin/tenants/{other_id}", tenant=None)).ok and r.json())
+check("GET /admin/tenants/{id}: Other Co's summary, from events",
+      bool(summary) and summary["name"] == "Other Co" and summary["owner_id"] == carol.id, summary)
+carol.sign_in()
+before = carol.token   # issued while Other Co is active: it lists Other Co for up to 15 minutes more
+
+
+def order_in_other_co(token: str) -> requests.Response:
+    return call("POST", "/orders", token, json=widget,
+                headers={"X-Tenant-Id": other_id, **new_key()})
+
+
+r = ops("POST", f"/admin/tenants/{other_id}/suspend", tenant=None, json={"reason": "smoke test"})
+check("POST .../suspend", r.status_code == 202, show(r))
+gone = wait_for(lambda: other_id not in carol.sign_in().workspaces)
+check("a suspended workspace leaves its owner's token", bool(gone), carol.workspaces)
+# A requests.Response is falsy for a 4xx: poll the text, not the response.
+refused = wait_for(lambda: (r := order_in_other_co(before)).status_code == 403 and r.text)
+check("a token issued before the suspension can't add an order -> 403", bool(refused) and "suspended" in refused,
+      refused or show(order_in_other_co(before)))
+r = ops("POST", f"/admin/tenants/{other_id}/plan", tenant=None, json={"plan": "pro", "note": "smoke test"})
+check("POST .../plan (grant pro)", r.status_code == 202, show(r))
+back = wait_for(lambda: ops("GET", f"/admin/tenants/{other_id}", tenant=None).json().get("status") == "suspended"
+                and ops("POST", f"/admin/tenants/{other_id}/unsuspend", tenant=None).status_code == 202)
+check("POST .../unsuspend", bool(back))
+back = wait_for(lambda: (w := carol.sign_in().workspaces.get(other_id)) and w["plan"] == "pro" and w)
+check("unsuspended, it's back in her token, on the granted plan", bool(back), carol.workspaces)
+added = wait_for(lambda: carol("POST", "/orders", tenant=other_id, json=widget, headers=new_key()).status_code == 201)
+check("unsuspended, it takes orders again", bool(added))
+r = ops("GET", "/admin/log", tenant=None)
+check("GET /admin/log has the three actions", r.ok and [a["action"] for a in r.json()["items"]][:3] ==
+      ["unsuspend", "grant_plan", "suspend"], show(r))
+
 print("Deleting a workspace")
 r = carol("POST", "/orders", tenant=other_id, json={"item": "Doomed", "quantity": 1, "price_cents": 100},
           headers=new_key())
 check("an order in Other Co", r.status_code == 201, show(r))
+# A paid subscription, so deleting it can be seen to stop the renewal.
+other_customer = stripe_api.v1.customers.create({
+    "email": carol.email, "payment_method": "pm_card_visa", "metadata": {"smoke_test": STACK},
+    "invoice_settings": {"default_payment_method": "pm_card_visa"}})
+other_sub = stripe_api.v1.subscriptions.create({
+    "customer": other_customer.id, "items": [{"price": PRICES["pro"]}], "metadata": {"tenant_id": other_id}})
+summary = wait_for(lambda: (b := carol("GET", "/billing", tenant=other_id).json()).get("manageable") and b)
+check("Other Co subscribes to pro in Stripe", bool(summary), summary or carol("GET", "/billing", tenant=other_id).text)
+
+
+def renews() -> bool:
+    return not stripe_api.v1.subscriptions.retrieve(other_sub.id).cancel_at_period_end
+
+
 r = carol("DELETE", "/tenants/me", tenant=other_id, json={"name": "other co"})
 check("deleting needs the exact name -> 400", r.status_code == 400, show(r))
 check("someone not in it can't delete it -> 401",
@@ -494,9 +548,11 @@ check("her new token no longer lists it", other_id not in carol.sign_in().worksp
 r = carol("GET", "/tenants", tenant=None)
 check("GET /tenants lists it as deleting",
       r.ok and {w["tenant_id"]: w["status"] for w in r.json()}.get(other_id) == "deleting", show(r))
+check("Stripe: its subscription no longer renews", bool(wait_for(lambda: not renews())))
 r = carol("POST", f"/tenants/{other_id}/restore", tenant=None)
 check("POST /tenants/{id}/restore", r.ok and r.json()["status"] == "active", show(r))
 check("restored: her token lists it again", other_id in carol.sign_in().workspaces, carol.workspaces)
+check("Stripe: restored, it renews again", bool(wait_for(renews)))
 grace = float(params.get("TenantDeletionDays", "7")) * 24 * 3600
 if grace <= 300:   # a test stack's few seconds or minutes (dev: about 90 seconds)
     carol("DELETE", "/tenants/me", tenant=other_id, json={"name": "Other Co"})
@@ -513,8 +569,11 @@ if grace <= 300:   # a test stack's few seconds or minutes (dev: about 90 second
     check("GET /tenants no longer lists it", r.ok and other_id not in {w["tenant_id"] for w in r.json()}, show(r))
     r = carol("POST", "/tenants", json={"name": "After Co"}, headers=new_key())
     check("her workspace count went down (she can create another)", r.status_code == 201, show(r))
+    ended = wait_for(lambda: (st := stripe_api.v1.subscriptions.retrieve(other_sub.id).status) == "canceled" and st)
+    check("Stripe: purged, its subscription is cancelled", bool(ended), ended)
 else:
     print("  (purge not checked: TenantDeletionDays is more than a few minutes on this stack)")
+stripe_api.v1.customers.delete(other_customer.id)   # test mode: leave nothing behind in Stripe
 
 print("Deleting an account")
 doomed = Person("doomed")

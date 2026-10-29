@@ -20,7 +20,13 @@ describe('userFromClaims', () => {
       tenantId: 't-1',
       role: 'admin',
       plan: 'pro',
+      platformAdmin: false,
     });
+  });
+
+  it('knows a platform admin from the user pool group', () => {
+    expect(userFromClaims({ ...base, 'cognito:groups': ['platform-admins'] }).platformAdmin).toBe(true);
+    expect(userFromClaims({ ...base, 'cognito:groups': ['support'] }).platformAdmin).toBe(false);
   });
 
   it('works in the workspace the tab chose, while the token lists it', () => {

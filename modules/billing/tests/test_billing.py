@@ -8,6 +8,7 @@ from billing import webhook
 from billing.repository import SubscriptionRepository
 from testkit.http import claims
 from testkit.logs import captured_logs
+from testkit.sqs import with_event_ids
 
 
 def plan_and_status(ctx, owner):
@@ -39,7 +40,7 @@ def test_webhook_upgrades_and_publishes_owner_details(ctx, owner):
     [event] = ctx.events()
     assert event["type"] == "SubscriptionChanged"
     detail = {k: v for k, v in event["detail"].items() if k not in ("event_id", "occurred_at")}
-    assert detail == {"tenant_id": "t1", "plan": "pro", "status": "active", "revision": 1,
+    assert detail == {"tenant_id": "t1", "plan": "pro", "status": "active", "revision": 1, "comped": False,
                       "owner_id": "alice", "owner_email": "alice@example.com"}
 
 
@@ -131,3 +132,14 @@ def test_failed_save_can_be_retried(ctx, owner):
 
     assert ctx.webhook(event_id="evt_9", created=1_700_000_000) == 200   # Stripe's retry is applied
     assert ctx.event_types() == ["SubscriptionChanged"]
+
+
+def test_a_suspended_workspace_cant_start_a_checkout(ctx, owner):
+    ctx.service.handle_event("TenantSuspended", with_event_ids({"tenant_id": "t1", "reason": "spam"}))
+    status, body = ctx.api("POST", "/billing/checkout", owner, {"plan": "pro"})
+    assert status == 403 and "suspended" in body["message"]
+    ctx.service.handle_event("TenantUnsuspended", with_event_ids({"tenant_id": "t1"}))
+    assert ctx.api("POST", "/billing/checkout", owner, {"plan": "pro"})[0] == 200
+
+    ctx.service.handle_event("TenantDeleted", with_event_ids({"tenant_id": "t1", "user_ids": ["alice"]}))
+    assert ctx.table.get_item(Key={"pk": "TENANT#t1", "sk": "STATUS"}).get("Item") is None   # purged with it

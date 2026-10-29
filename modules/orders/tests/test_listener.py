@@ -39,3 +39,32 @@ def test_a_workspace_export_gets_every_order_and_a_users_export_none(ctx, alice)
     assert list(ctx.service.exports.written) == [part_key("workspace", "t1", "job-1", "orders")]
     orders = ctx.service.exports.written[part_key("workspace", "t1", "job-1", "orders")]
     assert len(orders) == 3 and orders[0]["item"] == "Book"
+
+
+def test_a_suspended_workspace_takes_no_orders_until_it_is_unsuspended(ctx, alice):
+    status, order = ctx.api("POST", "/orders", alice, ORDER)
+    retry = {"Idempotency-Key": "key-1"}
+    assert ctx.api("POST", "/orders", alice, ORDER, headers=retry)[0] == 201
+
+    suspended = ("TenantSuspended", with_event_ids({"tenant_id": "t1", "reason": "spam"}))
+    assert process_batch(sqs_event(suspended), FakeContext(), ctx.service) == {"batchItemFailures": []}
+    status, body = ctx.api("POST", "/orders", alice, ORDER)            # the token still lists the workspace
+    assert status == 403 and "suspended" in body["message"]
+    assert ctx.api("PATCH", f"/orders/{order['order_id']}/status", alice, {"status": "paid"})[0] == 403
+    assert ctx.api("POST", "/orders", alice, ORDER, headers=retry)[0] == 201   # a retry still gets its order
+    assert ctx.api("GET", "/orders", alice)[0] == 200                  # it can still be read
+    assert ctx.api("POST", "/orders", claims("bob", "t2", "member"), ORDER)[0] == 201
+
+    unsuspended = ("TenantUnsuspended", with_event_ids({"tenant_id": "t1"}))
+    process_batch(sqs_event(unsuspended), FakeContext(), ctx.service)
+    assert ctx.api("POST", "/orders", alice, ORDER)[0] == 201
+    assert ctx.api("PATCH", f"/orders/{order['order_id']}/status", alice, {"status": "paid"})[0] == 200
+
+
+def test_a_workspace_being_deleted_takes_no_orders(ctx, alice):
+    scheduled = ("TenantDeletionScheduled", with_event_ids({"tenant_id": "t1", "name": "Acme"}))
+    process_batch(sqs_event(scheduled), FakeContext(), ctx.service)
+    status, body = ctx.api("POST", "/orders", alice, ORDER)
+    assert status == 403 and "being deleted" in body["message"]
+    process_batch(sqs_event(("TenantRestored", with_event_ids({"tenant_id": "t1"}))), FakeContext(), ctx.service)
+    assert ctx.api("POST", "/orders", alice, ORDER)[0] == 201

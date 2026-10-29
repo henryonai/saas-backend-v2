@@ -20,6 +20,12 @@ is deleted (`DeletionPolicy: Retain`) and is deletion-protected in prod. Rules
 that must hold under concurrent requests (seats, limits, memberships, one
 `ExportReady`) are DynamoDB conditions, not read-then-write code.
 
+A module that changes a workspace's data keeps a copy of the workspace's
+status (`TENANT#<t>` / `STATUS`, `shared/workspace_status.py`) from accounts'
+and admin's events, and refuses changes while it says suspended or being
+deleted: tokens still list the workspace for up to 15 minutes. No item means
+active.
+
 | Table | Module | Index | TTL attribute | Stream |
 |---|---|---|---|---|
 | Accounts | accounts | `gsi1` (ALL) | `expires_at` | NEW_IMAGE → outbox relay |
@@ -27,6 +33,7 @@ that must hold under concurrent requests (seats, limits, memberships, one
 | Billing | billing | none | `expires_at` | NEW_IMAGE → outbox relay |
 | Notifications | notifications | none | `expires_at` | none |
 | Audit | audit | none | `expires_at` | none |
+| Admin | admin | none | `expires_at` | NEW_IMAGE → outbox relay |
 | Assistant | assistant (optional) | `ConversationsByUser` (INCLUDE) | `expires_at` | OLD_IMAGE → purge worker |
 | Assistant checkpoints | assistant (optional) | none | `ttl` | none |
 
@@ -74,19 +81,21 @@ assistant's passes only TTL's removal of a conversation's `META`.
 | `TENANT#<t>` | `ORDER#<order_id>` | an order (ids sort by creation time) | no |
 | `TENANT#<t>` | `COUNTER` | `order_count`, checked against the plan's `max_orders` | no |
 | `TENANT#<t>` | `IDEMPOTENCY#<u>#<key>` | the order a `POST /orders` with that key made | 24 hours |
+| `TENANT#<t>` | `STATUS` | the workspace's status (`active`, `suspended`, `deleting`; no item: active): changes are refused unless active | no (deleted with the workspace) |
 | `OUTBOX#<event_id>` | `OUTBOX` | an event waiting to be published | 7 days |
 
 | Access pattern | Query |
 |---|---|
 | `GET /orders` (newest first, paged) | Query `TENANT#<t>` begins_with `ORDER#`, descending |
 | `GET /orders/<id>`, `PATCH .../status` | GetItem; UpdateItem with the expected status as a condition |
-| `POST /orders` | one transaction: counter (limit), order, outbox, idempotency key |
+| `POST /orders` | one transaction: counter (limit), order, outbox, idempotency key, a condition check on `STATUS` |
 
 ## Billing
 
 | pk | sk | What | Expires |
 |---|---|---|---|
 | `TENANT#<t>` | `SUBSCRIPTION` | plan, status, revision, the provider's ids; while the workspace is being deleted, `deleting`, `deleting_at` and `renewal_stopped`; `deleted_at` once purged | 90 days after the workspace is purged |
+| `TENANT#<t>` | `STATUS` | the workspace's status (`active`, `suspended`, `deleting`; no item: active): changes are refused unless active | no (deleted with the workspace) |
 | `OUTBOX#<event_id>` | `OUTBOX` | an event waiting to be published | 7 days |
 
 Access: GetItem by tenant (`GET /billing`, webhooks, checkout); a webhook's
@@ -118,6 +127,7 @@ listener writes with `attribute_not_exists`, so a repeated event adds nothing.
 | `TENANT#<t>` | `USAGE#<YYYY-MM>` | the workspace's messages and tokens that month | about 13 months |
 | `TENANT#<t>` | `USER#<u>#HOUR#<YYYY-MM-DDTHH>` | messages a user sent that hour | after the hour |
 | `TENANT#<t>` | `USER#<u>#UPLOADS#<YYYY-MM-DDTHH>` | files they uploaded that hour | after the hour |
+| `TENANT#<t>` | `STATUS` | the workspace's status (`active`, `suspended`, `deleting`; no item: active): changes are refused unless active | no (deleted with the workspace) |
 | `TENANT#<t>#USER#<u>#CONV#<thread>` | `META` | a conversation, and its run while one answers | `CONVERSATION_DAYS` after its last message, or never |
 | `…#CONV#<thread>` | `MSG#<000001>` | a message at its position | with the conversation |
 | `…#CONV#<thread>` | `BRANCH#<0001>#MSG#<000004>` | a message in a later version | with the conversation |
@@ -139,3 +149,15 @@ per thread, expiring after 30 days (`ttl`); checkpoints over 350 KB go to S3.
 | Assistant files bucket | the user's files and their versions | until deleted |
 | Assistant checkpoint bucket | checkpoints over 350 KB | with their thread |
 | Cognito user pool | logins (email, password, MFA) | until the account is deleted |
+
+## Admin
+
+| pk | sk | What | Expires |
+|---|---|---|---|
+| `TENANTS` | `<tenant_id>` | a workspace's summary (name, owner, plan, status, members, orders) | no (deleted when the workspace is purged) |
+| `EVENT#<event_id>` | `EVENT` | an event already applied to the summaries | 7 days |
+| `LOG` | `<at>#<action_id>` | something a platform admin did | no |
+| `OUTBOX#<event_id>` | `OUTBOX` | an event waiting to be published | 7 days |
+
+Access: platform admins page through `TENANTS` (one partition, read only by
+them) and `LOG` (newest first). The table's stream feeds the outbox relay.

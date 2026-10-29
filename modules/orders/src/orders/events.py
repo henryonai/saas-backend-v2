@@ -12,9 +12,10 @@ from orders.models import Order
 ORDER_CREATED = "OrderCreated"
 
 
-def order_created(order: Order) -> Event:
+def order_created(order: Order, actor_email: str = "") -> Event:
     return Event(ORDER_CREATED, order.tenant_id, {
         "order_id": order.order_id,
         "user_id": order.created_by,
+        "actor_email": actor_email,
         "item": order.item,
     })

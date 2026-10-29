@@ -1432,3 +1432,24 @@ def test_a_users_export_has_their_conversations_memories_and_files_in_each_works
     assert any(r.get("message", {}).get("content") == "First" for r in records)
     assert [m["text"] for m in part["memories"]] == ["Likes short answers"]
     assert [f["name"] for f in part["files"]] == ["report.md"]
+
+
+def test_a_suspended_workspace_gets_no_answers_or_uploads_until_it_is_unsuspended(ctx, checkpoints, alice):
+    """The worker keeps the workspace's status from accounts' and admin's events; tokens list it a while longer."""
+    def status_event(detail_type: str, occurred_at: str) -> dict:
+        event = {**member_removed("t1", "alice", occurred_at), "detail-type": detail_type}
+        event["detail"] = {k: v for k, v in event["detail"].items() if k not in ("user_id", "removed_by")}
+        return event
+
+    suspended = status_event("TenantSuspended", "2026-10-28T10:00:00.000000+00:00")
+    assert process_batch(sqs(suspended), FakeContext(), checkpoints.purge, ctx.conversations) == {
+        "batchItemFailures": []}
+    status, body = ctx.send("Hi", alice)
+    assert status == 403 and "suspended" in body["message"]
+    assert ctx.usage.usage.get("t1", current_month()).messages == 0   # nothing counted
+    assert stored(ctx) is None
+    assert ctx.send("Hi", claims("bob", "t2", "member"))[0] == 201   # other workspaces answer
+
+    unsuspended = status_event("TenantUnsuspended", "2026-10-28T11:00:00.000000+00:00")
+    process_batch(sqs(unsuspended), FakeContext(), checkpoints.purge, ctx.conversations)
+    assert ctx.send("Hi", alice)[0] == 201

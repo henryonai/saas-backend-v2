@@ -1,6 +1,7 @@
 import { Link, Outlet, useMatchRoute } from '@tanstack/react-router';
-import { BellIcon, BotIcon, CreditCardIcon, FolderIcon, LayoutDashboardIcon, PackageIcon, UsersIcon } from 'lucide-react';
+import { BellIcon, BotIcon, CreditCardIcon, FolderIcon, LayoutDashboardIcon, PackageIcon, ShieldIcon, UsersIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useUser } from '@/shared/auth/session';
 import { Badge } from '@/shared/components/ui/badge';
 import {
   Sidebar,
@@ -58,6 +59,7 @@ export function AppShell() {
 function AppSidebar() {
   const { t } = useTranslation();
   const matchRoute = useMatchRoute();
+  const { platformAdmin } = useUser();
   // shares the bell's query (and its polling)
   const unread = (useNotifications().data ?? []).filter((item) => !item.read).length;
 
@@ -85,6 +87,16 @@ function AppSidebar() {
                   )}
                 </SidebarMenuItem>
               ))}
+              {platformAdmin && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild isActive={!!matchRoute({ to: '/admin', fuzzy: true })} tooltip={t('nav.admin')}>
+                    <Link to="/admin">
+                      <ShieldIcon />
+                      <span>{t('nav.admin')}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

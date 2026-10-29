@@ -52,7 +52,7 @@ To serve the app from your own domain, add the domain and its certificate to
 
 ```
 src/
-  main.tsx              loads the session, then renders; clears the cache when the workspace changes
+  main.tsx              loads the session, then renders; when the workspace changes, clears the cache and renders the page again
   router.tsx            the router (routeTree.gen.ts is generated from routes/)
   routes/               file routes, thin: each renders a page from features/
     _public/            sign-in, sign-up, confirm, forgot-password (signed out only)
@@ -61,7 +61,7 @@ src/
   features/<area>/      one area of the app (see below)
   shared/
     api/                api() client, query keys, types; generated/ comes from the backend
-    auth/               Amplify setup, the session (claims of the ID token), route guards
+    auth/               Amplify setup, the session (claims of the ID token), route guards, WorkspaceScope
     components/ui/      vendored shadcn/ui (`pnpm dlx shadcn@latest add <component>`)
     components/         the app's own building blocks
     i18n/               i18next, locales/en.json and vi.json

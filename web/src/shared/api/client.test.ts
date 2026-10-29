@@ -52,6 +52,11 @@ describe('api', () => {
     await expect(api('/users/u-2', { method: 'DELETE' })).resolves.toBeUndefined();
   });
 
+  it('returns nothing for a 202 with no body', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 202 }));
+    await expect(api('/admin/tenants/t1/suspend', { method: 'POST', body: {} })).resolves.toBeUndefined();
+  });
+
   it("raises the backend's message with its status", async () => {
     fetchMock.mockResolvedValue(json({ message: 'Your free plan allows 100 orders. Upgrade for more.' }, 402));
     await expect(api('/orders', { method: 'POST', body: {} })).rejects.toMatchObject({

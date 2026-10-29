@@ -241,7 +241,8 @@ def test_a_restore_that_lands_while_the_renewal_is_being_stopped_wins(ctx, owner
 
 def test_a_workspace_without_a_subscription_has_nothing_to_stop(ctx):
     ctx.service.handle_event(*deletion_event("TenantDeletionScheduled", "2026-10-29T10:00:00+00:00"))
-    assert ctx.stripe.calls == [] and ctx.table.scan()["Items"] == []
+    assert ctx.stripe.calls == []
+    assert [i["sk"] for i in ctx.table.scan()["Items"]] == ["STATUS"]   # only the status copy: no subscription
 
 
 def test_a_workspace_export_has_its_subscription(ctx, owner):
@@ -255,3 +256,20 @@ def test_a_workspace_export_has_its_subscription(ctx, owner):
         {"batchItemFailures": []}
     part = ctx.service.exports.written[part_key("workspace", "t1", "job-1", "billing")]
     assert part["subscription"]["plan"] == "pro" and part["subscription"]["subscription_id"] == "sub_1"
+
+
+def test_a_granted_plan_holds_until_stripe_changes_the_plan(ctx, owner):
+    granted = ("PlanGranted", {**with_event_ids({"tenant_id": "t1", "plan": "business", "note": "partner",
+                                                 "actor_id": "ops", "actor_email": "ops@example.com"}),
+                               "occurred_at": "2023-01-01T00:00:00+00:00"})   # before the test's Stripe clock
+    assert process_listener(sqs_event(granted, granted), FakeContext(), ctx.service) == {"batchItemFailures": []}
+    summary = billing(ctx, owner)
+    assert (summary["plan"], summary["status"]) == ("business", "active")
+    assert ctx.event_types().count("SubscriptionChanged") == 1                 # once, though delivered twice
+    [changed] = [e for e in ctx.events() if e["type"] == "SubscriptionChanged"]
+    assert changed["detail"]["comped"] is True
+
+    ctx.stripe.subscribe(status="active", price="price_pro")                   # they subscribe later
+    ctx.webhook()
+    stored = ctx.table.get_item(Key={"pk": "TENANT#t1", "sk": "SUBSCRIPTION"})["Item"]
+    assert (stored["plan"], stored["comped"]) == ("pro", False)

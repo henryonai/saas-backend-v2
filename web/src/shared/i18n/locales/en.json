@@ -57,7 +57,8 @@
     "overview": "Overview",
     "plan": "{{plan}} plan",
     "team": "Team",
-    "toggleSidebar": "Toggle sidebar"
+    "toggleSidebar": "Toggle sidebar",
+    "admin": "Admin"
   },
   "workspaces": {
     "title": "Workspaces",
@@ -84,7 +85,9 @@
       "until": "Can be restored until {{date}}",
       "purging": "Being deleted for good",
       "restore": "Restore",
-      "restored": "{{workspace}} was restored."
+      "restored": "{{workspace}} was restored.",
+      "expired": "{{workspace}} can no longer be restored: its time to restore has passed.",
+      "suspended": "Suspended by the product's admins"
     }
   },
   "auth": {
@@ -296,7 +299,10 @@
         "SubscriptionChanged": "The plan became {{plan}} ({{status}})",
         "PaymentFailed": "A payment failed",
         "OrderCreated": "Created an order for {{item}}",
-        "ExportRequested": "Started an export of the workspace's data"
+        "ExportRequested": "Started an export of the workspace's data",
+        "PlanGranted": "A platform admin granted the {{plan}} plan",
+        "TenantSuspended": "A platform admin suspended the workspace: {{reason}}",
+        "TenantUnsuspended": "A platform admin unsuspended the workspace"
       }
     }
   },
@@ -523,7 +529,7 @@
   "exports": {
     "workspace": {
       "title": "Export this workspace",
-      "description": "A copy of its members, invitations, orders and subscription, as JSON files."
+      "description": "A copy of its members, invitations, orders, subscription and activity log, as JSON files."
     },
     "me": {
       "title": "Download your data",
@@ -538,7 +544,54 @@
       "orders": "Orders",
       "billing": "Subscription",
       "notifications": "Notifications",
-      "assistant": "Assistant"
+      "assistant": "Assistant",
+      "audit": "Activity log"
+    }
+  },
+  "admin": {
+    "title": "Back-office",
+    "description": "Every workspace, for the people who run the product.",
+    "forbidden": "Only platform admins can open the back-office.",
+    "tabs": {
+      "workspaces": "Workspaces",
+      "log": "Admin log"
+    },
+    "columns": {
+      "workspace": "Workspace",
+      "plan": "Plan",
+      "status": "Status",
+      "members": "Members",
+      "orders": "Orders",
+      "created": "Created"
+    },
+    "status": {
+      "active": "Active",
+      "deleting": "Being deleted",
+      "suspended": "Suspended"
+    },
+    "comped": "granted",
+    "actionsFor": "Actions for {{workspace}}",
+    "applied": "Done. The list shows it in a few seconds.",
+    "unsuspend": "Unsuspend",
+    "logEmpty": "No admin actions yet.",
+    "grant": {
+      "open": "Grant a plan",
+      "title": "Grant a plan to {{workspace}}",
+      "description": "It gets the plan without paying, until its subscription changes in Stripe.",
+      "note": "Note (why)",
+      "submit": "Grant plan"
+    },
+    "suspend": {
+      "open": "Suspend",
+      "title": "Suspend {{workspace}}?",
+      "description": "Nobody can work in it until you unsuspend it. Its data is kept.",
+      "reason": "Reason",
+      "submit": "Suspend"
+    },
+    "actions": {
+      "grant_plan": "Granted {{plan}} to {{tenant}} ({{note}})",
+      "suspend": "Suspended {{tenant}}: {{reason}}",
+      "unsuspend": "Unsuspended {{tenant}}"
     }
   }
 }

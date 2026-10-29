@@ -111,7 +111,8 @@ export function WorkspaceSwitcher() {
             <InvitationList onJoined={() => setDialog(null)} />
           </DialogContent>
         </Dialog>
-        <Dialog open={dialog === 'deleted'} onOpenChange={(open) => !open && setDialog(null)}>
+        {/* closes by itself once the last one is restored */}
+        <Dialog open={dialog === 'deleted' && deleted > 0} onOpenChange={(open) => !open && setDialog(null)}>
           <DialogContent className="p-0 [&>[data-slot=card]]:border-0">
             <DialogHeader className="sr-only">
               <DialogTitle>{t('workspaces.deleted.title')}</DialogTitle>

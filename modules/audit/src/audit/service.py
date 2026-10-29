@@ -17,9 +17,10 @@ from audit.repository import AuditRepository, InvalidCursor
 # here and to AuditRule in template.yaml to log it.
 AUDITED = {"TenantCreated", "UserInvited", "InvitationCancelled", "MemberJoined", "RoleChanged", "MemberRemoved",
            "TenantDeletionScheduled", "TenantRestored", "SubscriptionChanged", "PaymentFailed", "OrderCreated",
-           "ExportRequested"}
-# Who did it, for events that don't say actor_id.
+           "ExportRequested", "PlanGranted", "TenantSuspended", "TenantUnsuspended"}
+# Who did it, for events that don't say actor_id and actor_email.
 ACTOR_FIELD = {"OrderCreated": "user_id", "ExportRequested": "user_id"}
+ACTOR_EMAIL_FIELD = {"ExportRequested": "email"}
 NOT_DETAILS = {"tenant_id", "event_id", "occurred_at", "actor_id", "actor_email", "owner_id", "owner_email"}
 
 
@@ -50,6 +51,6 @@ class AuditService:
         entry = AuditEntry(event_id=d["event_id"], tenant_id=d["tenant_id"], type=event_type,
                            occurred_at=d["occurred_at"],
                            actor_id=d.get("actor_id") or d.get(ACTOR_FIELD.get(event_type, ""), ""),
-                           actor_email=d.get("actor_email", ""),
+                           actor_email=d.get("actor_email") or d.get(ACTOR_EMAIL_FIELD.get(event_type, ""), ""),
                            details={k: v for k, v in d.items() if k not in NOT_DETAILS})
         self.entries.add(entry, int(time.time()) + self.retention_days * 24 * 3600)

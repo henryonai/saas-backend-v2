@@ -14,6 +14,7 @@ import { Route as OnboardingRouteImport } from './routes/_onboarding'
 import { Route as PublicRouteImport } from './routes/_public'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAccountRouteImport } from './routes/_app/account'
+import { Route as AppAdminRouteImport } from './routes/_app/admin'
 import { Route as AppBillingRouteImport } from './routes/_app/billing'
 import { Route as AppFilesRouteImport } from './routes/_app/files'
 import { Route as AppNotificationsRouteImport } from './routes/_app/notifications'
@@ -48,6 +49,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
 const AppAccountRoute = AppAccountRouteImport.update({
   id: '/account',
   path: '/account',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAdminRoute = AppAdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
   getParentRoute: () => AppRoute,
 } as any)
 const AppBillingRoute = AppBillingRouteImport.update({
@@ -119,6 +125,7 @@ const AppOrdersOrderIdRoute = AppOrdersOrderIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/account': typeof AppAccountRoute
+  '/admin': typeof AppAdminRoute
   '/billing': typeof AppBillingRoute
   '/files': typeof AppFilesRoute
   '/notifications': typeof AppNotificationsRoute
@@ -136,6 +143,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/account': typeof AppAccountRoute
+  '/admin': typeof AppAdminRoute
   '/billing': typeof AppBillingRoute
   '/files': typeof AppFilesRoute
   '/notifications': typeof AppNotificationsRoute
@@ -156,6 +164,7 @@ export interface FileRoutesById {
   '/_onboarding': typeof OnboardingRouteWithChildren
   '/_public': typeof PublicRouteWithChildren
   '/_app/account': typeof AppAccountRoute
+  '/_app/admin': typeof AppAdminRoute
   '/_app/billing': typeof AppBillingRoute
   '/_app/files': typeof AppFilesRoute
   '/_app/notifications': typeof AppNotificationsRoute
@@ -176,6 +185,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/account'
+    | '/admin'
     | '/billing'
     | '/files'
     | '/notifications'
@@ -193,6 +203,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/account'
+    | '/admin'
     | '/billing'
     | '/files'
     | '/notifications'
@@ -212,6 +223,7 @@ export interface FileRouteTypes {
     | '/_onboarding'
     | '/_public'
     | '/_app/account'
+    | '/_app/admin'
     | '/_app/billing'
     | '/_app/files'
     | '/_app/notifications'
@@ -269,6 +281,13 @@ declare module '@tanstack/react-router' {
       path: '/account'
       fullPath: '/account'
       preLoaderRoute: typeof AppAccountRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/admin': {
+      id: '/_app/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AppAdminRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/billing': {
@@ -367,6 +386,7 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppAccountRoute: typeof AppAccountRoute
+  AppAdminRoute: typeof AppAdminRoute
   AppBillingRoute: typeof AppBillingRoute
   AppFilesRoute: typeof AppFilesRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
@@ -380,6 +400,7 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppAccountRoute: AppAccountRoute,
+  AppAdminRoute: AppAdminRoute,
   AppBillingRoute: AppBillingRoute,
   AppFilesRoute: AppFilesRoute,
   AppNotificationsRoute: AppNotificationsRoute,

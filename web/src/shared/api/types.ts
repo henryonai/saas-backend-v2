@@ -6,6 +6,7 @@
  */
 import type { Message } from '@ag-ui/client';
 import type { components as Accounts } from './generated/accounts';
+import type { components as Admin } from './generated/admin';
 import type { components as Assistant } from './generated/assistant';
 import type { components as Audit } from './generated/audit';
 import type { components as Billing } from './generated/billing';
@@ -28,6 +29,12 @@ export type DataExport = Sent<Accounts['schemas']['ExportOut']>;
 /** Who did what in the workspace (GET /audit). `details` are the event's own fields. */
 export type AuditEntry = Sent<Audit['schemas']['AuditEntry']>;
 export type AuditPage = { items: AuditEntry[]; next_cursor: string | null };
+
+/** The back-office's view of a workspace, and what platform admins did (/admin). */
+export type AdminWorkspace = Sent<Admin['schemas']['WorkspaceSummary']>;
+export type AdminWorkspacePage = { items: AdminWorkspace[]; next_cursor: string | null };
+export type AdminAction = Sent<Admin['schemas']['AdminAction']>;
+export type AdminLogPage = { items: AdminAction[]; next_cursor: string | null };
 
 export type Order = Sent<Orders['schemas']['Order']>;
 export type OrderStatus = Orders['schemas']['OrderStatus'];

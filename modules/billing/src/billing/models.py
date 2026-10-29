@@ -19,6 +19,9 @@ class Subscription(BaseModel):
     subscription_id: str = ""
     # Increases with every save; listeners use it to ignore late events.
     revision: int = 0
+    # A platform admin granted the plan (the admin module's PlanGranted): no payment,
+    # until the provider's next change of the plan.
+    comped: bool = False
     # The provider event that last set each field, so older or repeated
     # webhooks don't overwrite newer information (see service.py).
     plan_changed_at: int = 0

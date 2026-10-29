@@ -12,6 +12,7 @@ from shared.auth import CurrentUser
 from shared.errors import Conflict, InvalidRequest, NotFound, PlanLimitReached, TooManyRequests
 from shared.ids import sortable_id
 from shared.plans import get_limit
+from shared.workspace_status import check_active
 
 from assistant.agent_names import MAIN_AGENT, agent_names
 from assistant.context import SESSION_ID, AgentContext, actor_of, checkpoint_session
@@ -77,6 +78,7 @@ class UsageService:
         login token, like in orders.
         """
         tenant_id = user.require_tenant()
+        self.usage.check_active(tenant_id)   # 403 while suspended or being deleted
         self._start_hourly_message(user)
         max_messages, max_tokens = get_limit(user.plan, MESSAGES), get_limit(user.plan, TOKENS)
         try:
@@ -92,7 +94,12 @@ class UsageService:
         self._count_hourly(user, MESSAGES_PER_HOUR, "HOUR", "send the assistant {limit} messages")
 
     def start_upload(self, user: CurrentUser) -> None:
-        """Call before a file is uploaded: raises TooManyRequests (429) at the user's hourly limit."""
+        """
+        Call before a file is uploaded: raises TooManyRequests (429) at the
+        user's hourly limit, WorkspaceInactive (403) while the workspace is
+        suspended or being deleted.
+        """
+        self.usage.check_active(user.require_tenant())
         self._count_hourly(user, UPLOADS_PER_HOUR, "UPLOADS", "attach {limit} files")
 
     def _count_hourly(self, user: CurrentUser, limit_name: str, counter: str, what: str) -> None:
@@ -179,8 +186,10 @@ class MemoryService:
         over that one. Raises InvalidRequest (empty, too long), Conflict
         (memory off, for an agent; the user has MAX_MEMORIES) or NotFound
         (no memory `replaces`). The same text again is the same memory.
+        WorkspaceInactive (403) while the workspace is suspended or being deleted.
         """
         tenant_id = user.require_tenant()
+        check_active(self.memories.table, tenant_id)
         text = " ".join(text.split())
         if not text:
             raise InvalidRequest("Write what to remember.")

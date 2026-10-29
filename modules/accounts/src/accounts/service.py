@@ -31,6 +31,7 @@ from shared.errors import Conflict, Forbidden, InvalidRequest, NotFound, PlanLim
 from shared.exports import parse_key
 from shared.idempotency import IDEMPOTENCY, fingerprint
 from shared.plans import get_limit
+from shared.workspace_status import require_active
 
 from accounts import events
 from accounts.exports import ExportStore
@@ -109,7 +110,7 @@ class AccountService:
         delete_after = int(time.time() + self.deletion_days * 24 * 3600)
         if not self.accounts.schedule_deletion(tenant.tenant_id, delete_after,
                                                events.tenant_deletion_scheduled(tenant, delete_after, user)):
-            raise Conflict("This workspace is being deleted already")
+            raise Conflict("This workspace can't be deleted now: it is being deleted already, or suspended")
         return tenant.model_copy(update={"status": "deleting", "delete_after": delete_after})
 
     def restore_tenant(self, user: CurrentUser, tenant_id: str) -> Tenant:
@@ -139,6 +140,7 @@ class AccountService:
         """
         if kind == "workspace":
             owner_id = self._caller(user, ROLE_OWNER).tenant_id
+            self._writable(owner_id)
             tenant_ids, parts = [owner_id], ["accounts", "orders", "billing", "audit"]
         else:
             owner_id = user.user_id
@@ -249,6 +251,7 @@ class AccountService:
 
     def change_role(self, user: CurrentUser, target_user_id: str, role: str) -> Member:
         tenant_id = self._caller(user, ROLE_OWNER, ROLE_ADMIN).tenant_id
+        self._writable(tenant_id)
         target = self._get_member(tenant_id, target_user_id)
         if target.role == ROLE_OWNER:
             raise Forbidden("The owner's role can't be changed")
@@ -265,7 +268,8 @@ class AccountService:
         target = caller if leaving else self._get_member(caller.tenant_id, target_user_id)
         if target.role == ROLE_OWNER:
             raise Forbidden("The owner can't leave or be removed")
-        if not leaving:
+        if not leaving:   # leaving is allowed whatever the workspace's status
+            self._writable(caller.tenant_id)
             # Removed by someone else: their tokens go now, not in up to 15 minutes, and
             # sign them out of every workspace. Sign out first: if removing then fails, they
             # simply log in again. Someone who leaves keeps their session: the app refreshes
@@ -282,9 +286,7 @@ class AccountService:
         tenant_id = self._caller(user, ROLE_OWNER, ROLE_ADMIN).tenant_id
         if not user.email_verified:
             raise Forbidden("Verify your email address before inviting people")
-        tenant = self._tenant(tenant_id)
-        if not tenant.active:
-            raise Conflict("This workspace is being deleted")
+        tenant = self._writable(tenant_id)
 
         email = data.email.lower()
         members = self.accounts.list_members(tenant_id)
@@ -316,6 +318,7 @@ class AccountService:
 
     def cancel_invitation(self, user: CurrentUser, email: str) -> None:
         tenant_id = self._caller(user, ROLE_OWNER, ROLE_ADMIN).tenant_id
+        self._writable(tenant_id)
         event = events.invitation_cancelled(tenant_id, email.lower(), user, declined=False)
         if not self.accounts.delete_invitation(tenant_id, email.lower(), event):
             raise NotFound("Invitation not found")
@@ -366,6 +369,14 @@ class AccountService:
                       for tenant, member in self.accounts.workspaces_of(user_id) if tenant.active}
         return {WORKSPACES_CLAIM: json.dumps(workspaces, separators=(",", ":"))} if workspaces else {}
 
+    def set_suspended(self, tenant_id: str, suspended: bool) -> None:
+        """
+        A platform admin suspended the workspace, or lifted it (the admin module's
+        events): a suspended one leaves every member's next token, as a deleted one does.
+        """
+        if self.accounts.set_suspended(tenant_id, suspended):
+            logger.info("Workspace suspended" if suspended else "Workspace unsuspended", extra={"tenant_id": tenant_id})
+
     def apply_subscription_change(self, tenant_id: str, plan: str, status: str, revision: int) -> None:
         """Called when billing publishes SubscriptionChanged. Late or repeated events are skipped."""
         self.accounts.apply_subscription(tenant_id, plan, status, revision)
@@ -398,6 +409,16 @@ class AccountService:
         tenant = self.accounts.get_tenant(tenant_id, consistent)
         if not tenant:
             raise NotFound("Workspace not found")
+        return tenant
+
+    def _writable(self, tenant_id: str) -> Tenant:
+        """
+        The workspace, if it takes changes: WorkspaceInactive (403) while it is
+        suspended or being deleted. Its members' tokens list it for up to 15
+        minutes more, so the token alone doesn't say.
+        """
+        tenant = self._tenant(tenant_id)
+        require_active(tenant.status)
         return tenant
 
     def _get_member(self, tenant_id: str, user_id: str) -> Member:
