@@ -13,7 +13,7 @@ from shared.idempotency import IdempotencyKey
 
 from accounts.container import get_account_service
 from accounts.models import Invitation, Member
-from accounts.schemas import InviteRequest, RoleUpdate, TenantCreate, TenantOut, WorkspaceOut
+from accounts.schemas import InviteRequest, RoleUpdate, TenantCreate, TenantDelete, TenantOut, WorkspaceOut
 from accounts.service import AccountService
 
 router = Router()
@@ -46,6 +46,19 @@ def list_my_workspaces(user: User, service: Service) -> list[WorkspaceOut]:
 @router.get("/tenants/me")
 def get_my_tenant(user: User, service: Service) -> TenantOut:
     return TenantOut.of(service.get_tenant(user))
+
+
+# The owner deletes the workspace (X-Tenant-Id), typing its name to confirm. It can be
+# restored until delete_after; then it is purged. The frontend must refresh the token.
+@router.delete("/tenants/me")
+def delete_my_tenant(body: TenantDelete, user: User, service: Service) -> TenantOut:
+    return TenantOut.of(service.delete_tenant(user, body))
+
+
+# Its owner restores a deleted workspace (named in the path: the token no longer lists it).
+@router.post("/tenants/<tenant_id>/restore")
+def restore_tenant(tenant_id: str, user: User, service: Service) -> TenantOut:
+    return TenantOut.of(service.restore_tenant(user, tenant_id))
 
 
 # ---------- users ----------

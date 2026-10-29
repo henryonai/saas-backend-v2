@@ -32,6 +32,9 @@ logger = Logger(child=True)
 # The webhook endpoint's events (stripe-setup.py subscribes to these).
 EVENTS = ["customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"]
 
+# Statuses of a subscription that has ended: nothing more can change it.
+ENDED = ("canceled", "incomplete_expired")
+
 # A Stripe subscription status, as a billing event. "incomplete" (the first
 # payment isn't done yet) and "paused" change nothing.
 EVENT_FOR_STATUS = {
@@ -120,6 +123,43 @@ class StripePaymentProvider:
                 "configuration": self.config().portal_configuration,
                 "return_url": self.return_url,
             }).url
+
+    def cancel(self, sub: Subscription) -> None:
+        """
+        Cancels the Stripe subscription now, without a refund for the rest of
+        the period (change that here if you prorate). The customer and its
+        invoices stay in Stripe.
+        """
+        if not sub.subscription_id:
+            return
+        with stripe_errors("cancel the subscription"):
+            current = self.client().v1.subscriptions.retrieve(sub.subscription_id)
+            if current.status not in ENDED:
+                self.client().v1.subscriptions.cancel(sub.subscription_id)
+
+    def stop_renewal(self, sub: Subscription) -> bool:
+        """
+        Sets the Stripe subscription to cancel at the end of the period paid for.
+        Stripe then sends customer.subscription.deleted at that date, unless the
+        workspace is restored before.
+        """
+        if not sub.subscription_id:
+            return False
+        with stripe_errors("stop the subscription renewing"):
+            current = self.client().v1.subscriptions.retrieve(sub.subscription_id)
+            if current.status in ENDED or current.cancel_at_period_end:
+                return False
+            self.client().v1.subscriptions.update(sub.subscription_id, {"cancel_at_period_end": True})
+        return True
+
+    def resume_renewal(self, sub: Subscription) -> None:
+        """Renews as before. A subscription that ended meanwhile stays ended: the owner subscribes again."""
+        if not sub.subscription_id:
+            return
+        with stripe_errors("let the subscription renew"):
+            current = self.client().v1.subscriptions.retrieve(sub.subscription_id)
+            if current.status not in ENDED and current.cancel_at_period_end:
+                self.client().v1.subscriptions.update(sub.subscription_id, {"cancel_at_period_end": False})
 
     def parse_webhook(self, headers: dict, raw_body: str) -> BillingEvent:
         signature = {k.lower(): v for k, v in headers.items()}.get("stripe-signature", "")

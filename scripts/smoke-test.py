@@ -11,7 +11,8 @@ users and calls every endpoint, printing PASS/FAIL per check:
   events between modules (outbox -> EventBridge -> accounts and notifications
   workers), invitations (send, cancel, accept, decline), roles and who may do
   what, leaving and removing members, tenant isolation, users in several
-  workspaces (X-Tenant-Id) and plan limits.
+  workspaces (X-Tenant-Id), plan limits, and deleting, restoring and (with
+  TenantDeletionDays of a few minutes at most, as on dev) purging a workspace.
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
@@ -255,12 +256,12 @@ check("checkout with an unknown plan -> 422",
 if STRIPE:
     check("it is Stripe Checkout",
           r.ok and r.json()["checkout_url"].startswith("https://checkout.stripe.com/"), show(r))
-    session = checkout_session(r)
-    check("the session subscribes this workspace to pro and returns to /billing", bool(session)
-          and session.mode == "subscription" and session.client_reference_id == tenant_id
-          and session.customer_email == owner.email and session.success_url.endswith("/billing")
-          and [i.price.id for i in session.line_items.data] == [PRICES["pro"]],
-          session and {"mode": session.mode, "ref": session.client_reference_id, "success": session.success_url})
+    checkout = checkout_session(r)
+    check("the session subscribes this workspace to pro and returns to /billing", bool(checkout)
+          and checkout.mode == "subscription" and checkout.client_reference_id == tenant_id
+          and checkout.customer_email == owner.email and checkout.success_url.endswith("/billing")
+          and [i.price.id for i in checkout.line_items.data] == [PRICES["pro"]],
+          checkout and {"mode": checkout.mode, "ref": checkout.client_reference_id, "success": checkout.success_url})
     check("the checkout page loads", requests.get(r.json()["checkout_url"], timeout=30).ok)
     r = call("POST", "/webhooks/payments", data='{"id": "evt_fake"}',
              headers={"Stripe-Signature": "t=1,v1=bad", "Content-Type": "application/json"})
@@ -456,9 +457,9 @@ if STRIPE:
     summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "cancelled" and b)
     check("GET /billing: free, cancelled", bool(summary) and summary["plan"] == "free",
           summary or owner("GET", "/billing").text)
-    session = checkout_session(owner("POST", "/billing/checkout", json={"plan": "pro"}))
-    check("subscribing again uses the same Stripe customer", bool(session) and session.customer == customer.id,
-          session and session.customer)
+    checkout = checkout_session(owner("POST", "/billing/checkout", json={"plan": "pro"}))
+    check("subscribing again uses the same Stripe customer", bool(checkout) and checkout.customer == customer.id,
+          checkout and checkout.customer)
 else:
     r = send_webhook(webhook_body("payment.failed", tenant_id))
     check("webhook payment.failed", r.ok, show(r))
@@ -491,6 +492,42 @@ if STRIPE:
           sorted(plan_changes) == ["Plan changed to business", "Plan changed to free", "Plan changed to pro"],
           plan_changes)
     stripe_api.v1.customers.delete(customer.id)   # test mode: leave nothing behind in Stripe
+
+print("Deleting a workspace")
+r = carol("POST", "/orders", tenant=other_id, json={"item": "Doomed", "quantity": 1, "price_cents": 100},
+          headers=new_key())
+check("an order in Other Co", r.status_code == 201, show(r))
+r = carol("DELETE", "/tenants/me", tenant=other_id, json={"name": "other co"})
+check("deleting needs the exact name -> 400", r.status_code == 400, show(r))
+check("someone not in it can't delete it -> 401",
+      owner("DELETE", "/tenants/me", tenant=other_id, json={"name": "Other Co"}).status_code == 401)
+r = carol("DELETE", "/tenants/me", tenant=other_id, json={"name": "Other Co"})
+check("DELETE /tenants/me", r.ok and r.json()["status"] == "deleting", show(r))
+check("her new token no longer lists it", other_id not in carol.sign_in().workspaces, carol.workspaces)
+r = carol("GET", "/tenants", tenant=None)
+check("GET /tenants lists it as deleting",
+      r.ok and {w["tenant_id"]: w["status"] for w in r.json()}.get(other_id) == "deleting", show(r))
+r = carol("POST", f"/tenants/{other_id}/restore", tenant=None)
+check("POST /tenants/{id}/restore", r.ok and r.json()["status"] == "active", show(r))
+check("restored: her token lists it again", other_id in carol.sign_in().workspaces, carol.workspaces)
+grace = float(params.get("TenantDeletionDays", "7")) * 24 * 3600
+if grace <= 300:   # a test stack's few seconds or minutes (dev: about 90 seconds)
+    carol("DELETE", "/tenants/me", tenant=other_id, json={"name": "Other Co"})
+    job = session.client("cloudformation").describe_stack_resource(
+        StackName=STACK, LogicalResourceId="AccountsPurgeFunction")["StackResourceDetail"]["PhysicalResourceId"]
+
+    def purge() -> dict:
+        result = session.client("lambda").invoke(FunctionName=job)   # as the hourly schedule does, but now
+        return {"error": True} if "FunctionError" in result else json.loads(result["Payload"].read())
+
+    ran = wait_for(lambda: (p := purge()).get("purged", 0) >= 1 and p, timeout=int(grace) + 60, every=10)
+    check("once its time to restore has passed, the purge job removes it", bool(ran), ran or purge())
+    r = carol("GET", "/tenants", tenant=None)
+    check("GET /tenants no longer lists it", r.ok and other_id not in {w["tenant_id"] for w in r.json()}, show(r))
+    r = carol("POST", "/tenants", json={"name": "After Co"}, headers=new_key())
+    check("her workspace count went down (she can create another)", r.status_code == 201, show(r))
+else:
+    print("  (purge not checked: TenantDeletionDays is more than a few minutes on this stack)")
 
 print(f"\n{'ALL PASSED' if not failures else f'{len(failures)} FAILED: ' + ', '.join(failures)}")
 print(f"Test users saved to {creds}")

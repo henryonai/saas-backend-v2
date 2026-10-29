@@ -1385,3 +1385,24 @@ def test_the_lambdas_never_import_the_agents_dependencies():
               f"print(sorted({{m.split('.')[0] for m in sys.modules}} & set({heavy!r})))")
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
     assert result.stdout.strip() == "[]"
+
+
+def test_a_purged_workspaces_conversations_memories_files_and_usage_go(ctx, checkpoints):
+    alice, bob = claims("alice", "t1", "member"), claims("bob", "t1", "member")
+    for user in (alice, bob):
+        ctx.memories.remember(user_from_claims(user, only_workspace(user)), "Likes short answers")
+    start(ctx, thread(1), "2026-10-24T08:00:00.000Z")
+    start(ctx, thread(2), "2026-10-24T08:00:00.000Z", user_id="bob")
+    start(ctx, thread(3), "2026-10-24T08:00:00.000Z", tenant_id="t2")       # another workspace
+    ctx.table.put_item(Item={"pk": "TENANT#t1", "sk": "USAGE#2026-10", "messages": 3})
+    ctx.table.put_item(Item={"pk": "TENANT#t2", "sk": "USAGE#2026-10", "messages": 1})
+    deleted = {**member_removed("t1", "alice", "2026-10-24T10:00:00.000000+00:00"), "detail-type": "TenantDeleted"}
+    deleted["detail"] = {k: v for k, v in deleted["detail"].items() if k not in ("user_id", "removed_by")}
+    deleted["detail"]["user_ids"] = ["alice", "bob"]
+
+    for _ in range(2):   # delivered again: nothing left to do
+        assert process_batch(sqs(deleted), FakeContext(), checkpoints.purge, ctx.conversations,
+                             ctx.memories.memories, ctx.files) == {"batchItemFailures": []}
+
+    assert {i["pk"] for i in ctx.table.scan()["Items"]} == {f"TENANT#t2#USER#alice#CONV#{thread(3)}", "TENANT#t2"}
+    assert ctx.memories.read(user_from_claims(bob, only_workspace(bob))) == (True, [])

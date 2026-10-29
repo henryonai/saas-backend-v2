@@ -66,7 +66,26 @@
     "createDescription": "Bạn sẽ là chủ sở hữu, và vẫn giữ các workspace khác. Mỗi tab trình duyệt có thể làm việc trong một workspace khác nhau.",
     "invitations": "Lời mời ({{count}})",
     "invitationsDescription": "Tham gia một workspace không làm bạn rời các workspace đang có. Chỉ chấp nhận lời mời từ người bạn biết.",
-    "openFailed": "Không mở được workspace đó. Hãy tải lại trang rồi chọn nó trong danh sách workspace."
+    "openFailed": "Không mở được workspace đó. Hãy tải lại trang rồi chọn nó trong danh sách workspace.",
+    "delete": {
+      "title": "Xóa không gian làm việc này",
+      "description": "Đơn hàng, thành viên, thông báo, cuộc trò chuyện với trợ lý và tệp của nó sẽ bị xóa, và gói đăng ký bị hủy. Bạn vẫn có thể khôi phục trong một thời gian.",
+      "open": "Xóa không gian làm việc",
+      "confirmTitle": "Xóa {{workspace}}?",
+      "confirmDescription": "Mọi người mất quyền truy cập ngay. Bạn có thể khôi phục từ bộ chuyển không gian làm việc cho đến khi nó bị xóa hẳn; sau đó dữ liệu mất và gói đăng ký bị hủy.",
+      "typeName": "Nhập {{workspace}} để xác nhận",
+      "submit": "Xóa không gian làm việc",
+      "done": "Đã xóa {{workspace}}. Bạn có thể khôi phục đến {{date}}."
+    },
+    "deleted": {
+      "open": "Không gian làm việc đã xóa ({{count}})",
+      "title": "Không gian làm việc đã xóa",
+      "description": "Chủ sở hữu có thể khôi phục chúng cho đến khi bị xóa hẳn.",
+      "until": "Có thể khôi phục đến {{date}}",
+      "purging": "Đang bị xóa hẳn",
+      "restore": "Khôi phục",
+      "restored": "Đã khôi phục {{workspace}}."
+    }
   },
   "auth": {
     "backToSignIn": "Quay lại đăng nhập",

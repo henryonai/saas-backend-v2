@@ -1,4 +1,4 @@
-import { CheckIcon, ChevronsUpDownIcon, MailIcon, PlusIcon } from 'lucide-react';
+import { CheckIcon, ChevronsUpDownIcon, MailIcon, PlusIcon, RotateCcwIcon } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useUser } from '@/shared/auth/session';
@@ -16,6 +16,7 @@ import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/shared/compon
 import { Skeleton } from '@/shared/components/ui/skeleton';
 import { getPlan } from '@/shared/lib/plans';
 import { CreateWorkspaceForm } from './components/create-workspace-form';
+import { DeletedWorkspaces } from './components/deleted-workspaces';
 import { InvitationList } from './components/invitation-list';
 import { useGoToWorkspace, useReceivedInvitations, useTenant, useWorkspaces } from './hooks';
 
@@ -31,8 +32,11 @@ export function WorkspaceSwitcher() {
   const workspaces = useWorkspaces();
   const invitations = useReceivedInvitations();
   const goTo = useGoToWorkspace();
-  const [dialog, setDialog] = useState<'create' | 'join' | null>(null);
+  const [dialog, setDialog] = useState<'create' | 'join' | 'deleted' | null>(null);
   const pending = invitations.data?.length ?? 0;
+  // Deleted ones (not purged yet) aren't in the token, so they can't be opened; their owner can restore them.
+  const active = (workspaces.data ?? []).filter((workspace) => !workspace.status || workspace.status === 'active');
+  const deleted = (workspaces.data?.length ?? 0) - active.length;
 
   return (
     <SidebarMenu>
@@ -56,7 +60,7 @@ export function WorkspaceSwitcher() {
                 <Skeleton className="h-4 w-32" />
               </DropdownMenuItem>
             ) : (
-              (workspaces.data ?? []).map((workspace) => (
+              active.map((workspace) => (
                 <DropdownMenuItem
                   key={workspace.tenant_id}
                   onSelect={() => {
@@ -80,6 +84,12 @@ export function WorkspaceSwitcher() {
                 {t('workspaces.invitations', { count: pending })}
               </DropdownMenuItem>
             )}
+            {deleted > 0 && (
+              <DropdownMenuItem onSelect={() => setDialog('deleted')}>
+                <RotateCcwIcon />
+                {t('workspaces.deleted.open', { count: deleted })}
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
 
@@ -99,6 +109,15 @@ export function WorkspaceSwitcher() {
               <DialogDescription>{t('workspaces.invitationsDescription')}</DialogDescription>
             </DialogHeader>
             <InvitationList onJoined={() => setDialog(null)} />
+          </DialogContent>
+        </Dialog>
+        <Dialog open={dialog === 'deleted'} onOpenChange={(open) => !open && setDialog(null)}>
+          <DialogContent className="p-0 [&>[data-slot=card]]:border-0">
+            <DialogHeader className="sr-only">
+              <DialogTitle>{t('workspaces.deleted.title')}</DialogTitle>
+              <DialogDescription>{t('workspaces.deleted.description')}</DialogDescription>
+            </DialogHeader>
+            <DeletedWorkspaces />
           </DialogContent>
         </Dialog>
       </SidebarMenuItem>

@@ -25,6 +25,7 @@ parameter_overrides = [
   "StripeConfigParam=/saas/dev/stripe-config",
   'AppUrl=""',        # empty (quoted: SAM refuses a bare "AppUrl="): links open WebUrl
   "CorsOrigin=*",     # any origin, so a local dev server can call the API too
+  "TenantDeletionDays=0.001",   # about 90 seconds to restore, then purged at the next hourly run (the smoke test runs it)
 ]
 
 [dev.sync.parameters]

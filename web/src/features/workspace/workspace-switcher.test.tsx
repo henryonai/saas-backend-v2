@@ -34,9 +34,11 @@ vi.mock('@/shared/auth/session', async (importOriginal) => {
 
 const fetchMock = vi.fn<typeof fetch>();
 let invitations: unknown[] = [];
+let deleted: unknown[] = [];
 
 beforeEach(() => {
   invitations = [];
+  deleted = [];
   vi.stubGlobal('fetch', fetchMock);
   fetchMock.mockReset().mockImplementation(async (input, init) => {
     const path = new URL(String(input), 'http://app.test').pathname;
@@ -45,8 +47,10 @@ beforeEach(() => {
       return json([
         { tenant_id: 'tenant-1', name: 'Acme Coffee', role: 'owner', plan: 'free' },
         { tenant_id: 'tenant-2', name: 'Bean Co', role: 'member', plan: 'pro' },
+        ...deleted,
       ]);
     }
+    if (path === '/tenants/tenant-3/restore') return json({ tenant_id: 'tenant-3', name: 'Old Shop', status: 'active' });
     if (path === '/tenants/me') return json({ tenant_id: 'tenant-1', name: 'Acme Coffee', plan: 'free' });
     if (path === '/invitations') return json(invitations);
     return json({ message: 'not found' }, 404);
@@ -131,5 +135,17 @@ describe('WorkspaceSwitcher', () => {
     const user = await openMenu();
     await user.click(await screen.findByRole('menuitem', { name: 'Invitations (1)' }));
     expect(await screen.findByText('“Leaf Ltd”')).toBeInTheDocument();
+  });
+
+  it('keeps deleted workspaces out of the list, and lets their owner restore one and open it', async () => {
+    deleted = [{ tenant_id: 'tenant-3', name: 'Old Shop', role: 'owner', plan: 'free', status: 'deleting', delete_after: 2_000_000_000 }];
+    const user = await openMenu();
+    await user.click(await screen.findByRole('menuitem', { name: 'Deleted workspaces (1)' }));
+    expect(screen.queryByRole('menuitem', { name: /Old Shop/ })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: 'Restore' }));
+
+    await waitFor(() => expect(sessionStore.getState().user?.tenantId).toBe('tenant-3'));
+    const restore = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/tenants/tenant-3/restore'));
+    expect(restore?.[1]?.method).toBe('POST');
   });
 });

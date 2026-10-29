@@ -1,13 +1,21 @@
 """
 Billing table:
-  pk = TENANT#<tenant_id>   sk = SUBSCRIPTION   subscription
+  pk = TENANT#<tenant_id>   sk = SUBSCRIPTION   subscription (while its workspace is being deleted:
+                                                deleting, deleting_at, renewal_stopped; once it is
+                                                purged: deleted_at, and TTL removes it after
+                                                DELETED_KEEP_SECONDS)
   pk = OUTBOX#<event_id>    sk = OUTBOX         events to publish (shared/outbox.py)
 """
-from shared.dynamo import transact
+from botocore.exceptions import ClientError
+
+from shared.dynamo import is_condition_failure, transact
 from shared.events import Event
 from shared.outbox import outbox_put
 
 from billing.models import Subscription
+
+# How long a purged workspace's subscription stays, ignoring the provider's webhooks.
+DELETED_KEEP_SECONDS = 90 * 24 * 3600
 
 
 def _key(tenant_id: str) -> dict:
@@ -23,6 +31,45 @@ class SubscriptionRepository:
         if not item:
             return None
         return Subscription.model_validate({k: v for k, v in item.items() if k not in ("pk", "sk")})
+
+    def mark_deleted(self, tenant_id: str, now: int) -> None:
+        """
+        The workspace was purged: the subscription is cancelled and forgets
+        its owner; TTL removes it later. Creates the record if there was none.
+        """
+        self.table.update_item(
+            Key=_key(tenant_id),
+            UpdateExpression=("SET tenant_id = :t, #p = :free, #s = :cancelled, deleted_at = :now, "
+                              "expires_at = :expires, owner_id = :none, owner_email = :none"),
+            ExpressionAttributeNames={"#p": "plan", "#s": "status"},
+            ExpressionAttributeValues={":t": tenant_id, ":free": "free", ":cancelled": "cancelled", ":now": now,
+                                       ":expires": now + DELETED_KEEP_SECONDS, ":none": ""},
+        )
+
+    def save_deleting(self, tenant_id: str, deleting: bool, at: str) -> bool:
+        """
+        Saves whether the workspace is being deleted, as of `at` (the event's
+        occurred_at). False if there is no subscription, or a newer event was
+        saved already. The same event again is saved again (a retry).
+        """
+        try:
+            self.table.update_item(
+                Key=_key(tenant_id),
+                UpdateExpression="SET deleting = :deleting, deleting_at = :at",
+                ConditionExpression=("attribute_exists(pk)"
+                                     " AND (attribute_not_exists(deleting_at) OR deleting_at <= :at)"),
+                ExpressionAttributeValues={":deleting": deleting, ":at": at},
+            )
+            return True
+        except ClientError as e:
+            if is_condition_failure(e):
+                return False
+            raise
+
+    def save_renewal_stopped(self, tenant_id: str, stopped: bool) -> None:
+        """What billing did to the provider's renewal: saved as soon as it's done."""
+        self.table.update_item(Key=_key(tenant_id), UpdateExpression="SET renewal_stopped = :stopped",
+                               ExpressionAttributeValues={":stopped": stopped})
 
     def save_owner(self, tenant_id: str, owner_id: str, owner_email: str) -> None:
         """Creates the record if missing; never overwrites plan, status or revision."""

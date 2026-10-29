@@ -9,7 +9,9 @@ Three ways a conversation goes, one Lambda for all:
   - its user left the workspace, or was removed from it: accounts publishes
     MemberRemoved, which EventBridge puts on the same queue, and all their
     conversations there go, messages and threads, what the assistant
-    remembers about them, and their files;
+    remembers about them, and their files; when a deleted workspace is
+    purged (accounts' TenantDeleted), the same for each of its members, then
+    the workspace's usage counters;
   - expired, on a stack that keeps conversations for a while
     (CONVERSATION_DAYS): DynamoDB's TTL removes its META some days after its
     last message (repository.py), and the assistant table's stream brings
@@ -28,6 +30,8 @@ from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.batch import BatchProcessor, EventType, process_partial_response
 from aws_lambda_powertools.utilities.data_classes.dynamo_db_stream_event import DynamoDBRecord, DynamoDBRecordEventName
 
+from shared.dynamo import delete_partition
+
 from assistant.checkpoints import CheckpointPurge
 from assistant.container import get_checkpoint_purge, get_purged_conversations, get_purged_files, get_purged_memories
 from assistant.context import checkpoint_session
@@ -39,7 +43,8 @@ logger = Logger()
 
 # Who removed an item: DynamoDB's TTL, not a user's delete (which has no userIdentity).
 TTL = {"type": "Service", "principalId": "dynamodb.amazonaws.com"}
-MEMBER_REMOVED = "MemberRemoved"   # accounts' event, by name (modules never import each other)
+MEMBER_REMOVED = "MemberRemoved"   # accounts' events, by name (modules never import each other)
+TENANT_DELETED = "TenantDeleted"
 
 
 def process_batch(event: dict, context, checkpoints: CheckpointPurge,
@@ -50,6 +55,9 @@ def process_batch(event: dict, context, checkpoints: CheckpointPurge,
         body = json.loads(record.body)
         if body.get("detail-type") == MEMBER_REMOVED:
             purge_member(body["detail"], checkpoints, conversations, memories, files)
+            return
+        if body.get("detail-type") == TENANT_DELETED:
+            purge_tenant(body["detail"], checkpoints, conversations, memories, files)
             return
         threads = body["threads"]
         deleted = sum(checkpoints.delete(thread) for thread in threads)
@@ -85,6 +93,21 @@ def purge_member(detail: dict, checkpoints: CheckpointPurge, conversations: Conv
     logger.info("Purged a removed member's conversations", extra={"tenant_id": tenant_id, "conversations": count,
                                                                   "records": deleted, "memories": remembered,
                                                                   "file_objects": objects})
+
+
+def purge_tenant(detail: dict, checkpoints: CheckpointPurge, conversations: ConversationRepository,
+                 memories: MemoryRepository | None = None, files: FileService | None = None) -> None:
+    """
+    A deleted workspace is purged: each member's conversations, memories and
+    files go, as when they leave, then the workspace's usage counters. A run
+    that times out is retried and continues: what it deleted is gone.
+    """
+    tenant_id = detail["tenant_id"]
+    for user_id in detail["user_ids"]:
+        purge_member({**detail, "user_id": user_id}, checkpoints, conversations, memories, files)
+    counters = delete_partition(conversations.table, f"TENANT#{tenant_id}")
+    logger.info("Purged a deleted workspace", extra={"tenant_id": tenant_id, "members": len(detail["user_ids"]),
+                                                     "counters": counters})
 
 
 def process_expired(event: dict, context, checkpoints: CheckpointPurge,

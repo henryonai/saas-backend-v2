@@ -564,6 +564,10 @@ token (`handler.py`, a Lambda):
   if the event came late. The member's ID token works
   until it expires (up to 15 minutes, as in every module): a conversation
   they use in that time, after the worker ran, is kept.
+- **A deleted workspace**, once the purge job removes it (accounts'
+  `TenantDeleted`, which lists its members): the same worker does the same for
+  each member, then deletes the workspace's usage counters. A run that times
+  out is retried and continues where it stopped.
 
 ## Deploy
 

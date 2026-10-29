@@ -11,7 +11,7 @@ The tenant is part of every key, so one tenant can never read another's orders.
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from shared.dynamo import is_condition_failure, transact
+from shared.dynamo import delete_partition, is_condition_failure, transact
 from shared.events import Event
 from shared.idempotency import idempotency_put, replay
 from shared.outbox import outbox_put
@@ -30,6 +30,10 @@ def _clean(item: dict) -> dict:
 class OrderRepository:
     def __init__(self, table):
         self.table = table
+
+    def delete_tenant(self, tenant_id: str) -> int:
+        """Deletes every item of a deleted workspace (orders, counter, keys). Safe to repeat."""
+        return delete_partition(self.table, _pk(tenant_id))
 
     def create(self, order: Order, event: Event, max_orders: int | None, idempotency: tuple[str, str]) -> None:
         """

@@ -25,3 +25,14 @@ class Subscription(BaseModel):
     plan_event_id: str = ""
     status_changed_at: int = 0
     status_event_id: str = ""
+    # While its workspace is being deleted (it can still be restored), the
+    # subscription doesn't renew. deleting_at: when accounts' latest such event
+    # happened (TenantDeletionScheduled / TenantRestored), so an older one arriving
+    # late changes nothing. renewal_stopped: billing stopped the renewal (one the
+    # customer had stopped already is theirs: a restore leaves it stopped).
+    deleting: bool = False
+    deleting_at: str = ""
+    renewal_stopped: bool = False
+    # When its workspace was purged (epoch seconds; 0: it wasn't). Then the record
+    # stays a while, so the provider's late webhooks can't bring it back.
+    deleted_at: int = 0

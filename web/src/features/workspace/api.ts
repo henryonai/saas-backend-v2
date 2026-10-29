@@ -20,6 +20,19 @@ export function createTenant(body: TenantCreate, idempotencyKey: string) {
   return api<Tenant>('/tenants', { method: 'POST', body, headers: { 'Idempotency-Key': idempotencyKey } });
 }
 
+/**
+ * The owner deletes the workspace this tab works in, typing its name to
+ * confirm. It can be restored until `delete_after`; the token must be refreshed after.
+ */
+export function deleteTenant(name: string) {
+  return api<Tenant>('/tenants/me', { method: 'DELETE', body: { name } });
+}
+
+/** Its owner restores a deleted workspace before it is purged. The token must be refreshed after. */
+export function restoreTenant(tenantId: string) {
+  return api<Tenant>(`/tenants/${encodeURIComponent(tenantId)}/restore`, { method: 'POST' });
+}
+
 /** Invitations sent to the signed-in user's (verified) email address. */
 export function listReceivedInvitations(signal?: AbortSignal) {
   return api<Invitation[]>('/invitations', { signal });
