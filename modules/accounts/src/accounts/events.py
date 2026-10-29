@@ -28,25 +28,24 @@ def _actor(actor: CurrentUser) -> dict:
     return {"actor_id": actor.user_id, "actor_email": actor.email.lower()}
 
 
-def user_invited(invitation: Invitation, actor: CurrentUser | None = None) -> Event:
+def user_invited(invitation: Invitation, actor: CurrentUser) -> Event:
     """Fat event: notifications gets everything it needs to send the email."""
     return Event(USER_INVITED, invitation.tenant_id, {
         "email": invitation.email,
         "role": invitation.role,
         "invited_by": invitation.invited_by,
         "tenant_name": invitation.tenant_name,
-        **(_actor(actor) if actor else {}),
+        **_actor(actor),
     })
 
 
-def member_removed(tenant_id: str, user_id: str, removed_by: str, email: str = "",
-                   actor: CurrentUser | None = None) -> Event:
+def member_removed(tenant_id: str, user_id: str, removed_by: str, email: str, actor: CurrentUser) -> Event:
     """
     The member left the workspace (removed_by is themselves) or an owner or
     admin removed them: the assistant deletes their conversations there.
     """
-    return Event(MEMBER_REMOVED, tenant_id, {"user_id": user_id, "removed_by": removed_by, "email": email,
-                                             **(_actor(actor) if actor else {})})
+    return Event(MEMBER_REMOVED, tenant_id,
+                 {"user_id": user_id, "removed_by": removed_by, "email": email, **_actor(actor)})
 
 
 def tenant_deleted(tenant: Tenant, user_ids: list[str]) -> Event:
