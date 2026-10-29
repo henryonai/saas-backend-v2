@@ -147,6 +147,8 @@ fields such as `subscription_revision`).
 |---|---|---|
 | `UserInvited` | accounts | notifications (invitation email) |
 | `MemberRemoved` | accounts | assistant (deletes the member's conversations, memories and files in that workspace), notifications (deletes their notifications there) |
+| `TenantDeletionScheduled` | accounts (its owner deleted the workspace) | billing (the Stripe subscription stops renewing) |
+| `TenantRestored` | accounts (its owner restored it) | billing (it renews again) |
 | `TenantDeleted` (with `user_ids`, the members) | accounts' purge job | every module deletes what it keeps for the workspace: orders, notifications, the assistant's conversations, memories, files and usage; billing cancels the subscription |
 | `OrderCreated` | orders | notifications (in-app) |
 | `SubscriptionChanged` (with `revision`) | billing | accounts (plan copy), notifications |
@@ -192,7 +194,9 @@ longer lists that workspace.
 **Delete a workspace:** its owner calls `DELETE /tenants/me` with
 `{"name": "<its name>"}` (typed again to confirm) → the workspace is
 `deleting`: every member's next token leaves it out (the owner's app refreshes
-at once; others' tokens within 15 minutes), `GET /tenants` still lists it with
+at once; others' tokens within 15 minutes), billing sets its Stripe subscription
+to end with the period paid for instead of renewing (a restore undoes that; a
+renewal the customer had stopped themselves stays stopped), `GET /tenants` still lists it with
 its `status` and `delete_after`, and its owner can bring it back with
 `POST /tenants/<tenant_id>/restore` until `TenantDeletionDays` (7; dev: 0.001, about 90 seconds)
 have passed → the hourly purge job (`accounts/purge.py`) finds it in a sparse

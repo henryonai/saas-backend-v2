@@ -1194,7 +1194,8 @@ Resources:
             Method: POST
             Auth: { Authorizer: NONE }   # provider calls this; signature is checked in code
 
-  # A deleted workspace is purged (accounts' TenantDeleted): its Stripe subscription is cancelled.
+  # A workspace being deleted (accounts' TenantDeletionScheduled): its Stripe subscription stops renewing,
+  # and renews again if it is restored (TenantRestored); once purged (TenantDeleted) it is cancelled.
   BillingDLQ:
     Type: AWS::SQS::Queue
     Properties:
@@ -1214,7 +1215,7 @@ Resources:
       EventBusName: !Ref EventBus
       EventPattern:
         source: [saas.app]
-        detail-type: [TenantDeleted]
+        detail-type: [TenantDeletionScheduled, TenantRestored, TenantDeleted]
       Targets:
         - Id: BillingQueue
           Arn: !GetAtt BillingQueue.Arn
@@ -1277,10 +1278,10 @@ Resources:
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:UpdateItem]   # the subscription, then its tombstone
+              Action: [dynamodb:GetItem, dynamodb:UpdateItem]   # the subscription: its renewal, then its tombstone
               Resource: !GetAtt BillingTable.Arn
             - Effect: Allow
-              Action: [ssm:GetParameter]                        # Stripe's key, to cancel the subscription
+              Action: [ssm:GetParameter]                        # Stripe's key, to stop the renewal or cancel
               Resource:
                 - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeSecretKeyParam}"
                 - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${StripeConfigParam}"

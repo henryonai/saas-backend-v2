@@ -158,41 +158,29 @@ class AccountRepository:
 
     # ---------- deleting a workspace ----------
 
-    def schedule_deletion(self, tenant_id: str, delete_after: int) -> bool:
-        """Marks an active workspace deleting until delete_after. False if it isn't active."""
-        try:
-            self.table.update_item(
-                Key=_profile(tenant_id),
-                UpdateExpression="SET #st = :deleting, delete_after = :at, gsi1pk = :index, gsi1sk = :due",
-                ConditionExpression="attribute_exists(pk) AND (attribute_not_exists(#st) OR #st = :active)",
-                ExpressionAttributeNames={"#st": "status"},
-                ExpressionAttributeValues={":deleting": "deleting", ":active": "active", ":at": delete_after,
-                                           ":index": DELETING, ":due": f"{delete_after:012d}#{tenant_id}"},
-            )
-            return True
-        except ClientError as e:
-            if is_condition_failure(e):
-                return False
-            raise
+    def schedule_deletion(self, tenant_id: str, delete_after: int, event: Event) -> bool:
+        """Marks an active workspace deleting until delete_after, with its event. False if it isn't active."""
+        return self._change(event, {"Update": {
+            "Key": _profile(tenant_id),
+            "UpdateExpression": "SET #st = :deleting, delete_after = :at, gsi1pk = :index, gsi1sk = :due",
+            "ConditionExpression": "attribute_exists(pk) AND (attribute_not_exists(#st) OR #st = :active)",
+            "ExpressionAttributeNames": {"#st": "status"},
+            "ExpressionAttributeValues": {":deleting": "deleting", ":active": "active", ":at": delete_after,
+                                          ":index": DELETING, ":due": f"{delete_after:012d}#{tenant_id}"},
+        }})
 
-    def restore(self, tenant_id: str, now: int) -> bool:
+    def restore(self, tenant_id: str, now: int, event: Event) -> bool:
         """
-        Makes a deleting workspace active again. False if it isn't deleting
-        (or already purging), or its delete_after has passed.
+        Makes a deleting workspace active again, with its event. False if it
+        isn't deleting (or already purging), or its delete_after has passed.
         """
-        try:
-            self.table.update_item(
-                Key=_profile(tenant_id),
-                UpdateExpression="SET #st = :active REMOVE delete_after, gsi1pk, gsi1sk",
-                ConditionExpression="#st = :deleting AND delete_after > :now",
-                ExpressionAttributeNames={"#st": "status"},
-                ExpressionAttributeValues={":deleting": "deleting", ":active": "active", ":now": now},
-            )
-            return True
-        except ClientError as e:
-            if is_condition_failure(e):
-                return False
-            raise
+        return self._change(event, {"Update": {
+            "Key": _profile(tenant_id),
+            "UpdateExpression": "SET #st = :active REMOVE delete_after, gsi1pk, gsi1sk",
+            "ConditionExpression": "#st = :deleting AND delete_after > :now",
+            "ExpressionAttributeNames": {"#st": "status"},
+            "ExpressionAttributeValues": {":deleting": "deleting", ":active": "active", ":now": now},
+        }})
 
     def due_for_purge(self, now: int) -> list[str]:
         """Workspaces whose grace period has ended (and ones a purge left unfinished), oldest first."""
@@ -396,6 +384,14 @@ class AccountRepository:
         )
 
     # ---------- helpers ----------
+
+    def _change(self, event: Event | None, op: dict) -> bool:
+        """One conditional write and its event, in one transaction. False if the condition failed."""
+        try:
+            transact(self.table, change=op, event=outbox_put(event) if event else None)
+            return True
+        except ConditionFailed:
+            return False
 
     @staticmethod
     def _member_item(m: Member) -> dict:

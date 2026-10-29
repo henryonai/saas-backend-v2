@@ -98,7 +98,8 @@ class AccountService:
         if data.name != tenant.name:
             raise InvalidRequest("Type the workspace's name exactly as it is to delete it")
         delete_after = int(time.time() + self.deletion_days * 24 * 3600)
-        if not self.accounts.schedule_deletion(tenant.tenant_id, delete_after):
+        if not self.accounts.schedule_deletion(tenant.tenant_id, delete_after,
+                                               events.tenant_deletion_scheduled(tenant, delete_after, user)):
             raise Conflict("This workspace is being deleted already")
         return tenant.model_copy(update={"status": "deleting", "delete_after": delete_after})
 
@@ -113,7 +114,7 @@ class AccountService:
             raise NotFound("Workspace not found")
         if member.role != ROLE_OWNER:
             raise Forbidden("Only the workspace's owner can restore it")
-        if not self.accounts.restore(tenant_id, int(time.time())):
+        if not self.accounts.restore(tenant_id, int(time.time()), events.tenant_restored(tenant_id, user)):
             if self._tenant(tenant_id, consistent=True).status == "deleting":
                 raise Conflict("The time to restore this workspace has passed")
             raise Conflict("This workspace isn't waiting to be deleted")

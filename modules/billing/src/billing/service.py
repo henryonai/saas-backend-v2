@@ -98,8 +98,37 @@ class BillingService:
 
     def handle_event(self, event_type: str, detail: dict) -> None:
         """Events from other modules (listener.py)."""
-        if event_type == "TenantDeleted":   # accounts' event, by name
+        if event_type == "TenantDeleted":   # accounts' events, by name
             self.delete_tenant(detail["tenant_id"])
+        elif event_type in ("TenantDeletionScheduled", "TenantRestored"):
+            self.workspace_deleting(detail["tenant_id"], event_type == "TenantDeletionScheduled",
+                                    detail["occurred_at"])
+
+    def workspace_deleting(self, tenant_id: str, deleting: bool, at: str) -> None:
+        """
+        Its workspace is being deleted (deleting) or was restored: the paid
+        subscription stops renewing until it is restored, so a deleted workspace
+        isn't charged for another period before it is purged (then TenantDeleted
+        cancels it at once).
+
+        The latest event's state is saved first, then the provider is brought in
+        line with what is saved, again while a newer event lands meanwhile. A
+        failed provider call raises: SQS retries the event.
+        """
+        if not self.subscriptions.save_deleting(tenant_id, deleting, at):
+            return   # no subscription, or a newer event was saved and sets the renewal
+        for _ in range(5):
+            sub = self.subscriptions.get(tenant_id)
+            if sub.deleted_at:
+                return
+            if sub.deleting and not sub.renewal_stopped:
+                if self.provider.stop_renewal(sub):
+                    self.subscriptions.save_renewal_stopped(tenant_id, True)
+            elif not sub.deleting and sub.renewal_stopped:
+                self.provider.resume_renewal(sub)
+                self.subscriptions.save_renewal_stopped(tenant_id, False)
+            if self.subscriptions.get(tenant_id).deleting_at == sub.deleting_at:
+                return   # nothing newer arrived while the provider was called
 
     def delete_tenant(self, tenant_id: str) -> None:
         """

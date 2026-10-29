@@ -57,6 +57,18 @@ def test_the_owner_restores_a_deleted_workspace_before_it_is_purged(ctx, owner, 
     assert run_purge(ctx, time.time() + 30 * DAY) == []               # no longer due
 
 
+def test_deleting_and_restoring_publish_their_events(ctx, owner):
+    delete(ctx, owner)
+    delete(ctx, owner)                                                # refused: publishes nothing
+    ctx.api("POST", f"/tenants/{owner['tenant_id']}/restore", claims("alice"))
+    ctx.api("POST", f"/tenants/{owner['tenant_id']}/restore", claims("alice"))
+    published = [(e["type"], e["detail"]) for e in ctx.events()
+                 if e["type"] in ("TenantDeletionScheduled", "TenantRestored")]
+    assert [t for t, _ in published] == ["TenantDeletionScheduled", "TenantRestored"]
+    scheduled = published[0][1]
+    assert scheduled["actor_id"] == "alice" and scheduled["delete_after"] > time.time()
+
+
 def test_a_deleted_workspace_takes_no_invitations(ctx, owner):
     assert ctx.api("POST", "/users/invite", owner, {"email": "dave@example.com"})[0] == 201
     delete(ctx, owner)

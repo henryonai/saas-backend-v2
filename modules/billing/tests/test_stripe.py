@@ -44,7 +44,7 @@ class FakeStripe:
         self.v1 = SimpleNamespace(
             checkout=SimpleNamespace(sessions=sessions("checkout", "https://checkout.stripe.test/c")),
             billing_portal=SimpleNamespace(sessions=sessions("portal", "https://billing.stripe.test/p")),
-            subscriptions=SimpleNamespace(retrieve=self._retrieve, cancel=self._cancel),
+            subscriptions=SimpleNamespace(retrieve=self._retrieve, cancel=self._cancel, update=self._update),
         )
 
     def _record(self, kind, params, url):
@@ -61,6 +61,11 @@ class FakeStripe:
         self.calls.append(("cancel", {"subscription": subscription_id}))
         self.subscriptions[subscription_id]["status"] = "canceled"
 
+    def _update(self, subscription_id, params):
+        self._check()
+        self.calls.append(("update", {"subscription": subscription_id, **params}))
+        self.subscriptions[subscription_id].update(params)
+
     def _check(self):
         if self.down:
             raise stripe.APIConnectionError("Stripe is unreachable")
@@ -71,6 +76,7 @@ class FakeStripe:
     def subscribe(self, status="active", price="price_pro", tenant="t1", sub_id="sub_1"):
         self.subscriptions[sub_id] = {
             "id": sub_id, "object": "subscription", "status": status, "customer": "cus_1",
+            "cancel_at_period_end": False,
             "metadata": {"tenant_id": tenant} if tenant else {},
             "items": {"object": "list", "data": [{"id": "si_1", "price": {"id": price}}]},
         }
@@ -261,3 +267,75 @@ def test_purging_a_deleted_workspace_cancels_its_stripe_subscription_once(ctx, o
     types = ctx.event_types()
     assert ctx.webhook() == 200                                            # Stripe's "canceled" arrives late
     assert ctx.event_types() == types                                      # and changes nothing
+
+
+def deletion_event(event_type: str, at: str) -> tuple[str, dict]:
+    return event_type, with_event_ids({"tenant_id": "t1", "occurred_at": at})
+
+
+def renewals(ctx) -> list[bool]:
+    return [call[1]["cancel_at_period_end"] for call in ctx.stripe.calls if call[0] == "update"]
+
+
+def test_a_workspace_being_deleted_stops_renewing_until_it_is_restored(ctx, owner):
+    ctx.stripe.subscribe(status="active")
+    ctx.webhook()
+    scheduled = deletion_event("TenantDeletionScheduled", "2026-10-29T10:00:00+00:00")
+    restored = deletion_event("TenantRestored", "2026-10-29T10:05:00+00:00")
+
+    process_listener(sqs_event(scheduled, scheduled), FakeContext(), ctx.service)   # delivered twice
+    assert ctx.stripe.subscriptions["sub_1"]["cancel_at_period_end"] is True
+    assert renewals(ctx) == [True]                                         # set once
+    types = ctx.event_types()
+    assert ctx.webhook() == 200 and billing(ctx, owner)["plan"] == "pro"   # Stripe's update: still paid for
+    assert ctx.event_types() == types
+
+    process_listener(sqs_event(restored), FakeContext(), ctx.service)
+    assert ctx.stripe.subscriptions["sub_1"]["cancel_at_period_end"] is False
+    process_listener(sqs_event(scheduled), FakeContext(), ctx.service)     # the older event, late
+    assert renewals(ctx) == [True, False]                                  # changes nothing
+
+
+def test_a_restore_leaves_a_renewal_the_customer_stopped_themselves(ctx, owner):
+    ctx.stripe.subscribe(status="active")
+    ctx.stripe.subscriptions["sub_1"]["cancel_at_period_end"] = True       # cancelled in the portal earlier
+    ctx.webhook()
+    process_listener(sqs_event(deletion_event("TenantDeletionScheduled", "2026-10-29T10:00:00+00:00"),
+                               deletion_event("TenantRestored", "2026-10-29T10:05:00+00:00")),
+                     FakeContext(), ctx.service)
+    assert renewals(ctx) == []
+    assert ctx.stripe.subscriptions["sub_1"]["cancel_at_period_end"] is True
+
+
+def test_stopping_the_renewal_is_retried_when_stripe_is_down(ctx, owner):
+    ctx.stripe.subscribe(status="active")
+    ctx.webhook()
+    scheduled = deletion_event("TenantDeletionScheduled", "2026-10-29T10:00:00+00:00")
+    ctx.stripe.down = True
+    with pytest.raises(BatchProcessingError):                              # SQS delivers it again later
+        process_listener(sqs_event(scheduled), FakeContext(), ctx.service)
+    ctx.stripe.down = False
+    process_listener(sqs_event(scheduled), FakeContext(), ctx.service)
+    assert renewals(ctx) == [True]
+
+
+def test_a_restore_that_lands_while_the_renewal_is_being_stopped_wins(ctx, owner):
+    ctx.stripe.subscribe(status="active")
+    ctx.webhook()
+    restored = deletion_event("TenantRestored", "2026-10-29T10:05:00+00:00")
+    stop = ctx.service.provider.stop_renewal
+
+    def stop_then_restore_lands(sub):
+        changed = stop(sub)
+        ctx.service.handle_event(*restored)    # saved while Stripe was being called, before this one saved
+        return changed
+
+    ctx.service.provider.stop_renewal = stop_then_restore_lands
+    ctx.service.handle_event(*deletion_event("TenantDeletionScheduled", "2026-10-29T10:00:00+00:00"))
+    assert ctx.stripe.subscriptions["sub_1"]["cancel_at_period_end"] is False
+    assert renewals(ctx) == [True, False]
+
+
+def test_a_workspace_without_a_subscription_has_nothing_to_stop(ctx):
+    ctx.service.handle_event(*deletion_event("TenantDeletionScheduled", "2026-10-29T10:00:00+00:00"))
+    assert ctx.stripe.calls == [] and ctx.table.scan()["Items"] == []

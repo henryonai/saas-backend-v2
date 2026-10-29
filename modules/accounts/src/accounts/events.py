@@ -5,6 +5,7 @@ Listeners in other modules never import this file (no module imports
 another); they match on the event name. So keep names stable and change
 payloads only by adding fields. The README's events table lists every event.
 """
+from shared.auth import CurrentUser
 from shared.events import Event
 
 from accounts.models import Invitation, Tenant
@@ -12,6 +13,13 @@ from accounts.models import Invitation, Tenant
 USER_INVITED = "UserInvited"
 MEMBER_REMOVED = "MemberRemoved"
 TENANT_DELETED = "TenantDeleted"
+TENANT_DELETION_SCHEDULED = "TenantDeletionScheduled"
+TENANT_RESTORED = "TenantRestored"
+
+
+def _actor(actor: CurrentUser) -> dict:
+    """Who did it: an id, and the email it had then."""
+    return {"actor_id": actor.user_id, "actor_email": actor.email.lower()}
 
 
 def user_invited(invitation: Invitation) -> Event:
@@ -40,3 +48,18 @@ def tenant_deleted(tenant: Tenant, user_ids: list[str]) -> Event:
     """
     return Event(TENANT_DELETED, tenant.tenant_id,
                  {"name": tenant.name, "owner_id": tenant.owner_id, "user_ids": user_ids})
+
+
+def tenant_deletion_scheduled(tenant: Tenant, delete_after: int, actor: CurrentUser) -> Event:
+    """
+    Its owner deleted the workspace: it can be restored until delete_after
+    (epoch seconds), then it is purged (TenantDeleted). Billing stops the
+    subscription renewing meanwhile.
+    """
+    return Event(TENANT_DELETION_SCHEDULED, tenant.tenant_id,
+                 {"name": tenant.name, "delete_after": delete_after, **_actor(actor)})
+
+
+def tenant_restored(tenant_id: str, actor: CurrentUser) -> Event:
+    """Its owner restored a deleted workspace before it was purged."""
+    return Event(TENANT_RESTORED, tenant_id, _actor(actor))
