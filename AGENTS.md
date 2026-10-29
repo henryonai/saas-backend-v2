@@ -33,7 +33,8 @@ After changing backend dependencies, run `./scripts/export-requirements.sh` befo
 - A workspace's items are keyed under `TENANT#<tenant_id>`, and one user's under
   `TENANT#<tenant_id>#USER#<user_id>`. The other keys (`USER#<id>` memberships, the `EMAIL#`
   index, `OUTBOX#`, `IDEMPOTENCY#`) are lookups and system records.
-- Each `repository.py` starts with its key design; update it when keys change.
+- Each `repository.py` starts with its key design; update it, and `docs/data-model.md`, when keys
+  change.
 - Rules that must hold under concurrent requests (limits, seats, memberships) are DynamoDB
   conditions, not read-then-write code.
 - After changing an API route or schema, run `cd web && pnpm gen:api` and commit the generated
