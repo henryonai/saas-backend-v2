@@ -86,7 +86,7 @@ assistant's passes only TTL's removal of a conversation's `META`.
 
 | pk | sk | What | Expires |
 |---|---|---|---|
-| `TENANT#<t>` | `SUBSCRIPTION` | plan, status, revision, the provider's ids; `deleted_at` once purged | 90 days after the workspace is purged |
+| `TENANT#<t>` | `SUBSCRIPTION` | plan, status, revision, the provider's ids; while the workspace is being deleted, `deleting`, `deleting_at` and `renewal_stopped`; `deleted_at` once purged | 90 days after the workspace is purged |
 | `OUTBOX#<event_id>` | `OUTBOX` | an event waiting to be published | 7 days |
 
 Access: GetItem by tenant (`GET /billing`, webhooks, checkout); a webhook's
