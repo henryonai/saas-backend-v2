@@ -57,6 +57,7 @@ saas-backend-v2/
 │   │       ├── errors.py       # NotFound, Forbidden, PlanLimitReached ...
 │   │       ├── events.py       # Event + EventBridge publisher
 │   │       ├── outbox.py       # saves events with the change; relay publishes them
+│   │       ├── exports.py      # an export's parts: where each module writes its own
 │   │       ├── dynamo.py       # transactions with named conditions
 │   │       ├── http.py         # create_app / create_handler
 │   │       ├── ids.py          # ids that sort by time
@@ -79,7 +80,9 @@ saas-backend-v2/
 │       │   ├── handler.py      # Lambda entry point for the HTTP API
 │       │   └── ...             # other entry points (worker, webhook, triggers)
 │       └── tests/
-│   (modules/assistant's chat runs on AgentCore Runtime: app.py, with its
+│   (modules/audit only listens and lists: it keeps who did what in a
+│    workspace, from the other modules' events, for GET /audit.
+│    modules/assistant's chat runs on AgentCore Runtime: app.py, with its
 │    agents as Markdown files in src/assistant/agents/; its handler.py serves
 │    the users' conversations on the HTTP API)
 ├── testkit/                    # package "saas-testkit": test helpers and fakes (not deployed)
@@ -153,6 +156,15 @@ fields such as `subscription_revision`).
 | `ExportRequested` (`job_id`, `kind`, `owner_id`, `tenant_ids`) | accounts | each module in the job's parts writes its part to the exports bucket: accounts, orders and billing for a workspace; accounts, notifications and the assistant for a user |
 | `ExportReady` | accounts (once every part is in the bucket) | notifications (email, and in-app for a workspace's export) |
 | `OrderCreated` | orders | notifications (in-app) |
+| `TenantCreated`, `MemberJoined`, `RoleChanged`, `InvitationCancelled` (`declined`), `TenantDeletionScheduled`, `TenantRestored` | accounts | audit |
+
+Every event about a workspace is also written to its **audit log** (the audit
+module, `GET /audit` for owners and admins, an "Activity" tab on Team): who did
+it (`actor_id` and `actor_email`, which accounts' events carry; `user_id` for
+orders and exports; nobody for the payment provider's), and the event's other
+fields. Entries are kept a year (`AUDIT_RETENTION_DAYS`), are part of a
+workspace's export, and go when the workspace is purged. To log an event, add
+it to `AUDITED` in `modules/audit/src/audit/service.py` and to `AuditRule`.
 | `SubscriptionChanged` (with `revision`) | billing | accounts (plan copy), notifications |
 | `PaymentFailed` | billing | notifications |
 

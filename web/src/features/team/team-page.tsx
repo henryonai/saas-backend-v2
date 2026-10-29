@@ -10,6 +10,7 @@ import { ExportData } from '../exports/export-data';
 import { DeleteWorkspace } from '../workspace/components/delete-workspace';
 import { useTenant } from '../workspace/hooks';
 import { useSentInvitations } from './hooks';
+import { ActivityTab } from './components/activity-tab';
 import { InvitationsTab } from './components/invitations-tab';
 import { InviteDialog } from './components/invite-dialog';
 import { MembersTab } from './components/members-tab';
@@ -41,6 +42,7 @@ export function TeamPage() {
             {t('team.tabs.invitations')}
             {!!invitations.data?.length && <Badge variant="secondary">{invitations.data.length}</Badge>}
           </TabsTrigger>
+          {canManageMembers(role) && <TabsTrigger value="activity">{t('team.tabs.activity')}</TabsTrigger>}
         </TabsList>
         <TabsContent value="members" className="mt-4">
           <MembersTab />
@@ -48,6 +50,11 @@ export function TeamPage() {
         <TabsContent value="invitations" className="mt-4">
           <InvitationsTab />
         </TabsContent>
+        {canManageMembers(role) && (
+          <TabsContent value="activity" className="mt-4">
+            <ActivityTab />
+          </TabsContent>
+        )}
       </Tabs>
       {role === 'owner' && (
         <div className="mt-8 grid gap-6 lg:grid-cols-2">

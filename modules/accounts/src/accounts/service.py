@@ -77,7 +77,8 @@ class AccountService:
                        email=user.email.lower(), role=ROLE_OWNER)
         request = fingerprint(data.model_dump(mode="json"))
         try:
-            self.accounts.create_tenant(tenant, owner, self.max_workspaces, idempotency=(idempotency_key, request))
+            self.accounts.create_tenant(tenant, owner, self.max_workspaces, idempotency=(idempotency_key, request),
+                                        event=events.tenant_created(tenant, user))
         except ConditionFailed as e:
             if IDEMPOTENCY in e.failed:   # before the limit: the workspace it made is counted already
                 created = self.accounts.tenant_for_key(user.user_id, idempotency_key, request)
@@ -138,7 +139,7 @@ class AccountService:
         """
         if kind == "workspace":
             owner_id = self._caller(user, ROLE_OWNER).tenant_id
-            tenant_ids, parts = [owner_id], ["accounts", "orders", "billing"]
+            tenant_ids, parts = [owner_id], ["accounts", "orders", "billing", "audit"]
         else:
             owner_id = user.user_id
             tenant_ids = [t.tenant_id for t, _ in self.accounts.workspaces_of(user.user_id) if t.active]
@@ -205,7 +206,8 @@ class AccountService:
             raise Conflict(f"Delete the workspaces you own first: {', '.join(owned)}")
         for tenant, member in workspaces:
             if member.role != ROLE_OWNER:   # an owned one is deleted already; the purge job removes it
-                removed = events.member_removed(tenant.tenant_id, user.user_id, removed_by=user.user_id)
+                removed = events.member_removed(tenant.tenant_id, user.user_id, removed_by=user.user_id,
+                                                email=user.email.lower(), actor=user)
                 self.accounts.remove_member(tenant.tenant_id, user.user_id, removed)
         self.accounts.delete_user(user.user_id, events.user_deleted(user.user_id, user.email.lower()))
         self.identity.delete_user(user.user_id)
@@ -250,7 +252,8 @@ class AccountService:
         target = self._get_member(tenant_id, target_user_id)
         if target.role == ROLE_OWNER:
             raise Forbidden("The owner's role can't be changed")
-        if not self.accounts.change_role(tenant_id, target_user_id, role):
+        if not self.accounts.change_role(tenant_id, target_user_id, role,
+                                         events.role_changed(tenant_id, target_user_id, target.email, role, user)):
             raise NotFound("User not found in this workspace")
         self.identity.sign_out(target_user_id)  # their next token carries the new role
         return target.model_copy(update={"role": role})
@@ -268,7 +271,8 @@ class AccountService:
             # simply log in again. Someone who leaves keeps their session: the app refreshes
             # the token, which then no longer lists this workspace.
             self.identity.sign_out(target_user_id)
-        removed = events.member_removed(caller.tenant_id, target_user_id, removed_by=user.user_id)
+        removed = events.member_removed(caller.tenant_id, target_user_id, removed_by=user.user_id,
+                                        email=target.email, actor=user)
         if not self.accounts.remove_member(caller.tenant_id, target_user_id, removed):
             raise NotFound("User not found in this workspace")
 
@@ -300,7 +304,7 @@ class AccountService:
                                 role=data.role, invited_by=user.email,
                                 expires_at=int(time.time()) + self.limits.days * 24 * 3600)
         try:
-            self.accounts.invite(invitation, events.user_invited(invitation), self.limits.per_day)
+            self.accounts.invite(invitation, events.user_invited(invitation, user), self.limits.per_day)
         except ConditionFailed as e:
             if "invitation" in e.failed:
                 raise Conflict(f"{email} is already invited")
@@ -312,7 +316,8 @@ class AccountService:
 
     def cancel_invitation(self, user: CurrentUser, email: str) -> None:
         tenant_id = self._caller(user, ROLE_OWNER, ROLE_ADMIN).tenant_id
-        if not self.accounts.delete_invitation(tenant_id, email.lower()):
+        event = events.invitation_cancelled(tenant_id, email.lower(), user, declined=False)
+        if not self.accounts.delete_invitation(tenant_id, email.lower(), event):
             raise NotFound("Invitation not found")
 
     # ---------- invitations received by the signed-in user ----------
@@ -332,7 +337,7 @@ class AccountService:
         member = Member(tenant_id=tenant_id, user_id=user.user_id, email=email, role=invitation.role)
         try:
             self.accounts.accept_invitation(invitation, member, get_limit(tenant.plan, "max_users"),
-                                            self.max_workspaces)
+                                            self.max_workspaces, events.member_joined(tenant_id, user, invitation.role))
         except ConditionFailed as e:
             if "membership" in e.failed:
                 raise Conflict("You are already in this workspace")
@@ -344,7 +349,9 @@ class AccountService:
         return tenant
 
     def decline_invitation(self, user: CurrentUser, tenant_id: str) -> None:
-        if not self.accounts.delete_invitation(tenant_id, self._verified_email(user)):
+        email = self._verified_email(user)
+        event = events.invitation_cancelled(tenant_id, email, user, declined=True)
+        if not self.accounts.delete_invitation(tenant_id, email, event):
             raise NotFound("Invitation not found")
 
     # ---------- used by the login trigger and event listener ----------

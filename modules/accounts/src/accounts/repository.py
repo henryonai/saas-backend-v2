@@ -128,7 +128,7 @@ class AccountRepository:
     # ---------- tenants ----------
 
     def create_tenant(self, tenant: Tenant, owner: Member, max_workspaces: int,
-                      idempotency: tuple[str, str]) -> None:
+                      idempotency: tuple[str, str], event: Event | None = None) -> None:
         """
         Raises ConditionFailed({"workspaces"}) if the owner is in max_workspaces already.
         `idempotency` is the client's (key, request fingerprint), saved under the
@@ -141,6 +141,7 @@ class AccountRepository:
             tenant={"Put": {"Item": {**_profile(tenant.tenant_id), **tenant.model_dump()}}},
             member={"Put": {"Item": self._member_item(owner)}},
             idempotency=idempotency_put(f"USER#{owner.user_id}", owner.user_id, *idempotency, tenant.tenant_id),
+            event=outbox_put(event) if event else None,
         )
 
     def tenant_for_key(self, user_id: str, key: str, request: str) -> str:
@@ -171,7 +172,7 @@ class AccountRepository:
 
     # ---------- deleting a workspace ----------
 
-    def schedule_deletion(self, tenant_id: str, delete_after: int, event: Event) -> bool:
+    def schedule_deletion(self, tenant_id: str, delete_after: int, event: Event | None = None) -> bool:
         """Marks an active workspace deleting until delete_after, with its event. False if it isn't active."""
         return self._change(event, {"Update": {
             "Key": _profile(tenant_id),
@@ -182,7 +183,7 @@ class AccountRepository:
                                           ":index": DELETING, ":due": f"{delete_after:012d}#{tenant_id}"},
         }})
 
-    def restore(self, tenant_id: str, now: int, event: Event) -> bool:
+    def restore(self, tenant_id: str, now: int, event: Event | None = None) -> bool:
         """
         Makes a deleting workspace active again, with its event. False if it
         isn't deleting (or already purging), or its delete_after has passed.
@@ -364,21 +365,15 @@ class AccountRepository:
         )
         return [Member.model_validate(_clean(i)) for i in result["Items"]]
 
-    def change_role(self, tenant_id: str, user_id: str, role: str) -> bool:
-        """False if the member no longer exists or is the owner."""
-        try:
-            self.table.update_item(
-                Key=_member_key(tenant_id, user_id),
-                UpdateExpression="SET #r = :r",
-                ConditionExpression="attribute_exists(pk) AND #r <> :owner",
-                ExpressionAttributeNames={"#r": "role"},
-                ExpressionAttributeValues={":r": role, ":owner": "owner"},
-            )
-            return True
-        except ClientError as e:
-            if is_condition_failure(e):
-                return False
-            raise
+    def change_role(self, tenant_id: str, user_id: str, role: str, event: Event | None = None) -> bool:
+        """Changes it, with its event. False if the member no longer exists or is the owner."""
+        return self._change(event, {"Update": {
+            "Key": _member_key(tenant_id, user_id),
+            "UpdateExpression": "SET #r = :r",
+            "ConditionExpression": "attribute_exists(pk) AND #r <> :owner",
+            "ExpressionAttributeNames": {"#r": "role"},
+            "ExpressionAttributeValues": {":r": role, ":owner": "owner"},
+        }})
 
     def remove_member(self, tenant_id: str, user_id: str, event: Event) -> bool:
         """
@@ -447,18 +442,13 @@ class AccountRepository:
         result = self.table.query(IndexName="gsi1", KeyConditionExpression=Key("gsi1pk").eq(f"EMAIL#{email}"))
         return [Invitation.model_validate(_clean(i)) for i in result["Items"]]
 
-    def delete_invitation(self, tenant_id: str, email: str) -> bool:
-        """False if there is no such invitation."""
-        try:
-            self.table.delete_item(Key=_invite_key(tenant_id, email), ConditionExpression="attribute_exists(pk)")
-            return True
-        except ClientError as e:
-            if is_condition_failure(e):
-                return False
-            raise
+    def delete_invitation(self, tenant_id: str, email: str, event: Event | None = None) -> bool:
+        """Deletes it, with its event (cancelled, declined). False if there is no such invitation."""
+        return self._change(event, {"Delete": {"Key": _invite_key(tenant_id, email),
+                                               "ConditionExpression": "attribute_exists(pk)"}})
 
     def accept_invitation(self, invitation: Invitation, member: Member, max_seats: int | None,
-                          max_workspaces: int) -> None:
+                          max_workspaces: int, event: Event | None = None) -> None:
         """
         Turns the invitation into a membership and takes a seat, in one
         transaction. Raises ConditionFailed with "membership" (already in this
@@ -475,6 +465,7 @@ class AccountRepository:
                 "ExpressionAttributeValues": {":now": int(time.time())},
             }},
             seats=_seats(invitation.tenant_id, +1, max_seats),
+            event=outbox_put(event) if event else None,
         )
 
     # ---------- helpers ----------

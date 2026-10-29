@@ -7,6 +7,7 @@
 import type { Message } from '@ag-ui/client';
 import type { components as Accounts } from './generated/accounts';
 import type { components as Assistant } from './generated/assistant';
+import type { components as Audit } from './generated/audit';
 import type { components as Billing } from './generated/billing';
 import type { components as Notifications } from './generated/notifications';
 import type { components as Orders } from './generated/orders';
@@ -23,6 +24,10 @@ export type InviteRequest = Accounts['schemas']['InviteRequest'];
 export type RoleUpdate = Accounts['schemas']['RoleUpdate'];
 /** A copy of a workspace's data, or of the user's own; `files` links each part once it is done. */
 export type DataExport = Sent<Accounts['schemas']['ExportOut']>;
+
+/** Who did what in the workspace (GET /audit). `details` are the event's own fields. */
+export type AuditEntry = Sent<Audit['schemas']['AuditEntry']>;
+export type AuditPage = { items: AuditEntry[]; next_cursor: string | null };
 
 export type Order = Sent<Orders['schemas']['Order']>;
 export type OrderStatus = Orders['schemas']['OrderStatus'];

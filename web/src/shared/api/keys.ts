@@ -10,6 +10,7 @@ export const qk = {
   recentOrders: () => ['orders', 'recent'] as const,
   order: (orderId: string) => ['orders', 'detail', orderId] as const,
   members: () => ['members'] as const,
+  audit: () => ['audit'] as const,
   sentInvitations: () => ['invitations', 'sent'] as const,
   receivedInvitations: () => ['invitations', 'received'] as const,
   billing: () => ['billing'] as const,
