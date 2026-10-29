@@ -58,7 +58,6 @@ src/
     _public/            sign-in, sign-up, confirm, forgot-password (signed out only)
     _onboarding/        welcome: create a workspace or accept an invitation (signed in, no workspace)
     _app/               the app (signed in, with a workspace): overview, orders, assistant, team, ...
-    dev-checkout.tsx    DevPaymentProvider's checkout page
   features/<area>/      one area of the app (see below)
   shared/
     api/                api() client, query keys, types; generated/ comes from the backend
@@ -197,19 +196,9 @@ The AG-UI client (with rxjs) loads with the Assistant page only.
 
 ## Testing a checkout
 
-On a stack with `PaymentProvider=stripe` (test mode), checkout is Stripe's
-page: pay with Stripe's test card `4242 4242 4242 4242`, any future date and
+Checkout is Stripe's page (test mode on dev): pay with Stripe's test card `4242 4242 4242 4242`, any future date and
 any CVC. "Manage billing" opens Stripe's portal, where cancelling and plan
 changes can be tried too.
-
-With `PaymentProvider=dev`, `DevPaymentProvider` sends the owner to
-`/dev-checkout` instead of a payment page. Only a signed webhook changes the plan, and the browser can't sign one,
-so the page shows the command that does, from the repository root:
-
-```bash
-uv run python scripts/dev-pay.py --config-env dev --tenant <tenant_id> --plan pro
-uv run python scripts/dev-pay.py --config-env dev --tenant <tenant_id> --event payment.failed
-```
 
 ## Generated code
 

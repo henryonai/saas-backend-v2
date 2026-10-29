@@ -6,7 +6,6 @@ import pytest
 import stripe
 
 from billing import container
-from billing.models import Subscription
 from billing.settings import BillingSettings
 from billing.stripe_provider import StripePaymentProvider
 
@@ -34,8 +33,8 @@ def test_api_function_starts_without_any_secret(monkeypatch):
     monkeypatch.setenv("BILLING_TABLE", "billing-dev")
     monkeypatch.delenv("PAYMENT_WEBHOOK_SECRET_PARAM", raising=False)
     monkeypatch.delenv("PAYMENT_WEBHOOK_SECRET", raising=False)
-    service = container.get_billing_service()   # no SSM access needed to start checkout
-    assert "plan=pro" in service.provider.create_checkout(Subscription(tenant_id="t1"), "pro", "a@x.com")
+    service = container.get_billing_service()   # nothing is read from SSM to start
+    assert isinstance(service.provider, StripePaymentProvider)
 
     with pytest.raises(RuntimeError, match="PAYMENT_WEBHOOK_SECRET"):
         service.provider.webhook_secret()       # but a webhook would fail clearly
@@ -54,7 +53,6 @@ def test_stripe_is_wired_from_ssm(monkeypatch):
     ssm.put_parameter(Name="/saas/test/stripe-config", Type="String", Value=json.dumps(
         {"prices": {"pro": "price_pro"}, "plan_for_price": {"price_pro": "pro"}, "portal_configuration": "bpc_1"}))
     monkeypatch.setenv("BILLING_TABLE", "billing-dev")
-    monkeypatch.setenv("PAYMENT_PROVIDER", "stripe")
     monkeypatch.setenv("STRIPE_SECRET_KEY_PARAM", "/saas/test/stripe-secret-key")
     monkeypatch.setenv("STRIPE_CONFIG_PARAM", "/saas/test/stripe-config")
 

@@ -45,7 +45,6 @@ saas-backend-v2/
 │   ├── package-assistant.py    # the assistant's arm64 code zip -> S3, for sam deploy
 │   ├── enable-transaction-search.sh  # once per account: the assistant's traces in CloudWatch
 │   ├── check-assistant-data.py # the assistant's table against its data model (read-only)
-│   ├── dev-pay.py              # finish a dev checkout: send the signed payment webhook
 │   ├── replay-outbox.py        # publish saved events again after an outage
 │   ├── migrate-memberships.py  # once, for stacks from before users had several workspaces
 │   └── rename-project.py       # give a new copy of the template its own name
@@ -281,16 +280,10 @@ app.dependency_overrides[get_order_service] = lambda: OrderService(OrderReposito
 
 - Settings classes (`settings.py`) read environment variables set in `template.yaml`.
   A missing value fails at cold start with a clear message.
-- **Secrets are not environment variables.** The payment webhook secret lives
-  in SSM Parameter Store; only its *name* is in the environment, and only the
-  webhook function can read it (cached for 5 minutes, so rotation needs no
-  redeploy). Create it once per environment before deploying:
-
-  ```bash
-  aws ssm put-parameter --name /saas/dev/payment-webhook-secret \
-      --type SecureString --value "$(openssl rand -hex 32)"
-  ```
-- **Stripe** keeps its secret key in SSM the same way ("Payments").
+- **Secrets are not environment variables.** Stripe's secret key and webhook
+  signing secret live in SSM Parameter Store; only their *names* are in the
+  environment, and only the functions that need them can read them (cached for
+  5 minutes, so rotation needs no redeploy). "Payments" says how to put them there.
 - **Email:** set `EmailSender` and `SesIdentity` (the domain or address
   verified in SES) to send app emails *and* Cognito's sign-up codes through
   SES. Without them, app emails are only logged and Cognito uses its built-in
@@ -304,15 +297,13 @@ app.dependency_overrides[get_order_service] = lambda: OrderService(OrderReposito
 
 ## Payments
 
-Billing talks to its payment provider through one interface
-(`billing/provider.py`), picked per environment by `PaymentProvider`:
-
-| | `dev` | `stripe` |
-|---|---|---|
-| Checkout | The app's `/dev-checkout` page | Stripe Checkout |
-| Webhooks | Signed by `scripts/dev-pay.py` | Sent by Stripe |
-| Card, invoices, plan changes, cancelling | Only through webhooks | Stripe's customer portal ("Manage billing") |
-| Used by | Local runs and unit tests | Dev and prod (test mode until you launch) |
+Billing takes payments with Stripe, on every stack: dev in Stripe's test mode,
+prod in test mode until you launch. Checkout is Stripe Checkout; the card,
+invoices, plan changes and cancelling are in Stripe's customer portal
+("Manage billing"); Stripe's signed webhooks change the plan. Billing talks to
+Stripe through one interface (`billing/provider.py`), so another provider is
+one class (`billing/stripe_provider.py` is the example). Unit tests use a fake
+of Stripe's API, with Stripe's own signature checks.
 
 Setting up Stripe for a stack:
 
@@ -324,7 +315,7 @@ Setting up Stripe for a stack:
        --type SecureString --value "$STRIPE_KEY"; unset STRIPE_KEY
    ```
 
-2. Deploy the stack with `PaymentProvider=stripe` (`samconfig.toml`).
+2. Deploy the stack.
 3. Run `uv run python scripts/stripe-setup.py --stack saas-dev`. It creates
    the prices (from `plans.py`), the customer portal and the webhook
    endpoint, and saves the webhook's signing secret and the prices in SSM.
@@ -470,10 +461,8 @@ pnpm dev                               # http://localhost:5173
 ```
 
 Its API types and plan catalog are generated from this code (`pnpm gen:api`);
-CI fails if they are out of date. With `PaymentProvider=dev`, checkout lands on
-the app's `/dev-checkout` page, which shows the `scripts/dev-pay.py` command
-that sends the signed webhook a real provider would send. See
-[web/README.md](web/README.md).
+CI fails if they are out of date. Checkout is Stripe's test mode on dev (test
+card `4242 4242 4242 4242`). See [web/README.md](web/README.md).
 
 ## CI/CD
 

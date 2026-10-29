@@ -314,13 +314,6 @@
       "dismiss": "Stop waiting"
     }
   },
-  "devCheckout": {
-    "title": "Test checkout",
-    "description": "This stack uses the development payment provider: nothing is charged for the {{plan}} plan.",
-    "instructions": "To finish the upgrade, run this from the repository root. It sends the signed webhook a real provider would send after a payment:",
-    "cancel": "Cancel",
-    "done": "Back to billing"
-  },
   "notifications": {
     "title": "Notifications",
     "description": "What happened in your workspace.",

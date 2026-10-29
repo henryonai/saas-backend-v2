@@ -6,8 +6,8 @@
 Smoke test for a deployed stack, run after sam deploy. Creates three test
 users and calls every endpoint, printing PASS/FAIL per check:
 
-  auth, workspaces, orders (status rules, paging), billing (checkout, signed
-  webhooks, out-of-order and repeated webhooks, payment failed, cancel),
+  auth, workspaces, orders (status rules, paging), billing (Stripe Checkout,
+  signed webhooks, the portal, an upgrade, payment failed, cancel),
   events between modules (outbox -> EventBridge -> accounts and notifications
   workers), invitations (send, cancel, accept, decline), roles and who may do
   what, leaving and removing members, tenant isolation, users in several
@@ -16,21 +16,18 @@ users and calls every endpoint, printing PASS/FAIL per check:
 
     uv run scripts/smoke-test.py [--stack saas-dev]
 
-On a stack with PaymentProvider=stripe (test mode), billing goes through
-Stripe instead: it subscribes with Stripe's test cards through Stripe's API,
-and Stripe's own webhooks change the plan. It needs scripts/stripe-setup.py
-to have run for the stack.
+Billing goes through Stripe's test mode: it subscribes with Stripe's test
+cards through Stripe's API, and Stripe's own webhooks change the plan. It
+needs scripts/stripe-setup.py to have run for the stack.
 
 Uses your AWS credentials (AWS_PROFILE / AWS_REGION) to create the users and
-read the webhook secret or Stripe key, so run it against dev, not prod. Each run adds three
+read the Stripe key, so run it against dev, not prod. Each run adds three
 users and two workspaces. Their emails and passwords go to
 .aws-sam/smoke-users.json (gitignored) so you can sign in with them; they are
 never printed.
 """
 import argparse
 import base64
-import hashlib
-import hmac
 import json
 import os
 import re
@@ -149,32 +146,15 @@ def ssm_value(name: str) -> str:
     return session.client("ssm").get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
 
 
-STRIPE = params.get("PaymentProvider") == "stripe"
-if STRIPE:
-    stripe_key = ssm_value(params["StripeSecretKeyParam"])
-    if stripe_key.startswith(("sk_live_", "rk_live_")):
-        sys.exit("The stack's Stripe key is a live key: run this only against test mode.")
-    stripe_api = stripe.StripeClient(stripe_key)
-    PRICES = json.loads(ssm_value(params["StripeConfigParam"]))["prices"]
-else:
-    WEBHOOK_SECRET = ssm_value(params["PaymentWebhookSecretParam"])
-
-
+stripe_key = ssm_value(params["StripeSecretKeyParam"])
+if stripe_key.startswith(("sk_live_", "rk_live_")):
+    sys.exit("The stack's Stripe key is a live key: run this only against test mode.")
+stripe_api = stripe.StripeClient(stripe_key)
+PRICES = json.loads(ssm_value(params["StripeConfigParam"]))["prices"]
 def checkout_session(r: requests.Response):
     """The Stripe Checkout session behind a checkout_url, with its line items."""
     match = r.ok and re.search(r"/(cs_(?:test|live)_[A-Za-z0-9]+)", r.json().get("checkout_url", ""))
     return stripe_api.v1.checkout.sessions.retrieve(match.group(1), {"expand": ["line_items"]}) if match else None
-
-
-def webhook_body(event_type: str, tenant_id: str, plan: str | None = None, created: int | None = None) -> str:
-    return json.dumps({"id": f"evt_smoke_{secrets.token_hex(6)}", "type": event_type, "tenant_id": tenant_id,
-                       "plan": plan, "created": created or int(time.time())})
-
-
-def send_webhook(body: str, signature: str | None = None) -> requests.Response:
-    signature = signature or hmac.new(WEBHOOK_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
-    return call("POST", "/webhooks/payments", data=body,
-                headers={"X-Signature": signature, "Content-Type": "application/json"})
 
 
 def titles(person: Person) -> list[str]:
@@ -253,51 +233,37 @@ r = owner("POST", "/billing/checkout", json={"plan": "pro"})
 check("POST /billing/checkout", r.ok and "checkout_url" in r.json(), show(r))
 check("checkout with an unknown plan -> 422",
       owner("POST", "/billing/checkout", json={"plan": "gold"}).status_code == 422)
-if STRIPE:
-    check("it is Stripe Checkout",
-          r.ok and r.json()["checkout_url"].startswith("https://checkout.stripe.com/"), show(r))
-    checkout = checkout_session(r)
-    check("the session subscribes this workspace to pro and returns to /billing", bool(checkout)
-          and checkout.mode == "subscription" and checkout.client_reference_id == tenant_id
-          and checkout.customer_email == owner.email and checkout.success_url.endswith("/billing")
-          and [i.price.id for i in checkout.line_items.data] == [PRICES["pro"]],
-          checkout and {"mode": checkout.mode, "ref": checkout.client_reference_id, "success": checkout.success_url})
-    check("the checkout page loads", requests.get(r.json()["checkout_url"], timeout=30).ok)
-    r = call("POST", "/webhooks/payments", data='{"id": "evt_fake"}',
-             headers={"Stripe-Signature": "t=1,v1=bad", "Content-Type": "application/json"})
-    check("webhook with a bad signature -> 400", r.status_code == 400, show(r))
-    # What Checkout does once the card is accepted, through Stripe's API with its test card.
-    customer = stripe_api.v1.customers.create({
-        "email": owner.email, "payment_method": "pm_card_visa", "metadata": {"smoke_test": STACK},
-        "invoice_settings": {"default_payment_method": "pm_card_visa"}})
-    good_card = customer.invoice_settings.default_payment_method
-    subscription = stripe_api.v1.subscriptions.create({
-        "customer": customer.id, "items": [{"price": PRICES["pro"]}], "metadata": {"tenant_id": tenant_id}})
-    check("Stripe: test subscription to pro is active", subscription.status == "active", subscription.status)
-    summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("plan") == "pro" and b)
-    check("Stripe's webhook made GET /billing pro", bool(summary), summary or owner("GET", "/billing").text)
-    check("billing is manageable", bool(summary) and summary["manageable"] is True)
-    r = owner("POST", "/billing/portal")
-    check("POST /billing/portal -> Stripe's portal",
-          r.ok and r.json()["portal_url"].startswith("https://billing.stripe.com/"), show(r))
-    r = owner("POST", "/billing/checkout", json={"plan": "business"})
-    check("upgrading a subscriber opens the portal's confirm page",
-          r.ok and r.json()["checkout_url"].startswith("https://billing.stripe.com/"), show(r))
-    check("buying the current plan again -> 409",
-          owner("POST", "/billing/checkout", json={"plan": "pro"}).status_code == 409)
-else:
-    activated_at = int(time.time())
-    body = webhook_body("subscription.activated", tenant_id, "pro", activated_at)
-    check("webhook with a bad signature -> 400", send_webhook(body, signature="bad").status_code == 400)
-    r = send_webhook(body)
-    check("webhook subscription.activated (pro)", r.ok, show(r))
-    check("same webhook again is accepted (ignored)", send_webhook(body).ok)
-    r = send_webhook(webhook_body("subscription.activated", tenant_id, "business", activated_at - 60))
-    check("older webhook arriving late is accepted (ignored)", r.ok, show(r))
-    check("webhook with an unknown plan -> 400",
-          send_webhook(webhook_body("subscription.activated", tenant_id, "gold")).status_code == 400)
-    r = owner("GET", "/billing")
-    check("GET /billing is pro (late business event ignored)", r.ok and r.json()["plan"] == "pro", show(r))
+check("it is Stripe Checkout",
+      r.ok and r.json()["checkout_url"].startswith("https://checkout.stripe.com/"), show(r))
+checkout = checkout_session(r)
+check("the session subscribes this workspace to pro and returns to /billing", bool(checkout)
+      and checkout.mode == "subscription" and checkout.client_reference_id == tenant_id
+      and checkout.customer_email == owner.email and checkout.success_url.endswith("/billing")
+      and [i.price.id for i in checkout.line_items.data] == [PRICES["pro"]],
+      checkout and {"mode": checkout.mode, "ref": checkout.client_reference_id, "success": checkout.success_url})
+check("the checkout page loads", requests.get(r.json()["checkout_url"], timeout=30).ok)
+r = call("POST", "/webhooks/payments", data='{"id": "evt_fake"}',
+         headers={"Stripe-Signature": "t=1,v1=bad", "Content-Type": "application/json"})
+check("webhook with a bad signature -> 400", r.status_code == 400, show(r))
+# What Checkout does once the card is accepted, through Stripe's API with its test card.
+customer = stripe_api.v1.customers.create({
+    "email": owner.email, "payment_method": "pm_card_visa", "metadata": {"smoke_test": STACK},
+    "invoice_settings": {"default_payment_method": "pm_card_visa"}})
+good_card = customer.invoice_settings.default_payment_method
+subscription = stripe_api.v1.subscriptions.create({
+    "customer": customer.id, "items": [{"price": PRICES["pro"]}], "metadata": {"tenant_id": tenant_id}})
+check("Stripe: test subscription to pro is active", subscription.status == "active", subscription.status)
+summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("plan") == "pro" and b)
+check("Stripe's webhook made GET /billing pro", bool(summary), summary or owner("GET", "/billing").text)
+check("billing is manageable", bool(summary) and summary["manageable"] is True)
+r = owner("POST", "/billing/portal")
+check("POST /billing/portal -> Stripe's portal",
+      r.ok and r.json()["portal_url"].startswith("https://billing.stripe.com/"), show(r))
+r = owner("POST", "/billing/checkout", json={"plan": "business"})
+check("upgrading a subscriber opens the portal's confirm page",
+      r.ok and r.json()["checkout_url"].startswith("https://billing.stripe.com/"), show(r))
+check("buying the current plan again -> 409",
+      owner("POST", "/billing/checkout", json={"plan": "pro"}).status_code == 409)
 
 print("Events (outbox -> EventBridge -> workers)")
 started = time.time()
@@ -434,44 +400,32 @@ r = owner("GET", "/tenants/me")
 check("seats_used is back to 1", r.ok and r.json()["seats_used"] == 1, show(r))
 
 print("Billing lifecycle")
-if STRIPE:
-    # A card that is refused when charged, then an upgrade charged at once: the payment fails.
-    card = stripe_api.v1.payment_methods.attach("pm_card_chargeCustomerFail", {"customer": customer.id})
-    stripe_api.v1.customers.update(customer.id, {"invoice_settings": {"default_payment_method": card.id}})
-    item = subscription["items"]["data"][0]
-    updated = stripe_api.v1.subscriptions.update(subscription.id, {
-        "items": [{"id": item["id"], "price": PRICES["business"]}],
-        "proration_behavior": "always_invoice", "payment_behavior": "allow_incomplete"})
-    check("Stripe: the upgrade's payment fails", updated.status == "past_due", updated.status)
-    summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "past_due" and b)
-    check("GET /billing: past_due, still pro", bool(summary) and summary["plan"] == "pro",
-          summary or owner("GET", "/billing").text)
-    # The owner fixes the card: the open invoice is paid and the upgrade takes effect.
-    stripe_api.v1.customers.update(customer.id, {"invoice_settings": {"default_payment_method": good_card}})
-    invoice = stripe_api.v1.invoices.pay(updated.latest_invoice, {"payment_method": good_card})
-    check("Stripe: the open invoice is paid with a good card", invoice.status == "paid", invoice.status)
-    summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "active" and b)
-    check("GET /billing: business, active (the plan change took effect)", bool(summary) and
-          summary["plan"] == "business", summary or owner("GET", "/billing").text)
-    stripe_api.v1.subscriptions.cancel(subscription.id)
-    summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "cancelled" and b)
-    check("GET /billing: free, cancelled", bool(summary) and summary["plan"] == "free",
-          summary or owner("GET", "/billing").text)
-    checkout = checkout_session(owner("POST", "/billing/checkout", json={"plan": "pro"}))
-    check("subscribing again uses the same Stripe customer", bool(checkout) and checkout.customer == customer.id,
-          checkout and checkout.customer)
-else:
-    r = send_webhook(webhook_body("payment.failed", tenant_id))
-    check("webhook payment.failed", r.ok, show(r))
-    r = owner("GET", "/billing")
-    check("GET /billing: past_due, still pro", r.ok and (r.json()["plan"], r.json()["status"]) == ("pro", "past_due"),
-          show(r))
-    time.sleep(1)  # the cancel must be newer than the payment failure
-    r = send_webhook(webhook_body("subscription.cancelled", tenant_id))
-    check("webhook subscription.cancelled", r.ok, show(r))
-    r = owner("GET", "/billing")
-    check("GET /billing: free, cancelled", r.ok and (r.json()["plan"], r.json()["status"]) == ("free", "cancelled"),
-          show(r))
+# A card that is refused when charged, then an upgrade charged at once: the payment fails.
+card = stripe_api.v1.payment_methods.attach("pm_card_chargeCustomerFail", {"customer": customer.id})
+stripe_api.v1.customers.update(customer.id, {"invoice_settings": {"default_payment_method": card.id}})
+item = subscription["items"]["data"][0]
+updated = stripe_api.v1.subscriptions.update(subscription.id, {
+    "items": [{"id": item["id"], "price": PRICES["business"]}],
+    "proration_behavior": "always_invoice", "payment_behavior": "allow_incomplete"})
+check("Stripe: the upgrade's payment fails", updated.status == "past_due", updated.status)
+summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "past_due" and b)
+check("GET /billing: past_due, still pro", bool(summary) and summary["plan"] == "pro",
+      summary or owner("GET", "/billing").text)
+# The owner fixes the card: the open invoice is paid and the upgrade takes effect.
+stripe_api.v1.customers.update(customer.id, {"invoice_settings": {"default_payment_method": good_card}})
+invoice = stripe_api.v1.invoices.pay(updated.latest_invoice, {"payment_method": good_card})
+check("Stripe: the open invoice is paid with a good card", invoice.status == "paid", invoice.status)
+summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "active" and b)
+check("GET /billing: business, active (the plan change took effect)", bool(summary) and
+      summary["plan"] == "business", summary or owner("GET", "/billing").text)
+stripe_api.v1.subscriptions.cancel(subscription.id)
+summary = wait_for(lambda: (b := owner("GET", "/billing").json()).get("status") == "cancelled" and b)
+check("GET /billing: free, cancelled", bool(summary) and summary["plan"] == "free",
+      summary or owner("GET", "/billing").text)
+checkout = checkout_session(owner("POST", "/billing/checkout", json={"plan": "pro"}))
+check("subscribing again uses the same Stripe customer", bool(checkout) and checkout.customer == customer.id,
+      checkout and checkout.customer)
+
 started = time.time()
 tenant = wait_for(lambda: (t := owner("GET", "/tenants/me").json()).get("subscription_status") == "cancelled" and t)
 check("accounts worker: workspace back to free, cancelled",
@@ -486,12 +440,11 @@ for name in ("seat1", "seat2"):
 r = owner("POST", "/users/invite", json={"email": f"smoke-seat3+{RUN}@example.com"})
 check("a 4th seat on free -> 402", r.status_code == 402, show(r))
 
-if STRIPE:
-    plan_changes = [t for t in titles(owner) if t.startswith("Plan changed")]
-    check("each plan change notified once, however many updates Stripe sent",
-          sorted(plan_changes) == ["Plan changed to business", "Plan changed to free", "Plan changed to pro"],
-          plan_changes)
-    stripe_api.v1.customers.delete(customer.id)   # test mode: leave nothing behind in Stripe
+plan_changes = [t for t in titles(owner) if t.startswith("Plan changed")]
+check("each plan change notified once, however many updates Stripe sent",
+      sorted(plan_changes) == ["Plan changed to business", "Plan changed to free", "Plan changed to pro"],
+      plan_changes)
+stripe_api.v1.customers.delete(customer.id)   # test mode: leave nothing behind in Stripe
 
 print("Deleting a workspace")
 r = carol("POST", "/orders", tenant=other_id, json={"item": "Doomed", "quantity": 1, "price_cents": 100},

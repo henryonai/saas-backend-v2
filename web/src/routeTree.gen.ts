@@ -12,7 +12,6 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as OnboardingRouteImport } from './routes/_onboarding'
 import { Route as PublicRouteImport } from './routes/_public'
-import { Route as DevCheckoutRouteImport } from './routes/dev-checkout'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAccountRouteImport } from './routes/_app/account'
 import { Route as AppBillingRouteImport } from './routes/_app/billing'
@@ -39,11 +38,6 @@ const OnboardingRoute = OnboardingRouteImport.update({
 } as any)
 const PublicRoute = PublicRouteImport.update({
   id: '/_public',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DevCheckoutRoute = DevCheckoutRouteImport.update({
-  id: '/dev-checkout',
-  path: '/dev-checkout',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
@@ -124,7 +118,6 @@ const AppOrdersOrderIdRoute = AppOrdersOrderIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
-  '/dev-checkout': typeof DevCheckoutRoute
   '/account': typeof AppAccountRoute
   '/billing': typeof AppBillingRoute
   '/files': typeof AppFilesRoute
@@ -142,7 +135,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
-  '/dev-checkout': typeof DevCheckoutRoute
   '/account': typeof AppAccountRoute
   '/billing': typeof AppBillingRoute
   '/files': typeof AppFilesRoute
@@ -163,7 +155,6 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/_onboarding': typeof OnboardingRouteWithChildren
   '/_public': typeof PublicRouteWithChildren
-  '/dev-checkout': typeof DevCheckoutRoute
   '/_app/account': typeof AppAccountRoute
   '/_app/billing': typeof AppBillingRoute
   '/_app/files': typeof AppFilesRoute
@@ -184,7 +175,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/dev-checkout'
     | '/account'
     | '/billing'
     | '/files'
@@ -202,7 +192,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/dev-checkout'
     | '/account'
     | '/billing'
     | '/files'
@@ -222,7 +211,6 @@ export interface FileRouteTypes {
     | '/_app'
     | '/_onboarding'
     | '/_public'
-    | '/dev-checkout'
     | '/_app/account'
     | '/_app/billing'
     | '/_app/files'
@@ -244,7 +232,6 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   OnboardingRoute: typeof OnboardingRouteWithChildren
   PublicRoute: typeof PublicRouteWithChildren
-  DevCheckoutRoute: typeof DevCheckoutRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -268,13 +255,6 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof PublicRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/dev-checkout': {
-      id: '/dev-checkout'
-      path: '/dev-checkout'
-      fullPath: '/dev-checkout'
-      preLoaderRoute: typeof DevCheckoutRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/': {
@@ -446,7 +426,6 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   OnboardingRoute: OnboardingRouteWithChildren,
   PublicRoute: PublicRouteWithChildren,
-  DevCheckoutRoute: DevCheckoutRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

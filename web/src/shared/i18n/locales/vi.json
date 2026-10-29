@@ -314,13 +314,6 @@
       "dismiss": "Dừng chờ"
     }
   },
-  "devCheckout": {
-    "title": "Thanh toán thử",
-    "description": "Stack này dùng nhà cung cấp thanh toán cho môi trường dev: gói {{plan}} không bị tính tiền.",
-    "instructions": "Để hoàn tất nâng cấp, hãy chạy lệnh này ở thư mục gốc của repository. Lệnh gửi webhook có chữ ký, giống webhook mà nhà cung cấp thật gửi sau khi thanh toán:",
-    "cancel": "Hủy",
-    "done": "Quay lại thanh toán"
-  },
   "notifications": {
     "title": "Thông báo",
     "description": "Những gì đã diễn ra trong workspace của bạn.",
