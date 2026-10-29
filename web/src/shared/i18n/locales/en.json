@@ -86,6 +86,7 @@
       "purging": "Being deleted for good",
       "restore": "Restore",
       "restored": "{{workspace}} was restored.",
+      "expired": "{{workspace}} can no longer be restored: its time to restore has passed.",
       "suspended": "Suspended by the product's admins"
     }
   },

@@ -86,6 +86,7 @@
       "purging": "Đang bị xóa hẳn",
       "restore": "Khôi phục",
       "restored": "Đã khôi phục {{workspace}}.",
+      "expired": "Không thể khôi phục {{workspace}} nữa: đã hết thời gian khôi phục.",
       "suspended": "Bị quản trị viên sản phẩm đình chỉ"
     }
   },
