@@ -5,7 +5,7 @@ import boto3
 from aws_lambda_powertools.utilities import parameters
 from pydantic import SecretStr
 
-from billing.provider import DevPaymentProvider, PaymentProvider
+from billing.provider import PaymentProvider
 from billing.repository import SubscriptionRepository
 from billing.service import BillingService
 from billing.settings import BillingSettings
@@ -51,12 +51,10 @@ def stripe_client(api_key: str):
 def payment_provider(settings: BillingSettings) -> PaymentProvider:
     # Secrets are read only when a call needs them: the API function never
     # reads the webhook secret, and nothing is read at start-up.
-    if settings.payment_provider == "stripe":
-        return StripePaymentProvider(client=lambda: stripe_client(stripe_secret_key(settings)),
-                                     config=lambda: stripe_config(settings),
-                                     webhook_secret=lambda: webhook_secret(settings),
-                                     app_url=settings.app_url)
-    return DevPaymentProvider(webhook_secret=lambda: webhook_secret(settings), app_url=settings.app_url)
+    return StripePaymentProvider(client=lambda: stripe_client(stripe_secret_key(settings)),
+                                 config=lambda: stripe_config(settings),
+                                 webhook_secret=lambda: webhook_secret(settings),
+                                 app_url=settings.app_url)
 
 
 @lru_cache

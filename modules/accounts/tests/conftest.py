@@ -26,9 +26,13 @@ class FakeIdentity:
 
     def __init__(self):
         self.signed_out: list[str] = []
+        self.deleted: list[str] = []
 
     def sign_out(self, user_id: str) -> None:
         self.signed_out.append(user_id)
+
+    def delete_user(self, user_id: str) -> None:
+        self.deleted.append(user_id)
 
 
 def api(method: str, path: str, *args, headers: dict | None = None, **kwargs):

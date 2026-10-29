@@ -10,27 +10,20 @@ Parameters:
     Type: String
     AllowedValues: [dev, prod]
     Default: dev
-  PaymentProvider:
-    Type: String
-    AllowedValues: [dev, stripe]
-    Default: dev
-    Description: >-
-      dev = the stand-in (checkout on the app's /dev-checkout page, webhooks from scripts/dev-pay.py);
-      stripe = Stripe (run scripts/stripe-setup.py after the first deploy)
   PaymentWebhookSecretParam:
     Type: String
     Default: /saas/dev/payment-webhook-secret
     Description: >-
-      Name of an SSM SecureString parameter holding the webhook secret: create it first (dev), or
-      let scripts/stripe-setup.py write Stripe's signing secret (stripe)
+      Name of an SSM SecureString parameter holding Stripe's webhook signing secret
+      (scripts/stripe-setup.py writes it after the first deploy)
   StripeSecretKeyParam:
     Type: String
     Default: /saas/dev/stripe-secret-key
-    Description: Name of an SSM SecureString parameter holding the Stripe secret key (stripe only)
+    Description: Name of an SSM SecureString parameter holding the Stripe secret key
   StripeConfigParam:
     Type: String
     Default: /saas/dev/stripe-config
-    Description: Name of the SSM parameter where scripts/stripe-setup.py saves prices and portal (stripe only)
+    Description: Name of the SSM parameter where scripts/stripe-setup.py saves prices and portal
   EmailSender:
     Type: String
     Default: ""
@@ -587,7 +580,8 @@ Resources:
         - DynamoDBCrudPolicy: { TableName: !Ref AccountsTable }
         - Statement:
             - Effect: Allow
-              Action: [cognito-idp:AdminUserGlobalSignOut]   # on role change / removal
+              Action: [cognito-idp:AdminUserGlobalSignOut,   # on role change / removal
+                       cognito-idp:AdminDeleteUser]          # a user deleting their account
               Resource: !GetAtt UserPool.Arn
       Events:
         # One event per method, never ANY: an ANY route also catches the browser's CORS
@@ -598,6 +592,7 @@ Resources:
         TenantsAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: GET } }
         TenantsAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: POST } }       # restore
         TenantsAnyDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/tenants/{proxy+}", Method: DELETE } }   # delete
+        AccountDelete: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /account, Method: DELETE } }
         UsersGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: /users, Method: GET } }
         UsersAnyGet: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: GET } }
         UsersAnyPost: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Path: "/users/{proxy+}", Method: POST } }
@@ -1140,7 +1135,6 @@ Resources:
           POWERTOOLS_SERVICE_NAME: billing
           BILLING_TABLE: !Ref BillingTable
           APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
-          PAYMENT_PROVIDER: !Ref PaymentProvider
           STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParam
           STRIPE_CONFIG_PARAM: !Ref StripeConfigParam
       Policies:
@@ -1173,7 +1167,6 @@ Resources:
           BILLING_TABLE: !Ref BillingTable
           PAYMENT_WEBHOOK_SECRET_PARAM: !Ref PaymentWebhookSecretParam
           APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
-          PAYMENT_PROVIDER: !Ref PaymentProvider
           STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParam
           STRIPE_CONFIG_PARAM: !Ref StripeConfigParam
       Policies:
@@ -1272,7 +1265,6 @@ Resources:
           BILLING_TABLE: !Ref BillingTable
           PAYMENT_WEBHOOK_SECRET_PARAM: !Ref PaymentWebhookSecretParam   # not read: the settings expect it
           APP_URL: !If [HasAppUrl, !Ref AppUrl, !Sub "https://${WebDistribution.DomainName}"]
-          PAYMENT_PROVIDER: !Ref PaymentProvider
           STRIPE_SECRET_KEY_PARAM: !Ref StripeSecretKeyParam
           STRIPE_CONFIG_PARAM: !Ref StripeConfigParam
       Policies:

@@ -1,5 +1,5 @@
 """
-Sets Stripe up for a deployed stack that uses it (PaymentProvider=stripe).
+Sets Stripe up for a deployed stack.
 Run it after the stack's first deploy, and again after changing the plans in
 layers/shared/layer/shared/plans.py:
 
@@ -159,8 +159,6 @@ def main() -> None:
     print(f"  webhook   {webhook}")
     print(f"  config    saved to {params['StripeConfigParam']}")
     print("The functions read it within 5 minutes.")
-    if params.get("PaymentProvider") != "stripe":
-        print(f"\n{args.stack} still uses the dev provider: deploy it with PaymentProvider=stripe.")
 
 
 if __name__ == "__main__":

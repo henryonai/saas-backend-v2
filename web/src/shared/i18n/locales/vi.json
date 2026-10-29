@@ -314,13 +314,6 @@
       "dismiss": "Dừng chờ"
     }
   },
-  "devCheckout": {
-    "title": "Thanh toán thử",
-    "description": "Stack này dùng nhà cung cấp thanh toán cho môi trường dev: gói {{plan}} không bị tính tiền.",
-    "instructions": "Để hoàn tất nâng cấp, hãy chạy lệnh này ở thư mục gốc của repository. Lệnh gửi webhook có chữ ký, giống webhook mà nhà cung cấp thật gửi sau khi thanh toán:",
-    "cancel": "Hủy",
-    "done": "Quay lại thanh toán"
-  },
   "notifications": {
     "title": "Thông báo",
     "description": "Những gì đã diễn ra trong workspace của bạn.",
@@ -492,6 +485,16 @@
       "submit": "Đổi mật khẩu",
       "changed": "Đã đổi mật khẩu.",
       "wrongCurrent": "Mật khẩu hiện tại không đúng."
+    },
+    "delete": {
+      "title": "Xóa tài khoản của bạn",
+      "description": "Thông tin đăng nhập của bạn sẽ bị xóa, cùng các cuộc trò chuyện, tệp và thông báo của bạn trong mọi không gian làm việc. Hãy xóa các không gian làm việc bạn sở hữu trước.",
+      "open": "Xóa tài khoản",
+      "confirmTitle": "Xóa tài khoản của bạn?",
+      "confirmDescription": "Bạn sẽ rời mọi không gian làm việc và bị đăng xuất. Không thể hoàn tác.",
+      "typeEmail": "Nhập {{email}} để xác nhận",
+      "submit": "Xóa tài khoản của tôi",
+      "done": "Tài khoản của bạn đã bị xóa."
     }
   }
 }

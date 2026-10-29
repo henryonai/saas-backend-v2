@@ -35,7 +35,7 @@ from accounts import events
 from accounts.identity import IdentityProvider
 from accounts.models import Invitation, Member, Tenant
 from accounts.repository import AccountRepository
-from accounts.schemas import InviteRequest, TenantCreate, TenantDelete
+from accounts.schemas import AccountDelete, InviteRequest, TenantCreate, TenantDelete
 
 logger = Logger(child=True)
 
@@ -119,6 +119,30 @@ class AccountService:
                 raise Conflict("The time to restore this workspace has passed")
             raise Conflict("This workspace isn't waiting to be deleted")
         return self._tenant(tenant_id, consistent=True)
+
+    # ---------- deleting an account ----------
+
+    def delete_account(self, user: CurrentUser, data: AccountDelete) -> None:
+        """
+        The user deletes their login and what is kept about them. They must
+        delete the workspaces they own first (ownership can't be handed over).
+        They leave every other workspace, as leaving does (MemberRemoved: their
+        conversations and notifications there go), then their own records and
+        their login go, the login last, so a failure part way can be retried.
+        """
+        if data.email.lower() != user.email.lower():
+            raise InvalidRequest("Type your email address exactly as it is to delete your account")
+        workspaces = self.accounts.workspaces_of(user.user_id)
+        owned = sorted(t.name for t, m in workspaces if m.role == ROLE_OWNER and t.active)
+        if owned:
+            raise Conflict(f"Delete the workspaces you own first: {', '.join(owned)}")
+        for tenant, member in workspaces:
+            if member.role != ROLE_OWNER:   # an owned one is deleted already; the purge job removes it
+                removed = events.member_removed(tenant.tenant_id, user.user_id, removed_by=user.user_id)
+                self.accounts.remove_member(tenant.tenant_id, user.user_id, removed)
+        self.accounts.delete_user(user.user_id, events.user_deleted(user.user_id, user.email.lower()))
+        self.identity.delete_user(user.user_id)
+        logger.info("Deleted an account", extra={"workspaces_left": len(workspaces)})
 
     def purge_due(self, now: int, time_left: Callable[[], float], margin: float = 60) -> list[str]:
         """

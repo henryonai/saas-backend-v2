@@ -13,6 +13,10 @@ class IdentityProvider(Protocol):
         """Revokes the user's refresh tokens, so their next token has fresh claims."""
         ...
 
+    def delete_user(self, user_id: str) -> None:
+        """Deletes the login. Safe to repeat."""
+        ...
+
 
 class CognitoIdentity:
     def __init__(self, client, user_pool_id: str | None):
@@ -25,3 +29,9 @@ class CognitoIdentity:
         # Admin APIs accept the user's sub as the username.
         with suppress(self.client.exceptions.UserNotFoundException):
             self.client.admin_user_global_sign_out(UserPoolId=self.user_pool_id, Username=user_id)
+
+    def delete_user(self, user_id: str) -> None:
+        if not self.user_pool_id:
+            raise RuntimeError("USER_POOL_ID is not configured for this function")
+        with suppress(self.client.exceptions.UserNotFoundException):
+            self.client.admin_delete_user(UserPoolId=self.user_pool_id, Username=user_id)

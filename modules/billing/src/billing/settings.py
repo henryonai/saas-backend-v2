@@ -1,5 +1,3 @@
-from typing import Literal
-
 from pydantic import SecretStr
 
 from shared.settings import BaseAppSettings
@@ -9,9 +7,7 @@ class BillingSettings(BaseAppSettings):
     billing_table: str
     app_url: str = "http://localhost:5173"
 
-    # "dev": the stand-in (checkout on the app's /dev-checkout page, webhooks
-    # from scripts/dev-pay.py). "stripe": Stripe (stripe_provider.py).
-    payment_provider: Literal["dev", "stripe"] = "dev"
+    # Payments go through Stripe (stripe_provider.py); a test stack uses Stripe's test mode.
 
     # The webhook secret (only the webhook function needs it). In AWS, set
     # PAYMENT_WEBHOOK_SECRET_PARAM to the name of an SSM SecureString parameter

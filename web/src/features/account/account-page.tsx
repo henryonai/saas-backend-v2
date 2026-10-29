@@ -16,6 +16,7 @@ import { Spinner } from '@/shared/components/ui/spinner';
 import { authErrorMessage } from '../auth/auth-errors';
 import { MIN_PASSWORD_LENGTH } from '../auth/sign-up-page';
 import { useTenant } from '../workspace/hooks';
+import { DeleteAccount } from './components/delete-account';
 
 export function AccountPage() {
   const { t } = useTranslation();
@@ -74,6 +75,7 @@ export function AccountPage() {
           </CardContent>
         </Card>
         <ChangePassword />
+        <DeleteAccount />
       </div>
     </>
   );

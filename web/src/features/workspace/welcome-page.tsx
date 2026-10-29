@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { useUser } from '@/shared/auth/session';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card';
+import { DeleteAccount } from '../account/components/delete-account';
 import { CreateWorkspaceForm } from './components/create-workspace-form';
 import { DeletedWorkspaces } from './components/deleted-workspaces';
 import { InvitationList } from './components/invitation-list';
@@ -38,6 +39,7 @@ export function WelcomePage() {
           <CreateWorkspaceForm />
         </CardContent>
       </Card>
+      <DeleteAccount />
     </div>
   );
 }

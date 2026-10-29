@@ -13,7 +13,15 @@ from shared.idempotency import IdempotencyKey
 
 from accounts.container import get_account_service
 from accounts.models import Invitation, Member
-from accounts.schemas import InviteRequest, RoleUpdate, TenantCreate, TenantDelete, TenantOut, WorkspaceOut
+from accounts.schemas import (
+    AccountDelete,
+    InviteRequest,
+    RoleUpdate,
+    TenantCreate,
+    TenantDelete,
+    TenantOut,
+    WorkspaceOut,
+)
 from accounts.service import AccountService
 
 router = Router()
@@ -77,6 +85,16 @@ def change_role(user_id: str, body: RoleUpdate, user: User, service: Service) ->
 @router.delete("/users/<user_id>")
 def remove_user(user_id: str, user: User, service: Service):
     service.remove(user, user_id)
+    return Response(status_code=204)
+
+
+# ---------- the signed-in user's account ----------
+
+# Deletes the caller's login and what is kept about them (no X-Tenant-Id needed),
+# typing their email to confirm. They must delete the workspaces they own first.
+@router.delete("/account")
+def delete_my_account(body: AccountDelete, user: User, service: Service):
+    service.delete_account(user, body)
     return Response(status_code=204)
 
 

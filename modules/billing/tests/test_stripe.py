@@ -1,116 +1,18 @@
 """
-StripePaymentProvider through the real routes and webhook handler. A fake
-stands in for Stripe's API, but signatures are checked by Stripe's own code.
+What is Stripe's own in StripePaymentProvider: Checkout, the portal, reading a
+subscription back, signatures, renewals and cancelling (the fixture is in conftest.py).
 """
-import hashlib
-import hmac
-import itertools
-import json
 import time
-from types import SimpleNamespace
 
 import pytest
-import stripe
 from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError
 
 from shared.dynamo import ConditionFailed
 
-from billing.container import get_billing_service
-from billing.handler import app, handler
 from billing.listener import process_batch as process_listener
 from billing.repository import SubscriptionRepository
-from billing.service import BillingService
-from billing.stripe_provider import StripeConfig, StripePaymentProvider
-from billing.webhook import process_webhook
-from testkit.aws import create_table
-from testkit.http import FakeContext, call, claims
-from testkit.outbox import outbox_events
+from testkit.http import FakeContext, claims
 from testkit.sqs import sqs_event, with_event_ids
-
-SECRET = "whsec_test"
-CONFIG = StripeConfig(prices={"pro": "price_pro", "business": "price_business"},
-                      plan_for_price={"price_pro": "pro", "price_pro_2025": "pro", "price_business": "business"},
-                      portal_configuration="bpc_1")
-
-
-class FakeStripe:
-    """The parts of StripeClient the provider uses. Subscriptions are what Stripe would return now."""
-
-    def __init__(self):
-        self.calls: list[tuple[str, dict]] = []
-        self.subscriptions: dict[str, dict] = {}
-        self.down = False
-        sessions = lambda kind, url: SimpleNamespace(create=lambda params: self._record(kind, params, url))  # noqa: E731
-        self.v1 = SimpleNamespace(
-            checkout=SimpleNamespace(sessions=sessions("checkout", "https://checkout.stripe.test/c")),
-            billing_portal=SimpleNamespace(sessions=sessions("portal", "https://billing.stripe.test/p")),
-            subscriptions=SimpleNamespace(retrieve=self._retrieve, cancel=self._cancel, update=self._update),
-        )
-
-    def _record(self, kind, params, url):
-        self._check()
-        self.calls.append((kind, params))
-        return SimpleNamespace(url=url)
-
-    def _retrieve(self, subscription_id):
-        self._check()
-        return stripe.Subscription.construct_from(self.subscriptions[subscription_id], "sk_test")
-
-    def _cancel(self, subscription_id):
-        self._check()
-        self.calls.append(("cancel", {"subscription": subscription_id}))
-        self.subscriptions[subscription_id]["status"] = "canceled"
-
-    def _update(self, subscription_id, params):
-        self._check()
-        self.calls.append(("update", {"subscription": subscription_id, **params}))
-        self.subscriptions[subscription_id].update(params)
-
-    def _check(self):
-        if self.down:
-            raise stripe.APIConnectionError("Stripe is unreachable")
-
-    def construct_event(self, payload, sig_header, secret):
-        return stripe.Webhook.construct_event(payload, sig_header, secret)
-
-    def subscribe(self, status="active", price="price_pro", tenant="t1", sub_id="sub_1"):
-        self.subscriptions[sub_id] = {
-            "id": sub_id, "object": "subscription", "status": status, "customer": "cus_1",
-            "cancel_at_period_end": False,
-            "metadata": {"tenant_id": tenant} if tenant else {},
-            "items": {"object": "list", "data": [{"id": "si_1", "price": {"id": price}}]},
-        }
-
-
-def signature(raw: str, secret: str = SECRET, at: int | None = None) -> str:
-    at = int(time.time()) if at is None else at
-    return f"t={at},v1=" + hmac.new(secret.encode(), f"{at}.{raw}".encode(), hashlib.sha256).hexdigest()
-
-
-@pytest.fixture
-def ctx():
-    table = create_table("billing-test")
-    fake = FakeStripe()
-    service = BillingService(SubscriptionRepository(table), StripePaymentProvider(
-        client=lambda: fake, config=lambda: CONFIG, webhook_secret=lambda: SECRET, app_url="http://app.test"))
-    app.dependency_overrides[get_billing_service] = lambda: service
-    ids, clock = itertools.count(1), itertools.count(1_700_000_000)
-
-    def webhook(event_type="customer.subscription.updated", sub_id="sub_1", sign=signature) -> int:
-        raw = json.dumps({"id": f"evt_{next(ids)}", "object": "event", "type": event_type, "created": next(clock),
-                          "data": {"object": {"id": sub_id, "object": "subscription"}}})
-        event = {"headers": {"Stripe-Signature": sign(raw)}, "body": raw, "isBase64Encoded": False}
-        return process_webhook(event, service)["statusCode"]
-
-    yield SimpleNamespace(stripe=fake, webhook=webhook, table=table, service=service,
-                          api=lambda *a, **kw: call(handler, *a, **kw),
-                          event_types=lambda: [e["type"] for e in outbox_events(table)])
-    app.dependency_overrides.clear()
-
-
-@pytest.fixture
-def owner():
-    return claims("alice", "t1", "owner")
 
 
 def billing(ctx, owner) -> dict:
@@ -210,13 +112,14 @@ def test_billing_portal(ctx, owner):
     assert ctx.api("POST", "/billing/portal", claims("bob", "t1", "admin"))[0] == 403
 
 
-@pytest.mark.parametrize("sign", [
-    lambda raw: signature(raw, secret="whsec_other"),                 # wrong secret
-    lambda raw: signature(raw, at=int(time.time()) - 600),            # older than 5 minutes
-    lambda raw: "",                                                   # no signature
+@pytest.mark.parametrize("signed", [
+    {"secret": "whsec_other"},                 # wrong secret
+    {"at": int(time.time()) - 600},            # older than 5 minutes
+    None,                                      # no signature
 ])
-def test_webhooks_need_a_fresh_valid_signature(ctx, sign):
+def test_webhooks_need_a_fresh_valid_signature(ctx, signed):
     ctx.stripe.subscribe()
+    sign = (lambda raw: ctx.signature(raw, **signed)) if signed else (lambda raw: "")
     assert ctx.webhook("customer.subscription.created", sign=sign) == 400
     assert ctx.event_types() == []
 

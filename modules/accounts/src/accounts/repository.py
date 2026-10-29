@@ -14,6 +14,8 @@ Key design:
   USER#<user_id>      WORKSPACES          how many workspaces the user belongs to (count, limited)
   USER#<user_id>      IDEMPOTENCY#<user_id>#<key>  the workspace a POST /tenants with that key created
                                           (shared/idempotency.py; expires)
+  (A deleted account's USER# items go, except the memberships of workspaces it
+  owned that wait to be purged: the purge job removes those.)
   OUTBOX#<event_id>   OUTBOX              events to publish (shared/outbox.py)
 
 Rules that must hold even under concurrent requests (the workspaces per user,
@@ -216,12 +218,15 @@ class AccountRepository:
 
     def purge_member(self, tenant_id: str, user_id: str) -> bool:
         """Removes a member of a workspace being purged, and it from their list. False if gone already."""
+        leave = _leave(user_id, tenant_id)
+        if "Item" not in self.table.get_item(Key=_workspace_count_key(user_id)):
+            leave["workspaces"] = None   # a deleted account: nothing to count any more
         try:
             transact(
                 self.table,
                 member={"Delete": {"Key": _member_key(tenant_id, user_id),
                                    "ConditionExpression": "attribute_exists(pk)"}},
-                **_leave(user_id, tenant_id),
+                **leave,
             )
             return True
         except ConditionFailed:
@@ -235,6 +240,15 @@ class AccountRepository:
         deleted = delete_partition(self.table, _tenant_pk(tenant_id), keep=lambda sk: sk == "PROFILE")
         self.table.delete_item(Key=_profile(tenant_id))
         return deleted + 1
+
+    def delete_user(self, user_id: str, event: Event) -> int:
+        """
+        A deleted account: saves UserDeleted, then deletes the user's own items
+        (workspace count, keys), keeping memberships the purge job still
+        removes. Safe to repeat. Returns how many items went.
+        """
+        transact(self.table, event=outbox_put(event))
+        return delete_partition(self.table, f"USER#{user_id}", keep=lambda sk: sk.startswith("WORKSPACE#"))
 
     # ---------- members ----------
 

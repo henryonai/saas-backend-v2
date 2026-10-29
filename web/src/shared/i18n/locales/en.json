@@ -314,13 +314,6 @@
       "dismiss": "Stop waiting"
     }
   },
-  "devCheckout": {
-    "title": "Test checkout",
-    "description": "This stack uses the development payment provider: nothing is charged for the {{plan}} plan.",
-    "instructions": "To finish the upgrade, run this from the repository root. It sends the signed webhook a real provider would send after a payment:",
-    "cancel": "Cancel",
-    "done": "Back to billing"
-  },
   "notifications": {
     "title": "Notifications",
     "description": "What happened in your workspace.",
@@ -492,6 +485,16 @@
       "submit": "Change password",
       "changed": "Password changed.",
       "wrongCurrent": "The current password isn't right."
+    },
+    "delete": {
+      "title": "Delete your account",
+      "description": "Your login goes, and so do your conversations, files and notifications in every workspace. Delete the workspaces you own first.",
+      "open": "Delete account",
+      "confirmTitle": "Delete your account?",
+      "confirmDescription": "You leave every workspace you're in and are signed out. This can't be undone.",
+      "typeEmail": "Type {{email}} to confirm",
+      "submit": "Delete my account",
+      "done": "Your account was deleted."
     }
   }
 }
