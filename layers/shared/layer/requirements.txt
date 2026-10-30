@@ -1,7 +1,7 @@
 # Generated from uv.lock by scripts/export-requirements.sh. Do not edit: change pyproject.toml instead.
 annotated-types==0.8.0
     # via pydantic
-aws-lambda-powertools==3.36.0
+aws-lambda-powertools==3.37.0
     # via saas-shared
 jmespath==1.1.0
     # via aws-lambda-powertools
