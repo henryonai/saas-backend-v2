@@ -10,7 +10,7 @@ dependencies = []
 [dependency-groups]
 dev = [
     "boto3",                        # provided by the Lambda runtime, so never bundled
-    "moto[dynamodb,events,ssm]>=5.0",
+    "moto[dynamodb,events,ssm]>=5.2.4",
     "pytest>=8.0",
 ]
 
