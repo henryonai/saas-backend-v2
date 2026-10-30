@@ -57,8 +57,8 @@ Parameters:
     MinValue: 0
     Description: >-
       Monthly budget for the whole AWS account, in USD: AlertsTopic gets an alert at 80% of it
-      and when the month's forecast passes it. 0 = no budget. Dev and prod share an account by
-      default, so set it in one of them.
+      and when the month's forecast passes it. 0 = no budget. Set it in one stack per account
+      (prod, in its own account).
   LogRetentionDays:
     Type: Number
     Default: 30

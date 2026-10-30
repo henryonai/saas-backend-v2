@@ -48,7 +48,7 @@ parameter_overrides = [
   # With your own domain verified in SES, add EmailSender=no-reply@<domain> and
   # SesIdentity=<domain>. Until then app emails (invitations too) are only logged,
   # and Cognito sends sign-up codes itself (about 50 a day).
-  'AlertEmail=""',                    # your address, for alarms and budget alerts (confirm the email after the first deploy)
-  "AccountBudgetUsd=100",             # the whole account's monthly budget in USD (dev shares it); 0 = none
+  'AlertEmail=""',                    # empty: this repository is public, so the addresses are subscribed to AlertsTopic by hand
+  "AccountBudgetUsd=100",             # prod's account's monthly budget in USD; 0 = none
   "LogRetentionDays=90",
 ]
