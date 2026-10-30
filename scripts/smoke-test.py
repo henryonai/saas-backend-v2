@@ -232,7 +232,7 @@ check("an unknown API route -> 404 from the API, not the app's page", r.status_c
 r = requests.get(f"{WEB}/orders/123", timeout=30)
 check("an app route (/orders/123) -> the app's page",
       r.ok and r.headers.get("content-type", "").startswith("text/html"),
-      "the app isn't published: run web/scripts/deploy.sh for this stack" if "AccessDenied" in r.text else show(r))
+      f"the app isn't published: run web/scripts/deploy.sh {STACK}" if "AccessDenied" in r.text else show(r))
 
 print("Orders")
 widget, key = {"item": "Widget", "quantity": 2, "price_cents": 1999}, new_key()

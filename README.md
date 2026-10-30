@@ -20,26 +20,39 @@ Orders is the sample module: a small domain module to copy for your own.
    git diff                                                      # review, then commit
    ```
 
-   Replace `LICENSE` too: it is the template's own notice.
+   The template is MIT-licensed (`LICENSE`): keep that notice in your copy.
+   Your own changes can carry your name, or a licence of your own, beside it.
 3. Deploy dev. `sam build` installs dependencies for the Lambda runtime, so it
    needs a Python 3.13 that has pip on `PATH` (uv's own, for example:
    `export PATH="$(dirname "$(uv python find --system 3.13)"):$PATH"`; the
-   project's `.venv` has no pip), or `sam build --use-container`:
+   project's `.venv` has no pip), or `sam build --use-container`. The stack
+   and SSM names below are the project's own: in a copy, the rename script has
+   already changed them.
 
    ```bash
-   read -rs STRIPE_KEY && aws ssm put-parameter --name /acme/dev/stripe-secret-key \
+   read -rs STRIPE_KEY && aws ssm put-parameter --name /saas/dev/stripe-secret-key \
        --type SecureString --value "$STRIPE_KEY"; unset STRIPE_KEY   # a test key
    ./scripts/export-requirements.sh && sam build
    sam deploy --config-env dev        # the first deploy in an account: no assistant yet
-   uv run python scripts/stripe-setup.py --stack acme-dev
-   (cd web && ./scripts/deploy.sh acme-dev)   # the app, at the stack's WebUrl
-   uv run scripts/smoke-test.py --stack acme-dev
+   uv run python scripts/stripe-setup.py --stack saas-dev
+   (cd web && ./scripts/deploy.sh saas-dev)   # the app, at the stack's WebUrl
+   uv run scripts/smoke-test.py --stack saas-dev
    ```
 
-   For the assistant, put an OpenRouter key in `/acme/dev/openrouter-api-key`
-   the same way, then deploy again with its code ("Deploy"): its zip goes to
-   the bucket the first `sam deploy` created. Then set up the deploy workflow
-   ("CI/CD").
+   For the assistant, put an OpenRouter key in SSM the same way, deploy again
+   with its code (its zip goes to the bucket the first `sam deploy` created),
+   and publish the app again, so it gets the new `AssistantUrl`:
+
+   ```bash
+   read -rs OPENROUTER_KEY && aws ssm put-parameter --name /saas/dev/openrouter-api-key \
+       --type SecureString --value "$OPENROUTER_KEY"; unset OPENROUTER_KEY
+   sam deploy --config-env dev \
+     --parameter-overrides "$(uv run python scripts/package-assistant.py --config-env dev)"
+   (cd web && ./scripts/deploy.sh saas-dev)
+   uv run scripts/smoke-assistant.py --stack saas-dev
+   ```
+
+   Then set up the deploy workflow ("CI/CD").
 4. Build your first module from the sample, then remove the sample
    ("The sample module").
 
@@ -804,3 +817,7 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
   branch can use, could also change prod's resources directly. If you move
   prod, create its deploy role (with `CreateOidcProvider=true`) and its SSM
   secret in that account
+
+## License
+
+MIT (`LICENSE`). Copies keep the notice.
