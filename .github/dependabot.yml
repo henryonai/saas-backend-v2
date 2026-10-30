@@ -1,4 +1,6 @@
-# Weekly dependency updates, one PR per ecosystem; CI checks each one.
+# Weekly dependency updates; CI checks each PR.
+# Minor and patch updates come as one PR per ecosystem. Each major update comes as a PR of its
+# own, so one that breaks something (it needs code changes) doesn't hold the safe ones back.
 # Python: uv.lock (run ./scripts/export-requirements.sh after merging, before sam build).
 version: 2
 updates:
@@ -6,14 +8,19 @@ updates:
     directory: /
     schedule: { interval: weekly }
     groups:
-      python: { patterns: ["*"] }
+      python: { patterns: ["*"], update-types: [minor, patch] }
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly }
     groups:
-      web: { patterns: ["*"] }
+      web: { patterns: ["*"], update-types: [minor, patch] }
+    ignore:
+      # TypeScript 7 (the native compiler) has no compiler API yet, which openapi-typescript
+      # (pnpm gen:api) calls. Remove this once openapi-typescript supports TypeScript 7.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
     groups:
-      actions: { patterns: ["*"] }
+      actions: { patterns: ["*"], update-types: [minor, patch] }

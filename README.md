@@ -747,8 +747,10 @@ After its first deploy, run `stripe-setup.py --stack <prod stack>`.
   template doesn't add a monitor, since an account can have only one per-service
   monitor. Check its threshold under Billing > Cost Anomaly Detection: the
   default alerts only on anomalies of $100 or more, too high for a small app.
-- **Dependency updates:** Dependabot opens one PR a week per ecosystem (uv,
-  pnpm, GitHub Actions; `.github/dependabot.yml`), checked by CI. After merging
+- **Dependency updates:** each week Dependabot opens one PR of minor and patch
+  updates per ecosystem (uv, pnpm, GitHub Actions; `.github/dependabot.yml`),
+  and a PR of its own for each major update, all checked by CI. TypeScript's
+  major updates are skipped until the API generator supports TypeScript 7. After merging
   a Python one, run `./scripts/export-requirements.sh` and commit the result,
   or CI's requirements check fails.
 
