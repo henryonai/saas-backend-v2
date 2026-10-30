@@ -5,6 +5,7 @@ template, before its first deploy:
 
     uv run python scripts/rename-project.py acme
     uv run python scripts/rename-project.py acme --title "Acme" --dry-run
+    uv run python scripts/rename-project.py acme-shop --strict   # what CI runs on every PR
 
 It reads the current name from pyproject.toml ("<name>-backend"), so it can
 also rename a project again. In every file git tracks it changes:
@@ -67,6 +68,13 @@ def leftover_pattern(old: str) -> re.Pattern:
     return re.compile(r"(?<![A-Za-z0-9])(?:" + names + r")(?![A-Za-z0-9])")
 
 
+def inside_new_name(text: str, match: re.Match, new: str) -> bool:
+    """Whether a match of the old name is part of the new one (renaming acme to acme-shop, say)."""
+    return any(found.start() <= match.start() and match.end() <= found.end()
+               for name in {new, new.replace("-", "_")}
+               for found in re.finditer(re.escape(name), text))
+
+
 def title_rules(title: str) -> dict[Path, tuple[re.Pattern, Callable[[re.Match], str]]]:
     tag = f"<title>{html.escape(title)}</title>"
     quoted = json.dumps(title, ensure_ascii=False)
@@ -93,6 +101,8 @@ def main() -> None:
     parser.add_argument("name", help="lowercase letters, digits and dashes, e.g. acme or acme-shop")
     parser.add_argument("--title", help='the app\'s name on screen, e.g. "Acme" (default: unchanged)')
     parser.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
+    parser.add_argument("--strict", action="store_true",
+                        help="exit with an error if names or overlong lines are left to fix by hand (CI uses it)")
     args = parser.parse_args()
 
     old, new = current_name(), args.name
@@ -138,11 +148,12 @@ def main() -> None:
         print("uv not found: run `uv lock` and ./scripts/export-requirements.sh yourself.")
 
     leftover = leftover_pattern(old)
-    leftovers = [] if leftover.search(new) else [   # a new name that contains the old one can't be checked
+    leftovers = [
         f"{path.relative_to(ROOT)}:{text.count(chr(10), 0, match.start()) + 1}: {match.group(0)}"
         for path in tracked_files()
         if (text := read_text(path)) is not None
         for match in leftover.finditer(text)
+        if not inside_new_name(text, match, new)
     ]
     if leftovers:
         print(f"Still named {old!r} (check by hand):", *leftovers, sep="\n  ")
@@ -157,6 +168,8 @@ def main() -> None:
     ]
     if too_long:
         print(f"Now longer than {limit} characters (wrap them):", *too_long, sep="\n  ")
+    if args.strict and (leftovers or too_long):
+        sys.exit("Left to fix by hand: see above.")
 
     print(f"""
 Next:

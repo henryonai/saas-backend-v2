@@ -26,8 +26,9 @@ def test_the_model_id_picks_the_provider(model_id, openrouter):
 
 
 def test_openrouter_models_read_the_key_from_ssm_when_called():
-    model = chat_model("anthropic/claude-haiku-5.5", settings(openrouter_api_key_param="/saas/test/openrouter-api-key"))
-    boto3.client("ssm").put_parameter(Name="/saas/test/openrouter-api-key", Value="sk-or-test", Type="SecureString")
+    key_param = "/saas/test/openrouter-api-key"
+    model = chat_model("anthropic/claude-haiku-5.5", settings(openrouter_api_key_param=key_param))
+    boto3.client("ssm").put_parameter(Name=key_param, Value="sk-or-test", Type="SecureString")
 
     assert isinstance(model, ChatOpenAI) and model.model_name == "anthropic/claude-haiku-5.5"
     assert model.openai_api_base == "https://openrouter.ai/api/v1"
