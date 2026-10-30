@@ -1,0 +1,74 @@
+name: dependabot
+
+# Lands Dependabot's PRs without the owner, once CI's required checks pass:
+#   - minor and patch updates, and any update that changes no version type (a wider requirement)
+#   - major updates of development dependencies: CI runs them, so green means they work
+# Major updates of what runs in production stay open for the owner. The tests use fakes and moto,
+# so green says little about a new major of Stripe or React, and GitHub Actions majors touch the
+# deploy. Merging deploys nothing: prod still takes its two manual runs of deploy.yml.
+#
+# Dependabot doesn't know about the requirements.txt files, so a Python update also commits them
+# here. A push with GITHUB_TOKEN starts no workflows, so CI is started by hand on that commit.
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  land:
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write            # start CI on the requirements commit
+      contents: write           # push that commit, and merge
+      pull-requests: write      # turn on auto-merge
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HEAD_REF: ${{ github.head_ref }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+    steps:
+      # Also refuses a PR with commits that aren't Dependabot's own.
+      - uses: dependabot/fetch-metadata@v3
+        id: metadata
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/checkout@v7
+        if: steps.metadata.outputs.package-ecosystem == 'uv'
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: false   # the export below runs without the token
+      - uses: astral-sh/setup-uv@v10.3.2
+        if: steps.metadata.outputs.package-ecosystem == 'uv'
+      - name: Regenerate requirements.txt from uv.lock
+        if: steps.metadata.outputs.package-ecosystem == 'uv'
+        env:
+          GH_TOKEN: ""
+        run: ./scripts/export-requirements.sh
+      - name: Commit them, and run CI on that commit
+        if: steps.metadata.outputs.package-ecosystem == 'uv'
+        run: |
+          git add -- layers/shared/layer/requirements.txt 'modules/*/src/requirements.txt'
+          git diff --cached --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Regenerate the requirements files from uv.lock"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${HEAD_REF}"
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF"
+
+      - name: Merge once the required checks pass
+        if: >-
+          steps.metadata.outputs.update-type != 'version-update:semver-major'
+          || steps.metadata.outputs.dependency-type == 'direct:development'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # With no required check to wait for, this would merge at once, before CI has run.
+          required=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${BASE_REF}" --jq '.protection.required_status_checks.contexts | length')
+          if [[ "$required" -eq 0 ]]; then
+            echo "::error::${BASE_REF} has no required status checks, so this PR is left for you to merge"
+            exit 1
+          fi
+          gh pr merge --auto --squash "$PR_URL"
