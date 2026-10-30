@@ -8,7 +8,7 @@ dependencies = [
     "saas-shared",
     "ag-ui-protocol>=1.0,<2",              # AG-UI events and RunAgentInput (the frontend contract)
     "aws-opentelemetry-distro>=0.21,<1",   # traces in CloudWatch (entry point: opentelemetry-instrument)
-    "bedrock-agentcore>=1.24,<2",          # AGUIApp: the AG-UI /invocations, /ws and /ping server
+    "bedrock-agentcore>=1.25.0,<2",          # AGUIApp: the AG-UI /invocations, /ws and /ping server
     "httpx>=0.28,<1",                      # tools call the other modules' HTTP API
     "langchain>=1.4,<2",                   # create_agent and middleware
     "langchain-aws>=1.9,<2",               # ChatBedrockConverse (Bedrock model ids)

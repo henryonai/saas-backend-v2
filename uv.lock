@@ -61,15 +61,15 @@ wheels = [
 
 [[package]]
 name = "aws-lambda-powertools"
-version = "3.36.0"
+version = "3.37.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jmespath" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/14/dc/7e2074bec768a7f84aedbec31a35c4978f10df0b9201b428cce373c5cd0f/aws_lambda_powertools-3.36.0.tar.gz", hash = "sha256:3931b362265b5bb6b5bc31dd8f8821cbfb3cfd0fd44df28749aff9547be00fe2", size = 821764, upload-time = "2026-10-15T09:25:34.694Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/40/7b964e95af5cd66c3a029aeb67a04915225edf436b296adf1a37d0dd909d/aws_lambda_powertools-3.37.0.tar.gz", hash = "sha256:eec85df216ef5e99efd2cbed01ddeebe34585b650625dabc96fdc5b471ef8fcf", size = 827593, upload-time = "2026-10-22T09:44:51.217Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/76/cf2af10e086ec0e60aad4c727e47c90841bb7aa23d68b5a94269380bc2f2/aws_lambda_powertools-3.36.0-py3-none-any.whl", hash = "sha256:cc44418d9f7ba27b571a515a356206d2aeebc019871082467e88b2bff3e3bdb5", size = 992968, upload-time = "2026-10-15T09:25:32.77Z" },
+    { url = "https://files.pythonhosted.org/packages/80/d8/7f3d585da96f3bb637caf6cefee0f539b47360462c632fab689793c80b38/aws_lambda_powertools-3.37.0-py3-none-any.whl", hash = "sha256:92df3f790851a30cfb5ed45ff8e11f2de9b74e60aed0169d2a6b6da2362b45fb", size = 999694, upload-time = "2026-10-22T09:44:49.366Z" },
 ]
 
 [[package]]
@@ -146,7 +146,7 @@ wheels = [
 
 [[package]]
 name = "bedrock-agentcore"
-version = "1.24.2"
+version = "1.25.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
@@ -158,37 +158,37 @@ dependencies = [
     { name = "uvicorn" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/cd/9128b41a7c7b67fb157e437294a0dab9f0bc852b982983fc4d9a24dfd7c7/bedrock_agentcore-1.24.2.tar.gz", hash = "sha256:8400ecb32d6d4309338646ab456e32fcccfaf6416c19892ef6b8cc25a8d6639f", size = 1277230, upload-time = "2026-10-19T18:44:54.673Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bc/c7/5d1499cc74c7a2c8453284c4d5c34fb77aa1eca0196ef35f27dca781ca6a/bedrock_agentcore-1.25.0.tar.gz", hash = "sha256:a5140924092be74c5962ae90e3764f030a7d4db22d5c3b608283bfe8e7fff1d3", size = 1290385, upload-time = "2026-10-23T20:18:38.168Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ee/c4/a714d5cda605f8993305d59fe6da35ac58b2f09a6ec6b934b9ed7ec9cfc9/bedrock_agentcore-1.24.2-py3-none-any.whl", hash = "sha256:e87fee8db5fa180c540f2aca1056cb9331a2e98a173b44308151644a6e416482", size = 523912, upload-time = "2026-10-19T18:44:52.8Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/25/4169683c3ed60a46be6aca60d4f2b9336b01c8e20cb76ef3f0ed9dd006e5/bedrock_agentcore-1.25.0-py3-none-any.whl", hash = "sha256:6b4e015080298bf38bd8787f15d37aa7d805807792e027f0e5f2332454420af5", size = 531165, upload-time = "2026-10-23T20:18:36.453Z" },
 ]
 
 [[package]]
 name = "boto3"
-version = "1.43.117"
+version = "1.43.119"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore" },
     { name = "jmespath" },
     { name = "s3transfer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/94/a7/61f0295f79dfdcebb5aa01f86c614fac7e1294faabbd66259d3609c50539/boto3-1.43.117.tar.gz", hash = "sha256:f3d314908d866b577ee6b74ed432c21e565c4c4dbd640ef3fd5e0da30fa13a98", size = 112677, upload-time = "2026-10-21T19:30:03.849Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/1b/97f8ec6ce00ae49455797b8af9fde522624ecf80bc73c937596b558b1853/boto3-1.43.119.tar.gz", hash = "sha256:e12c3b1d81713e14bd6947b7412d9d0ea49b320642d795ded1d64d6483ca6f49", size = 112659, upload-time = "2026-10-26T19:25:58.76Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f3/3b/22b05a545fb95983733d84681364c6b0a36afb0710d832f77732d1fc4c0b/boto3-1.43.117-py3-none-any.whl", hash = "sha256:a5b6cd7e67653987fcf0e212187c16f7b58af2ae192e368f7212ddab7c05b25d", size = 140043, upload-time = "2026-10-21T19:30:02.114Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/d7/6c82dff652082a4bab907b7a5833933a362f12400f14bd7a9935a330145e/boto3-1.43.119-py3-none-any.whl", hash = "sha256:d1718edae48c3241d289c0ece8a515399a7242c406e35328b9685c4d24039186", size = 140045, upload-time = "2026-10-26T19:25:57.128Z" },
 ]
 
 [[package]]
 name = "botocore"
-version = "1.43.117"
+version = "1.43.122"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jmespath" },
     { name = "python-dateutil" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6e/a0/d0a5c44ad6a01f195681ddcb4ce203f06c712811daf1d15f8f8785e8a9f8/botocore-1.43.117.tar.gz", hash = "sha256:71993702832cc37c2495048b9945f2929d306fccb3fb767e9964e437e637fa6c", size = 16366888, upload-time = "2026-10-21T19:29:59.274Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/56/30404d13529fd3fc0a142f9ec2b6680778c0b8183eeef932401e7954dc9c/botocore-1.43.122.tar.gz", hash = "sha256:2fc53b68b35314b1738cad46e6170d0556496863913451428fc3afccb8c7fa95", size = 16478232, upload-time = "2026-10-29T19:19:51.025Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/94/050e35c9febf6dd2fce4a76be587ae4a323964865700467d9d7b082f7133/botocore-1.43.117-py3-none-any.whl", hash = "sha256:5920ef9b3002e1361846549078549d9154a6e0004c22853c01ce7b279d05d495", size = 16061765, upload-time = "2026-10-21T19:29:56.001Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/ee/bde83952daa267697a73c0c0dada587127e5022056c802bf07e0a9ad8b95/botocore-1.43.122-py3-none-any.whl", hash = "sha256:668e608edf8847fc4c3c6b38688e183c3bcf19b8a1f7f58d33c03a6f3039bd49", size = 16178674, upload-time = "2026-10-29T19:19:47.726Z" },
 ]
 
 [[package]]
@@ -574,7 +574,7 @@ wheels = [
 
 [[package]]
 name = "langchain-aws"
-version = "1.9.0"
+version = "1.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
@@ -582,16 +582,17 @@ dependencies = [
     { name = "numpy" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/37/9f/bfd6c27604f4e0111d65434382d2c5f07e7f0008761d4f11885dc7359591/langchain_aws-1.9.0.tar.gz", hash = "sha256:8823a08d2956b0d54d766d3c3ce7b5b2f185fdc16436be97c2729960d1211d9c", size = 809408, upload-time = "2026-10-15T17:43:49.122Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/bf/e0fe1e6f09ee89cd8c548565445764436c86fdc190e65e22e5b191c403d4/langchain_aws-1.9.1.tar.gz", hash = "sha256:e594476409f7fd41ae0989179866758338f7e5a9abbee93c0b2cff528aee2bb8", size = 834162, upload-time = "2026-10-26T11:38:10.013Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/fd/508c161bb8a3cc12a3bfd0fc62c5762c34a0c9a1ec2b29ebdc0bc3d38538/langchain_aws-1.9.0-py3-none-any.whl", hash = "sha256:e449e931a1f966e5fef4e5917f59ea008ebc033a3340b48d0f0bd639287c7ade", size = 249894, upload-time = "2026-10-15T17:43:47.65Z" },
+    { url = "https://files.pythonhosted.org/packages/df/50/137e38cdd563e1b2455010354a13ed4f75313baadb12a68de5445c255f12/langchain_aws-1.9.1-py3-none-any.whl", hash = "sha256:9a86311e0fc9edc1a6cbef534d0c597a62d40c9cc14e09adf2994cbed7748336", size = 250890, upload-time = "2026-10-26T11:38:08.637Z" },
 ]
 
 [[package]]
 name = "langchain-core"
-version = "1.6.13"
+version = "1.7.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "certifi" },
     { name = "httpx" },
     { name = "jsonpatch" },
     { name = "langchain-protocol" },
@@ -603,14 +604,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/40/76/0b8e5383a9c6a05bde284790d661487bb586cf101f43e8d4dac1fb3da1ee/langchain_core-1.6.13.tar.gz", hash = "sha256:756d8fd971cd7e3a5a19cf5453a81159351bd40cbfe62cbfe7e2ee3941008772", size = 1018477, upload-time = "2026-10-21T20:43:32.248Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ac/90/f932d9c82d15033ae9676fb3670993e10e1b4d9c59fe1b7ae024dee11955/langchain_core-1.7.3.tar.gz", hash = "sha256:77f70b81e238c981bfd8405840b03fdf143735ac93c0729c2bdb39d6f0648024", size = 1029116, upload-time = "2026-10-29T20:55:56.42Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b0/2f/c15b026e7b4aa093bc237c909bf909e8a59143b1315efee43c296fad58ce/langchain_core-1.6.13-py3-none-any.whl", hash = "sha256:8605de6f84a49902ef6be03d6fe2a126e7dfc35184315989689f341181f0a8fb", size = 574683, upload-time = "2026-10-21T20:43:30.951Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/c6/88bcc77899601e09a428d9c764e41ac3e7ede161384f85b9a2a8a828f81d/langchain_core-1.7.3-py3-none-any.whl", hash = "sha256:460c214bf31495d7b7e0a879e408dbfda677fd53fd879da786c1b966a4f6bff6", size = 577074, upload-time = "2026-10-29T20:55:54.722Z" },
 ]
 
 [[package]]
 name = "langchain-openai"
-version = "1.7.2"
+version = "1.7.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -618,9 +619,9 @@ dependencies = [
     { name = "openai" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/da/ca/b64799a9f2ee688aa6c238f5230b20d150b19cc5892bdcb6faf2b59866f1/langchain_openai-1.7.2.tar.gz", hash = "sha256:e1fcbc7a96f7c8c94679d61639a979bba88f27889c0a68dfa225b8057345328d", size = 3405949, upload-time = "2026-10-14T13:50:59.956Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/f5/a430230cb50b4b4ade021a5fe5df5a8c5adefa468435d460d2f77f2506ea/langchain_openai-1.7.3.tar.gz", hash = "sha256:c1d2d0fbd4f542ddcdf176c07abcf4d86c3b716513929250bbef04e3efc5e0b5", size = 3407726, upload-time = "2026-10-26T23:08:33.98Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/39/5d/8c4888a21087e4cd1c32965613a1a17cfc8e90e41ba5205c3dad302f3410/langchain_openai-1.7.2-py3-none-any.whl", hash = "sha256:9be7980edf355ca2dd595b795a5125836ccf04515ef9377228913246156e59f5", size = 146367, upload-time = "2026-10-14T13:50:58.697Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/52/5bcba40b1d7e46f352a727c57c231b820069bc83310f97933e10eccbd935/langchain_openai-1.7.3-py3-none-any.whl", hash = "sha256:0ab77cc4579b87c50823b7ccb5d8af48d6c6ae2084f156dcdc37151fcc0717e6", size = 146342, upload-time = "2026-10-26T23:08:32.577Z" },
 ]
 
 [[package]]
@@ -667,16 +668,16 @@ wheels = [
 
 [[package]]
 name = "langgraph-checkpoint-aws"
-version = "1.2.5"
+version = "1.2.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cb/9f/d7035d6513a66bf299e5c2a806f22a72a87f5b4fbb141d719a1eb848faf0/langgraph_checkpoint_aws-1.2.5.tar.gz", hash = "sha256:e6b1a9908041ad480c33c61274ccce25acf3831d1ae0fe1044863defbe564a1f", size = 347114, upload-time = "2026-10-08T00:19:39.741Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/95/03/52f4a13fe7b8878fe19ae01f0fc0eff534874a7fab15dee943198a02dc95/langgraph_checkpoint_aws-1.2.6.tar.gz", hash = "sha256:882e4cb8220af0649f8a7cbe0a1f4e209829f3858c043cbd031422d7baa9d917", size = 355418, upload-time = "2026-10-23T01:06:00.321Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/b2/8b178d96ae66196374ea1b8b7eed86319db4309df6db2e3908fdec2ac82d/langgraph_checkpoint_aws-1.2.5-py3-none-any.whl", hash = "sha256:328493c5695c607513559cce3c17210919a60d6999ad8816470cb44b1045e463", size = 186418, upload-time = "2026-10-08T00:19:38.663Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/49/e01f7cf84febc5c8cded764efc703c91a8fae0b7bcfa99fd377311ae0c42/langgraph_checkpoint_aws-1.2.6-py3-none-any.whl", hash = "sha256:749a662c4b4eabd48ad8125c3a9e503749669217b143e666fd6790faff0fb7c5", size = 188817, upload-time = "2026-10-23T01:05:59.28Z" },
 ]
 
 [[package]]
@@ -2064,7 +2065,7 @@ dev = [
 requires-dist = [
     { name = "ag-ui-protocol", specifier = ">=1.0,<2" },
     { name = "aws-opentelemetry-distro", specifier = ">=0.21,<1" },
-    { name = "bedrock-agentcore", specifier = ">=1.24,<2" },
+    { name = "bedrock-agentcore", specifier = ">=1.25.0,<2" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "langchain", specifier = ">=1.4,<2" },
     { name = "langchain-aws", specifier = ">=1.9,<2" },
@@ -2134,7 +2135,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "saas-shared", editable = "layers/shared" },
-    { name = "stripe", specifier = ">=16,<17" },
+    { name = "stripe", specifier = ">=16.0.1,<17" },
 ]
 
 [package.metadata.requires-dev]
@@ -2190,7 +2191,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-lambda-powertools", specifier = ">=3.0,<4.0" },
+    { name = "aws-lambda-powertools", specifier = ">=3.37.0,<4.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "pydantic-settings", specifier = ">=2.3,<3.0" },
 ]
@@ -2238,15 +2239,15 @@ wheels = [
 
 [[package]]
 name = "stripe"
-version = "16.0.0"
+version = "16.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0b/a7/4a8546b293a09f39a2b55ca8a11539ae9654126df59065868c5d3993f0dd/stripe-16.0.0.tar.gz", hash = "sha256:5016068d54aebb43e61b3c377ef45bede4e0b4eb1817d7a12af81630c55a23d2", size = 1665584, upload-time = "2026-10-01T00:42:03.388Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a3/23/aed4a83f9ab867993a96bb6dc6a4be13b42629fa66362000e7b709218c71/stripe-16.0.1.tar.gz", hash = "sha256:44f20abd85c5cdac1d019c290b2fa055db2b6f4890f7f3b2daa493eb48c9a0d2", size = 1544782, upload-time = "2026-10-27T00:45:50.118Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/de/5141ae3990862cc3d61a1cdd4acff72bcb587afb7b4d31c52eaddbb6bc8f/stripe-16.0.0-py3-none-any.whl", hash = "sha256:6a401baf2fc19c59ccb59005e674f8da8fa256e8db319ad8c50292f4cddf8c26", size = 2543794, upload-time = "2026-10-01T00:42:01.65Z" },
+    { url = "https://files.pythonhosted.org/packages/31/aa/2826a75adb7f9007d713e0a073a70e750d69cf603783b8650d4c5eb757dc/stripe-16.0.1-py3-none-any.whl", hash = "sha256:f87d6aaf6d20c9e788c8532d23511eb42be4602e48cf4f425327e96ccb7e4f00", size = 2424918, upload-time = "2026-10-27T00:45:48.413Z" },
 ]
 
 [[package]]
