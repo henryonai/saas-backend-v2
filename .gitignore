@@ -11,5 +11,7 @@ docs/openapi/
 .env.local
 .env.*.local
 
-# Worktrees the ship kit makes for a build (worktrees.dir in .ship/profile.yaml)
+# Your own Claude Code settings (plugins, permissions), and the worktrees
+# the maintainer's ship kit makes for a build (worktrees.dir in .ship/profile.yaml)
+.claude/settings.local.json
 .claude/worktrees/

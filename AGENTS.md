@@ -47,30 +47,14 @@ After changing backend dependencies, run `./scripts/export-requirements.sh` befo
 - A commit message is one plain sentence in the imperative saying what changes for the user, with
   no prefix: "Keep the old version when a message is edited or answered again".
 
-## The loop
+## How a change lands
 
-Every change takes the same path, with Slipway, the ship kit
-(`uv tool install --editable ~/Developer/tools/ship-kit` puts its `ship` command on PATH).
-`ship` reads [`.ship/profile.yaml`](.ship/profile.yaml): the plans folder, the gates (the checks
-above), the builder's model, this repo's security facts, the live check on `saas-dev`, and the
-owner's project page and work log.
+On a branch, with the checks above passing, through a pull request; CI runs the same checks.
+Production deploys are the owner's: GitHub Actions' deploy workflow, run by hand (README, "CI/CD").
 
-The loop's skills come from the kit's `slipway` plugin, which this repo enables in
-`.claude/settings.json`. Install it once, in this repo, with
-`claude plugin install slipway@slipway --scope project`.
-- `/slipway:ship` finds the stage.
-- `/slipway:ship-plan`, `/slipway:ship-build`, `/slipway:ship-review` and `/slipway:ship-land`
-  run the parts. Plans live in `plans/`, deferred work in `plans/BACKLOG.md`.
-- A build hands each part to the `ship-builder` agent on Sonnet and commits it itself; a change to
-  a sensitive path is reviewed against the profile's security facts first; a live check deploys
-  the branch to `saas-dev` with `ship deploy-branch`, which refuses a branch behind `main`, a
-  deploy in flight, and taking dev from another branch.
-
-The plugin's hooks hold rules that broke before. A refusal names the rule and the way through.
-They refuse:
-- a commit on `main`, on a branch this session holds no lease on (`ship lease acquire --task
-  <id>` in the worktree), or with a tool attribution;
-- `gh pr merge`: the owner merges (`SHIP_ALLOW=merge` asks the owner);
-- a change to a frozen plan outside its Status paragraph.
-
-Production deploys are the owner's: `ship deploy-branch` deploys to `saas-dev` only.
+The maintainer runs each change through Slipway, a ship kit of their own: `.ship/profile.yaml`
+configures it and `plans/` holds its plans and backlog. You don't need it to use this template.
+If `ship` is on your PATH and the `slipway` plugin is enabled in `.claude/settings.local.json`,
+its skills (`/slipway:ship`) plan, build, review and land a change, and its hooks refuse a commit
+on `main`, one on a branch without a lease (`ship lease acquire --task <id>`), and `gh pr merge`
+(the owner merges). A refusal names the rule and the way through.
