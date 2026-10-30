@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_call:            # deploy.yml runs these checks before deploying
+  workflow_dispatch:        # dependabot.yml runs these on the commit it pushes
+  schedule:
+    - cron: "17 3 * * *"    # PRs merged by dependabot.yml start no run on main, so check it daily
 
 jobs:
   check:

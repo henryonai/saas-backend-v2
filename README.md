@@ -749,10 +749,15 @@ After its first deploy, run `stripe-setup.py --stack <prod stack>`.
   default alerts only on anomalies of $100 or more, too high for a small app.
 - **Dependency updates:** each week Dependabot opens one PR of minor and patch
   updates per ecosystem (uv, pnpm, GitHub Actions; `.github/dependabot.yml`),
-  and a PR of its own for each major update, all checked by CI. TypeScript's
-  major updates are skipped until the API generator supports TypeScript 7. After merging
-  a Python one, run `./scripts/export-requirements.sh` and commit the result,
-  or CI's requirements check fails.
+  and a PR of its own for each major update, all checked by CI. New versions wait
+  7 days first; security updates don't. TypeScript's major updates are skipped
+  until the API generator supports TypeScript 7.
+  `.github/workflows/dependabot.yml` commits the regenerated `requirements.txt` files
+  to Python PRs, and merges each PR once CI passes, except major updates of production
+  dependencies and of GitHub Actions, which stay open for you. Merging deploys nothing.
+  Merges made this way start no CI run on `main`, so CI also runs there daily.
+  This needs **Allow auto-merge** on (Settings > General) and CI's `check` and `web`
+  as required status checks on `main`; without required checks, nothing merges.
 
 ## Adding a module
 

@@ -1,17 +1,21 @@
 # Weekly dependency updates; CI checks each PR.
 # Minor and patch updates come as one PR per ecosystem. Each major update comes as a PR of its
 # own, so one that breaks something (it needs code changes) doesn't hold the safe ones back.
-# Python: uv.lock (run ./scripts/export-requirements.sh after merging, before sam build).
+# .github/workflows/dependabot.yml commits the Python requirements.txt files and merges what's safe.
+# New versions wait a week first: they merge unread, and a bad release is usually pulled by then.
+# Security updates don't wait.
 version: 2
 updates:
   - package-ecosystem: uv
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     groups:
       python: { patterns: ["*"], update-types: [minor, patch] }
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     groups:
       web: { patterns: ["*"], update-types: [minor, patch] }
     ignore:
@@ -22,5 +26,6 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     groups:
       actions: { patterns: ["*"], update-types: [minor, patch] }
