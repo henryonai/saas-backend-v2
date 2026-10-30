@@ -61,15 +61,15 @@ wheels = [
 
 [[package]]
 name = "aws-lambda-powertools"
-version = "3.36.0"
+version = "3.37.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jmespath" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/14/dc/7e2074bec768a7f84aedbec31a35c4978f10df0b9201b428cce373c5cd0f/aws_lambda_powertools-3.36.0.tar.gz", hash = "sha256:3931b362265b5bb6b5bc31dd8f8821cbfb3cfd0fd44df28749aff9547be00fe2", size = 821764, upload-time = "2026-10-15T09:25:34.694Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/40/7b964e95af5cd66c3a029aeb67a04915225edf436b296adf1a37d0dd909d/aws_lambda_powertools-3.37.0.tar.gz", hash = "sha256:eec85df216ef5e99efd2cbed01ddeebe34585b650625dabc96fdc5b471ef8fcf", size = 827593, upload-time = "2026-10-22T09:44:51.217Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/76/cf2af10e086ec0e60aad4c727e47c90841bb7aa23d68b5a94269380bc2f2/aws_lambda_powertools-3.36.0-py3-none-any.whl", hash = "sha256:cc44418d9f7ba27b571a515a356206d2aeebc019871082467e88b2bff3e3bdb5", size = 992968, upload-time = "2026-10-15T09:25:32.77Z" },
+    { url = "https://files.pythonhosted.org/packages/80/d8/7f3d585da96f3bb637caf6cefee0f539b47360462c632fab689793c80b38/aws_lambda_powertools-3.37.0-py3-none-any.whl", hash = "sha256:92df3f790851a30cfb5ed45ff8e11f2de9b74e60aed0169d2a6b6da2362b45fb", size = 999694, upload-time = "2026-10-22T09:44:49.366Z" },
 ]
 
 [[package]]
@@ -165,30 +165,30 @@ wheels = [
 
 [[package]]
 name = "boto3"
-version = "1.43.117"
+version = "1.43.118"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore" },
     { name = "jmespath" },
     { name = "s3transfer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/94/a7/61f0295f79dfdcebb5aa01f86c614fac7e1294faabbd66259d3609c50539/boto3-1.43.117.tar.gz", hash = "sha256:f3d314908d866b577ee6b74ed432c21e565c4c4dbd640ef3fd5e0da30fa13a98", size = 112677, upload-time = "2026-10-21T19:30:03.849Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/96/8b/5694c8433b5202f34a82def4edee274f7df1eba2919c66d9d389d2202ec8/boto3-1.43.118.tar.gz", hash = "sha256:c0620f799e0f0c222ba42c337b65cdbcd3da38a3121187f634d8926cbbb28a9c", size = 112649, upload-time = "2026-10-22T19:22:09.629Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f3/3b/22b05a545fb95983733d84681364c6b0a36afb0710d832f77732d1fc4c0b/boto3-1.43.117-py3-none-any.whl", hash = "sha256:a5b6cd7e67653987fcf0e212187c16f7b58af2ae192e368f7212ddab7c05b25d", size = 140043, upload-time = "2026-10-21T19:30:02.114Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/a3/65bb3d64928f3c2da17640b92044084150317f02adf22442cb0c52af2a8b/boto3-1.43.118-py3-none-any.whl", hash = "sha256:ab8f3d2c622ef039338b4f228d97ea55f1abd573d84bb9b9a5ee8cb6780c0ccd", size = 140045, upload-time = "2026-10-22T19:22:08.353Z" },
 ]
 
 [[package]]
 name = "botocore"
-version = "1.43.117"
+version = "1.43.122"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jmespath" },
     { name = "python-dateutil" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6e/a0/d0a5c44ad6a01f195681ddcb4ce203f06c712811daf1d15f8f8785e8a9f8/botocore-1.43.117.tar.gz", hash = "sha256:71993702832cc37c2495048b9945f2929d306fccb3fb767e9964e437e637fa6c", size = 16366888, upload-time = "2026-10-21T19:29:59.274Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/56/30404d13529fd3fc0a142f9ec2b6680778c0b8183eeef932401e7954dc9c/botocore-1.43.122.tar.gz", hash = "sha256:2fc53b68b35314b1738cad46e6170d0556496863913451428fc3afccb8c7fa95", size = 16478232, upload-time = "2026-10-29T19:19:51.025Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/94/050e35c9febf6dd2fce4a76be587ae4a323964865700467d9d7b082f7133/botocore-1.43.117-py3-none-any.whl", hash = "sha256:5920ef9b3002e1361846549078549d9154a6e0004c22853c01ce7b279d05d495", size = 16061765, upload-time = "2026-10-21T19:29:56.001Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/ee/bde83952daa267697a73c0c0dada587127e5022056c802bf07e0a9ad8b95/botocore-1.43.122-py3-none-any.whl", hash = "sha256:668e608edf8847fc4c3c6b38688e183c3bcf19b8a1f7f58d33c03a6f3039bd49", size = 16178674, upload-time = "2026-10-29T19:19:47.726Z" },
 ]
 
 [[package]]
@@ -667,16 +667,16 @@ wheels = [
 
 [[package]]
 name = "langgraph-checkpoint-aws"
-version = "1.2.5"
+version = "1.2.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cb/9f/d7035d6513a66bf299e5c2a806f22a72a87f5b4fbb141d719a1eb848faf0/langgraph_checkpoint_aws-1.2.5.tar.gz", hash = "sha256:e6b1a9908041ad480c33c61274ccce25acf3831d1ae0fe1044863defbe564a1f", size = 347114, upload-time = "2026-10-08T00:19:39.741Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/95/03/52f4a13fe7b8878fe19ae01f0fc0eff534874a7fab15dee943198a02dc95/langgraph_checkpoint_aws-1.2.6.tar.gz", hash = "sha256:882e4cb8220af0649f8a7cbe0a1f4e209829f3858c043cbd031422d7baa9d917", size = 355418, upload-time = "2026-10-23T01:06:00.321Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/b2/8b178d96ae66196374ea1b8b7eed86319db4309df6db2e3908fdec2ac82d/langgraph_checkpoint_aws-1.2.5-py3-none-any.whl", hash = "sha256:328493c5695c607513559cce3c17210919a60d6999ad8816470cb44b1045e463", size = 186418, upload-time = "2026-10-08T00:19:38.663Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/49/e01f7cf84febc5c8cded764efc703c91a8fae0b7bcfa99fd377311ae0c42/langgraph_checkpoint_aws-1.2.6-py3-none-any.whl", hash = "sha256:749a662c4b4eabd48ad8125c3a9e503749669217b143e666fd6790faff0fb7c5", size = 188817, upload-time = "2026-10-23T01:05:59.28Z" },
 ]
 
 [[package]]
@@ -2069,7 +2069,7 @@ requires-dist = [
     { name = "langchain", specifier = ">=1.4,<2" },
     { name = "langchain-aws", specifier = ">=1.9,<2" },
     { name = "langchain-openai", specifier = ">=1.7,<2" },
-    { name = "langgraph-checkpoint-aws", specifier = ">=1.2,<2" },
+    { name = "langgraph-checkpoint-aws", specifier = ">=1.2.6,<2" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "saas-shared", editable = "layers/shared" },
 ]
@@ -2190,7 +2190,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-lambda-powertools", specifier = ">=3.0,<4.0" },
+    { name = "aws-lambda-powertools", specifier = ">=3.37.0,<4.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "pydantic-settings", specifier = ">=2.3,<3.0" },
 ]

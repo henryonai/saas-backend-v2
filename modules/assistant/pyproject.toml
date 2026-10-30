@@ -13,7 +13,7 @@ dependencies = [
     "langchain>=1.4,<2",                   # create_agent and middleware
     "langchain-aws>=1.9,<2",               # ChatBedrockConverse (Bedrock model ids)
     "langchain-openai>=1.7,<2",            # ChatOpenAI against OpenRouter's OpenAI-compatible API
-    "langgraph-checkpoint-aws>=1.2,<2",    # AgentCoreMemorySaver (conversation checkpoints)
+    "langgraph-checkpoint-aws>=1.2.6,<2",    # AgentCoreMemorySaver (conversation checkpoints)
     "pyyaml>=6,<7",                        # agents/*.md frontmatter
 ]
 
