@@ -54,9 +54,9 @@ live:
     workflow: deploy.yml
     inputs: {environment: dev}
     environment: dev
-  smoke: uv run scripts/smoke-test.py --stack saas-dev
+  smoke: AWS_PROFILE=saas-dev uv run scripts/smoke-test.py --stack saas-dev
   web:
-    setup: cd web && ./scripts/env-from-stack.sh saas-dev
+    setup: cd web && AWS_PROFILE=saas-dev ./scripts/env-from-stack.sh saas-dev
     start: cd web && pnpm dev --port {port} --strictPort
     url: http://localhost:{port}
     sign_in: owner

@@ -392,9 +392,11 @@ app.dependency_overrides[get_order_service] = lambda: OrderService(OrderReposito
 - For local runs, copy `.env.example` to `.env` (never commit `.env`). Tests
   ignore it.
 - Dev and prod run the same code with different values (`samconfig.toml`).
-  Each stack has its own resources, names, event bus and secret, so both can
-  live in one AWS account, as they do by default ("Before production" says
-  when a second account is worth it).
+  Each stack has its own resources, names, event bus and secret, so both
+  could share one AWS account, but this project keeps each in its own account
+  ("Before production" says why), with the CLI profiles `saas-dev` and
+  `saas-prod`: set `AWS_PROFILE` before a local `sam` command or script, which
+  otherwise go to whichever account your default credentials belong to.
 
 ## Payments
 
@@ -691,7 +693,7 @@ After its first deploy, run `stripe-setup.py --stack <prod stack>`.
   - `OutboxLagAlarm`: events have waited more than 5 minutes to be published.
     The relay keeps retrying for up to an hour; see `outbox-relay` in the app log group.
   - `LambdaThrottlesAlarm`: Lambda refused to run an API, sign-in or relay
-    function because the account's concurrency (shared by dev and prod) ran out.
+    function because the account's concurrency (shared by every stack in it) ran out.
   - `ApiDurationAlarm`, `WorkersDurationAlarm`: a function's p99 duration has
     been above 80% of its timeout for 15 minutes. The alarm's graph shows p99 /
     timeout per function; when you change a `Timeout`, change it in the alarm too.
@@ -820,10 +822,12 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
   there (`/api`), with no CORS; for your own domain, add it and its certificate
   to `WebDistribution` and set `AppUrl` to it.
   Set `AlertEmail` to your address for alarms and budget alerts, and confirm
-  its subscription email after the first deploy. Set `AccountBudgetUsd` to
-  what you expect the account to spend in a month (dev's spending counts too
-  while both share an account), and activate the cost allocation tags
-  ("Operations")
+  its subscription email after the first deploy (in a public repository, leave
+  it empty and subscribe your addresses to the stack's `AlertsTopic` by hand,
+  so they stay out of git). Set `AccountBudgetUsd` to
+  what you expect prod's account to spend in a month (the budget covers the
+  whole account it is deployed to), and activate the cost allocation tags
+  in that account ("Operations")
 - To send email, verify your domain in SES, request SES production access,
   and set `EmailSender` and `SesIdentity`. Until then app emails, invitations
   included, are only logged
@@ -831,11 +835,13 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
   you need to charge tax
 - Review the rate limits and the invitation rules (`INVITATION_DAYS`,
   `INVITES_PER_DAY`, `MAX_PENDING_INVITATIONS_PER_EMAIL`)
-- Dev and prod share one AWS account by default. A separate prod account is
-  a stronger boundary: in a shared account the dev deploy role, which any
-  branch can use, could also change prod's resources directly. If you move
-  prod, create its deploy role (with `CreateOidcProvider=true`) and its SSM
-  secret in that account
+- Deploy prod to its own AWS account, as this project does (dev in another).
+  In a shared account the dev deploy role, which any branch can use, could
+  also change prod's resources directly, and the two would share Lambda
+  concurrency and other quotas. In prod's account, create its deploy role
+  (with `CreateOidcProvider=true`), the GitHub `prod` environment's
+  `AWS_ROLE_ARN`, and its SSM parameters ("Payments"). One account for both
+  still works if you accept that
 
 ## License
 
