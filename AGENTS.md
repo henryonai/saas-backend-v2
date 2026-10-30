@@ -51,10 +51,3 @@ After changing backend dependencies, run `./scripts/export-requirements.sh` befo
 
 On a branch, with the checks above passing, through a pull request; CI runs the same checks.
 Production deploys are the owner's: GitHub Actions' deploy workflow, run by hand (README, "CI/CD").
-
-The maintainer runs each change through Slipway, a ship kit of their own: `.ship/profile.yaml`
-configures it and `plans/` holds its plans and backlog. You don't need it to use this template.
-If `ship` is on your PATH and the `slipway` plugin is enabled in `.claude/settings.local.json`,
-its skills (`/slipway:ship`) plan, build, review and land a change, and its hooks refuse a commit
-on `main`, one on a branch without a lease (`ship lease acquire --task <id>`), and `gh pr merge`
-(the owner merges). A refusal names the rule and the way through.
