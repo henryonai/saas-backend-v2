@@ -106,8 +106,15 @@ def zip_package(package: Path) -> Path:
 
 def sam_bucket(region: str) -> str:
     """The bucket `sam deploy` creates for its artifacts when resolve_s3 = true."""
-    stack = boto3.client("cloudformation", region_name=region).describe_stacks(
-        StackName="aws-sam-cli-managed-default")["Stacks"][0]
+    try:
+        stack = boto3.client("cloudformation", region_name=region).describe_stacks(
+            StackName="aws-sam-cli-managed-default")["Stacks"][0]
+    except ClientError as e:
+        if "does not exist" not in str(e):
+            raise
+        sys.exit(f"No sam deploy has run in this account and region ({region}) yet, so there is no bucket for "
+                 "the zip. Deploy once without the assistant (sam deploy --config-env <env>), then run this "
+                 "again, or pass --bucket.")
     return next(o["OutputValue"] for o in stack["Outputs"] if o["OutputKey"] == "SourceBucket")
 
 

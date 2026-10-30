@@ -171,10 +171,14 @@ def main() -> None:
 Next:
   uv sync --all-packages && (cd web && pnpm install)
   git diff                  # review, then commit
-Before the first deploy (see "CI/CD" in the README):
-  aws ssm put-parameter --name /{new}/dev/payment-webhook-secret \\
-      --type SecureString --value "$(openssl rand -hex 32)"
-  sam build && sam deploy --config-env dev      # creates the stack {new}-dev""")
+  Replace LICENSE: it is the template's own notice.
+Then the first deploy (README, "Starting a new project from this template"):
+  read -rs STRIPE_KEY && aws ssm put-parameter --name /{new}/dev/stripe-secret-key \\
+      --type SecureString --value "$STRIPE_KEY"; unset STRIPE_KEY
+  sam build && sam deploy --config-env dev      # creates the stack {new}-dev
+  uv run python scripts/stripe-setup.py --stack {new}-dev
+  (cd web && ./scripts/deploy.sh {new}-dev)
+  uv run scripts/smoke-test.py --stack {new}-dev""")
 
 
 if __name__ == "__main__":
