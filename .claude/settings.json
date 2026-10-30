@@ -6,15 +6,6 @@
     ]
   },
   "enabledPlugins": {
-    "slipway@slipway": true,
     "aws-core@claude-plugins-official": true
-  },
-  "extraKnownMarketplaces": {
-    "slipway": {
-      "source": {
-        "source": "github",
-        "repo": "henryonai/slipway"
-      }
-    }
   }
 }

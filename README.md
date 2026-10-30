@@ -8,8 +8,14 @@ Orders is the sample module: a small domain module to copy for your own.
 
 ## Starting a new project from this template
 
-1. Copy the repository (GitHub's "Use this template", or clone it into a new
-   repository).
+1. Copy the repository from a release, so your copy starts from code that was
+   deployed and tested (`git clone --branch <tag> https://github.com/henryonai/saas-backend-v2`;
+   the tags are on the Releases page), or with GitHub's "Use this template",
+   which copies `main`. Check the AWS account first: a new account can allow as
+   few as 10 Lambda functions running at once. The limit is per Region, so look
+   in the one you deploy to (`region` in `samconfig.toml`, `ap-southeast-1` by
+   default; Service Quotas > AWS Lambda > Concurrent executions), and request
+   1,000 there before real traffic.
 2. Give it its own name. This renames the packages, stacks, SSM parameter
    names, the event source and the browser storage keys, so two projects never
    collide in one AWS account:
@@ -22,6 +28,10 @@ Orders is the sample module: a small domain module to copy for your own.
 
    The template is MIT-licensed (`LICENSE`): keep that notice in your copy.
    Your own changes can carry your name, or a licence of your own, beside it.
+   Point the security link in `.github/ISSUE_TEMPLATE/config.yml` at your own
+   repository, and turn on private vulnerability reporting there (Settings >
+   Code security, or `gh api -X PUT repos/<owner>/<repo>/private-vulnerability-reporting`),
+   which `SECURITY.md` sends reporters to.
 3. Deploy dev. `sam build` installs dependencies for the Lambda runtime, so it
    needs a Python 3.13 that has pip on `PATH` (uv's own, for example:
    `export PATH="$(dirname "$(uv python find --system 3.13)"):$PATH"`; the
@@ -864,4 +874,5 @@ it is bundled into each function. Copy `conftest.py` (the fake AWS fixture) too.
 
 ## License
 
-MIT (`LICENSE`). Copies keep the notice.
+MIT (`LICENSE`). Copies keep the notice. To report a security problem, see
+[SECURITY.md](SECURITY.md).

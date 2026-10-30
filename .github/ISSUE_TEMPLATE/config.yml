@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/henryonai/saas-backend-v2/security/advisories/new
+    about: Privately, so it isn't public before it is fixed (SECURITY.md).
