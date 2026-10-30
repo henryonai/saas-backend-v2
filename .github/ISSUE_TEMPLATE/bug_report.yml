@@ -19,7 +19,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: The release tag or commit your copy came from (git log -1 --format=%h).
+      description: The release tag (or template commit) your copy started from.
   - type: dropdown
     id: where
     attributes:
