@@ -20,8 +20,26 @@ Orders is the sample module: a small domain module to copy for your own.
    git diff                                                      # review, then commit
    ```
 
-3. Create the stack's webhook secret ("Configuration and secrets"), deploy
-   ("Deploy"), and set up the deploy workflow ("CI/CD").
+   Replace `LICENSE` too: it is the template's own notice.
+3. Deploy dev. `sam build` installs dependencies for the Lambda runtime, so it
+   needs a Python 3.13 that has pip on `PATH` (uv's own, for example:
+   `export PATH="$(dirname "$(uv python find --system 3.13)"):$PATH"`; the
+   project's `.venv` has no pip), or `sam build --use-container`:
+
+   ```bash
+   read -rs STRIPE_KEY && aws ssm put-parameter --name /acme/dev/stripe-secret-key \
+       --type SecureString --value "$STRIPE_KEY"; unset STRIPE_KEY   # a test key
+   ./scripts/export-requirements.sh && sam build
+   sam deploy --config-env dev        # the first deploy in an account: no assistant yet
+   uv run python scripts/stripe-setup.py --stack acme-dev
+   (cd web && ./scripts/deploy.sh acme-dev)   # the app, at the stack's WebUrl
+   uv run scripts/smoke-test.py --stack acme-dev
+   ```
+
+   For the assistant, put an OpenRouter key in `/acme/dev/openrouter-api-key`
+   the same way, then deploy again with its code ("Deploy"): its zip goes to
+   the bucket the first `sam deploy` created. Then set up the deploy workflow
+   ("CI/CD").
 4. Build your first module from the sample, then remove the sample
    ("The sample module").
 
@@ -607,8 +625,9 @@ per environment, in the account it deploys to:
    gh variable set AWS_ROLE_ARN --env dev --body <RoleArn>
    ```
 
-Before the first prod run, do what "Before production" lists: at least create
-the SSM webhook secret and check prod's values in `samconfig.toml`.
+Before the first prod run, do what "Before production" lists: at least put
+the Stripe key in SSM ("Payments") and check prod's values in `samconfig.toml`.
+After its first deploy, run `stripe-setup.py --stack <prod stack>`.
 
 ## Operations
 
