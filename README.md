@@ -31,7 +31,10 @@ Orders is the sample module: a small domain module to copy for your own.
    Point the security link in `.github/ISSUE_TEMPLATE/config.yml` at your own
    repository, and turn on private vulnerability reporting there (Settings >
    Code security, or `gh api -X PUT repos/<owner>/<repo>/private-vulnerability-reporting`),
-   which `SECURITY.md` sends reporters to.
+   which `SECURITY.md` sends reporters to. On the same page, turn on secret
+   scanning with push protection (GitHub then refuses a push that contains a
+   key), Dependabot alerts and Dependabot security updates: they are settings
+   of each repository, so a copy doesn't inherit them.
 3. Deploy dev. `sam build` installs dependencies for the Lambda runtime, so it
    needs a Python 3.13 that has pip on `PATH` (uv's own, for example:
    `export PATH="$(dirname "$(uv python find --system 3.13)"):$PATH"`; the
@@ -612,7 +615,10 @@ card `4242 4242 4242 4242`). See [web/README.md](web/README.md).
 
 **CI** (`.github/workflows/ci.yml`) runs on every pull request and push to
 `main`: the backend's tests and linters, and the frontend's typecheck, lint,
-tests and build.
+tests and build. A third job, `fresh-copy`, renames the project the way a new
+copy would (`rename-project.py acme-shop-backoffice --strict`, the longest
+name it allows) and runs the same checks on the result, so a change that would
+break new copies fails here.
 
 **CD** (`.github/workflows/deploy.yml`) is run by hand for now: on GitHub,
 Actions > deploy > Run workflow, then pick the branch and the environment.

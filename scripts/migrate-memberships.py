@@ -4,9 +4,9 @@ the new accounts items: each user's one USER#<id> / MEMBERSHIP item becomes
 USER#<id> / WORKSPACE#<tenant_id>, with the USER#<id> / WORKSPACES count
 (modules/accounts/src/accounts/repository.py). A new stack doesn't need it.
 
-    uv run python scripts/migrate-memberships.py copy --stack saas-dev      # before deploying the new code
+    uv run python scripts/migrate-memberships.py copy --stack saas-dev      # before the new code
     (deploy)
-    uv run python scripts/migrate-memberships.py cleanup --stack saas-dev   # after: deletes the old items
+    uv run python scripts/migrate-memberships.py cleanup --stack saas-dev   # after: deletes old items
 
 The old code ignores the new items and the new code ignores the old ones, so
 users keep their workspace throughout, and both steps can run again safely.

@@ -56,3 +56,41 @@ jobs:
         run: pnpm test
       - name: Build
         run: pnpm build
+
+  # A new project made from the template must pass the same checks. The name is as long as
+  # rename-project.py allows (20), so a line that only fits with "saas" fails here, not in a copy.
+  fresh-copy:
+    if: github.event_name != 'workflow_dispatch'   # not before a deploy (deploy.yml calls this file)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Rename (fails if a name or an overlong line is left to fix by hand)
+        run: |
+          uv run --no-project python scripts/rename-project.py acme-shop-backoffice --title "Acme Shop" --strict
+          git -c user.name=ci -c user.email=ci@example.com commit -qam "Rename the project"
+      - name: Backend checks
+        run: |
+          uv sync --all-packages --locked
+          uv run pytest
+          ./scripts/export-requirements.sh --check
+          uvx ruff check .
+          uvx cfn-lint template.yaml .github/deploy-role.yaml
+      - name: Web checks
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm gen:api
+          test -z "$(git status --porcelain src/shared/api/generated)" || { git status --short src/shared/api/generated; exit 1; }
+          pnpm typecheck
+          pnpm lint
+          pnpm test
+          pnpm build

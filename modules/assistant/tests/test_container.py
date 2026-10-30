@@ -7,7 +7,8 @@ from assistant import container
 SETTINGS = {"ASSISTANT_TABLE": "assistant-dev", "CHECKPOINT_TABLE": "checkpoints-dev",
             "CHECKPOINT_BUCKET": "checkpoints-dev", "FILES_BUCKET": "files-dev", "API_URL": "https://api.example.com",
             "REGION": "ap-southeast-1",
-            "SANDBOX_ID": "saas_dev_sandbox-abcdefghij", "OPENROUTER_API_KEY_PARAM": "/saas/test/openrouter-api-key"}
+            "SANDBOX_ID": "saas_dev_sandbox-abcdefghij",
+            "OPENROUTER_API_KEY_PARAM": "/saas/test/openrouter-api-key"}
 
 
 @pytest.fixture(autouse=True)

@@ -65,8 +65,9 @@ def build() -> Path:
     requirements = BUILD / "requirements.txt"
     package.mkdir(parents=True)
     log("Exporting dependencies from uv.lock")
-    subprocess.run(["uv", "export", "--locked", "--package", "saas-assistant", "--no-dev", "--no-emit-workspace",
-                    "--no-hashes", "--no-header", "--quiet", "-o", str(requirements)], check=True, cwd=ROOT)
+    subprocess.run(["uv", "export", "--locked", "--package", "saas-assistant", "--no-dev",
+                    "--no-emit-workspace", "--no-hashes", "--no-header", "--quiet", "-o", str(requirements)],
+                   check=True, cwd=ROOT)
     log("Installing them as Linux arm64 wheels")
     # PYTHON_3_13 runs on Amazon Linux 2023 (glibc 2.34). AWS's example says
     # manylinux2014 (glibc 2.17), but some wheels (numpy 2.5) need 2.28.
