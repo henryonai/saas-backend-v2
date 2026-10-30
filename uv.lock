@@ -2106,6 +2106,7 @@ dev = [
     { name = "boto3" },
     { name = "moto", extra = ["dynamodb", "events", "ssm"] },
     { name = "pytest" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -2115,6 +2116,7 @@ dev = [
     { name = "boto3" },
     { name = "moto", extras = ["dynamodb", "events", "ssm"], specifier = ">=5.0" },
     { name = "pytest", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]

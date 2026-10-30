@@ -709,6 +709,15 @@ After its first deploy, run `stripe-setup.py --stack <prod stack>`.
     queue only says which stream records the relay could not publish within
     an hour; republish those events from the table (they are kept 7 days):
     `uv run python scripts/replay-outbox.py --table <table> --bus <EventBusName> --since <time>`.
+  - `ListenerQueuesAgeAlarm`: a message has waited more than 15 minutes in a
+    listener's queue, so a worker is failing slowly, throttled or capped by
+    `MaximumConcurrency`. The dashboard's queue widget shows which one is backing up.
+  - `LostEventsAlarm`: EventBridge could put events neither in a listener's
+    queue nor in its dead-letter queue (a broken queue policy, say), so they
+    are gone. Fix the cause, then republish them from the outbox with
+    `replay-outbox.py` (above).
+  - `AssistantPurgeLagAlarm`: expired assistant conversations have waited more
+    than an hour to be purged.
 - **Scheduled jobs:** EventBridge Scheduler (`ScheduleV2` in `template.yaml`)
   invokes the job's function asynchronously; Lambda retries a failed run
   twice, and a run that still fails, or a schedule that couldn't start one,
@@ -767,6 +776,9 @@ After its first deploy, run `stripe-setup.py --stack <prod stack>`.
    queue with a dead-letter queue and an alarm, like accounts does, and give
    the rule's target that dead-letter queue (`RetryPolicy`, `DeadLetterConfig`
    and a queue policy that lets the rule write to it, as `AccountsDLQPolicy`).
+   Add the queue to `ListenerQueuesAgeAlarm` and the rule to `LostEventsAlarm`.
+   `tests/test_template.py` checks all of this for every rule, queue and
+   stream reader in `template.yaml`, and names what is missing.
 6. Talk to other modules only through events or the token.
 
 ## The sample module
