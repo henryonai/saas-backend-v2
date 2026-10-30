@@ -8,7 +8,8 @@ name: dependabot
 # deploy. Merging deploys nothing: prod still takes its two manual runs of deploy.yml.
 #
 # Dependabot doesn't know about the requirements.txt files, so a Python update also commits them
-# here. A push with GITHUB_TOKEN starts no workflows, so CI is started by hand on that commit.
+# here. CI's run on a commit pushed with GITHUB_TOKEN waits for approval, so this approves it. A run
+# started any other way (workflow_dispatch) passes on the commit but doesn't count for the PR.
 on:
   pull_request:
 
@@ -21,7 +22,7 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
-      actions: write            # start CI on the requirements commit
+      actions: write            # approve CI on the requirements commit
       contents: write           # push that commit, and merge
       pull-requests: write      # turn on auto-merge
     env:
@@ -47,7 +48,7 @@ jobs:
         env:
           GH_TOKEN: ""
         run: ./scripts/export-requirements.sh
-      - name: Commit them, and run CI on that commit
+      - name: Commit them, and approve CI's run on that commit
         if: steps.metadata.outputs.package-ecosystem == 'uv'
         run: |
           git add -- layers/shared/layer/requirements.txt 'modules/*/src/requirements.txt'
@@ -56,7 +57,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "Regenerate the requirements files from uv.lock"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${HEAD_REF}"
-          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF"
+          sha=$(git rev-parse HEAD)
+          for _ in {1..30}; do
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event pull_request --commit "$sha" --json databaseId --jq '.[0].databaseId // empty')
+            [[ -n "$run" ]] && break
+            sleep 10
+          done
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run:?CI never started on $sha}/approve"
 
       - name: Merge once the required checks pass
         if: >-
