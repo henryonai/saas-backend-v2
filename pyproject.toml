@@ -12,6 +12,7 @@ dev = [
     "boto3",                        # provided by the Lambda runtime, so never bundled
     "moto[dynamodb,events,ssm]>=5.2.4",
     "pytest>=8.0",
+    "pyyaml>=6.0",                  # tests/test_template.py reads template.yaml
 ]
 
 [tool.uv]
@@ -24,7 +25,7 @@ members = ["layers/shared", "modules/*", "testkit"]
 # Each module's tests live inside the module. importlib mode lets several
 # modules have test files with the same name (e.g. test_api.py).
 addopts = "--import-mode=importlib"
-testpaths = ["layers/shared/tests", "modules"]
+testpaths = ["tests", "layers/shared/tests", "modules"]
 
 [tool.ruff]
 target-version = "py313"

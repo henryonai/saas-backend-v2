@@ -2364,6 +2364,216 @@ Resources:
       TreatMissingData: notBreaching      # an idle queue sends no data
       AlarmActions: [!Ref AlertsTopic]
 
+  # The purge reads the table's stream of expired conversations: if it falls
+  # behind, their messages, files and checkpoints stay longer than promised.
+  AssistantPurgeLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAssistant
+    Properties:
+      AlarmDescription: Expired assistant conversations are waiting over an hour to be purged (see AssistantPurgeFunction in the app log group)
+      Namespace: AWS/Lambda
+      MetricName: IteratorAge
+      Dimensions: [{ Name: FunctionName, Value: !Ref AssistantPurgeFunction }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3600000                  # an hour, in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # nothing expiring, no data
+      AlarmActions: [!Ref AlertsTopic]
+
+  # Every listener (the pattern for a new one: add its queue and its rule here;
+  # tests/test_template.py fails until you do). The dead-letter alarms above say a
+  # message failed; these say one is late, or was lost on the way.
+  ListenerQueuesAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: >-
+        A message has waited over 15 minutes in a listener's queue (the dashboard shows
+        which queue; see that listener in the app log group)
+      Metrics:
+        - Id: oldest
+          Expression: MAX(METRICS())
+          Label: Oldest message in any listener queue (seconds)
+        - Id: q_accounts
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateAgeOfOldestMessage
+              Dimensions: [{ Name: QueueName, Value: !GetAtt AccountsQueue.QueueName }]
+            Period: 300
+            Stat: Maximum
+        - Id: q_orders
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateAgeOfOldestMessage
+              Dimensions: [{ Name: QueueName, Value: !GetAtt OrdersQueue.QueueName }]
+            Period: 300
+            Stat: Maximum
+        - Id: q_audit
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateAgeOfOldestMessage
+              Dimensions: [{ Name: QueueName, Value: !GetAtt AuditQueue.QueueName }]
+            Period: 300
+            Stat: Maximum
+        - Id: q_admin
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateAgeOfOldestMessage
+              Dimensions: [{ Name: QueueName, Value: !GetAtt AdminQueue.QueueName }]
+            Period: 300
+            Stat: Maximum
+        - Id: q_notifications
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateAgeOfOldestMessage
+              Dimensions: [{ Name: QueueName, Value: !GetAtt NotificationsQueue.QueueName }]
+            Period: 300
+            Stat: Maximum
+        - Id: q_billing
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateAgeOfOldestMessage
+              Dimensions: [{ Name: QueueName, Value: !GetAtt BillingQueue.QueueName }]
+            Period: 300
+            Stat: Maximum
+        - !If
+          - HasAssistant
+          - Id: q_assistant
+            ReturnData: false
+            MetricStat:
+              Metric:
+                Namespace: AWS/SQS
+                MetricName: ApproximateAgeOfOldestMessage
+                Dimensions: [{ Name: QueueName, Value: !GetAtt AssistantPurgeQueue.QueueName }]
+              Period: 300
+              Stat: Maximum
+          - !Ref AWS::NoValue
+      EvaluationPeriods: 2
+      Threshold: 900                      # seconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching      # an idle queue sends no data
+      AlarmActions: [!Ref AlertsTopic]
+
+  LostEventsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: >-
+        EventBridge could deliver events neither to a listener's queue nor to its
+        dead-letter queue, so they are gone (see the rules' FailedInvocations metrics;
+        replay them from the outbox with scripts/replay-outbox.py)
+      Metrics:
+        - Id: lost
+          Expression: SUM(METRICS())
+          Label: Events lost by any rule
+        - Id: r_exports
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Events
+              MetricName: InvocationsFailedToBeSentToDlq
+              Dimensions:
+                - { Name: RuleName, Value: !Ref ExportsRule }   # the default bus: no EventBusName
+            Period: 300
+            Stat: Sum
+        - Id: r_accounts
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Events
+              MetricName: InvocationsFailedToBeSentToDlq
+              Dimensions:
+                - { Name: EventBusName, Value: !Ref EventBus }
+                - { Name: RuleName, Value: !Select [1, !Split ["|", !Ref AccountsRule]] }   # Ref is "bus|rule"
+            Period: 300
+            Stat: Sum
+        - Id: r_orders
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Events
+              MetricName: InvocationsFailedToBeSentToDlq
+              Dimensions:
+                - { Name: EventBusName, Value: !Ref EventBus }
+                - { Name: RuleName, Value: !Select [1, !Split ["|", !Ref OrdersRule]] }   # Ref is "bus|rule"
+            Period: 300
+            Stat: Sum
+        - Id: r_audit
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Events
+              MetricName: InvocationsFailedToBeSentToDlq
+              Dimensions:
+                - { Name: EventBusName, Value: !Ref EventBus }
+                - { Name: RuleName, Value: !Select [1, !Split ["|", !Ref AuditRule]] }   # Ref is "bus|rule"
+            Period: 300
+            Stat: Sum
+        - Id: r_admin
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Events
+              MetricName: InvocationsFailedToBeSentToDlq
+              Dimensions:
+                - { Name: EventBusName, Value: !Ref EventBus }
+                - { Name: RuleName, Value: !Select [1, !Split ["|", !Ref AdminRule]] }   # Ref is "bus|rule"
+            Period: 300
+            Stat: Sum
+        - Id: r_notifications
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Events
+              MetricName: InvocationsFailedToBeSentToDlq
+              Dimensions:
+                - { Name: EventBusName, Value: !Ref EventBus }
+                - { Name: RuleName, Value: !Select [1, !Split ["|", !Ref NotificationsRule]] }   # Ref is "bus|rule"
+            Period: 300
+            Stat: Sum
+        - Id: r_billing
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Events
+              MetricName: InvocationsFailedToBeSentToDlq
+              Dimensions:
+                - { Name: EventBusName, Value: !Ref EventBus }
+                - { Name: RuleName, Value: !Select [1, !Split ["|", !Ref BillingRule]] }   # Ref is "bus|rule"
+            Period: 300
+            Stat: Sum
+        - !If
+          - HasAssistant
+          - Id: r_assistant
+            ReturnData: false
+            MetricStat:
+              Metric:
+                Namespace: AWS/Events
+                MetricName: InvocationsFailedToBeSentToDlq
+                Dimensions:
+                  - { Name: EventBusName, Value: !Ref EventBus }
+                  - { Name: RuleName, Value: !Select [1, !Split ["|", !Ref AssistantMembersRule]] }   # Ref is "bus|rule"
+              Period: 300
+              Stat: Sum
+          - !Ref AWS::NoValue
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
   # One page for how the stack is doing day to day; the alarms say when it broke.
   # Assistant widgets only when the assistant is deployed.
   Dashboard:
@@ -2378,7 +2588,8 @@ Resources:
                 "${ApiErrorsAlarm.Arn}","${AccountsPreTokenErrorsAlarm.Arn}","${LambdaThrottlesAlarm.Arn}",
                 "${ApiDurationAlarm.Arn}","${WorkersDurationAlarm.Arn}","${OutboxLagAlarm.Arn}","${OutboxDLQAlarm.Arn}",
                 "${AccountsDLQAlarm.Arn}","${NotificationsDLQAlarm.Arn}","${OrdersDLQAlarm.Arn}","${BillingDLQAlarm.Arn}",
-                "${AccountsPurgeDLQAlarm.Arn}","${AuditDLQAlarm.Arn}","${AdminDLQAlarm.Arn}"]}},
+                "${AccountsPurgeDLQAlarm.Arn}","${AuditDLQAlarm.Arn}","${AdminDLQAlarm.Arn}",
+                "${ListenerQueuesAgeAlarm.Arn}","${LostEventsAlarm.Arn}"]}},
               {"type":"metric","x":0,"y":3,"width":12,"height":6,"properties":{"title":"API requests and errors","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
                 ["AWS/ApiGateway","Count","ApiId","${HttpApi}",{"label":"requests"}],
                 ["AWS/ApiGateway","4xx","ApiId","${HttpApi}",{"label":"4xx"}],
