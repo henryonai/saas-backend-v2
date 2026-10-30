@@ -63,3 +63,17 @@ def test_stripe_is_wired_from_ssm(monkeypatch):
     assert isinstance(provider.client(), stripe.StripeClient)
     with pytest.raises(RuntimeError, match="PAYMENT_WEBHOOK_SECRET"):
         provider.webhook_secret()
+
+
+def test_stripe_returns_to_the_app_address_the_stack_saved(monkeypatch):
+    boto3.client("ssm").put_parameter(Name="/saas-test/app-url", Type="String", Value="https://app.example.com")
+    monkeypatch.setenv("BILLING_TABLE", "billing-dev")
+    monkeypatch.setenv("APP_URL_PARAM", "/saas-test/app-url")
+    assert container.get_billing_service().provider.return_url == "https://app.example.com/billing"
+
+
+def test_a_local_run_returns_to_app_url(monkeypatch):
+    monkeypatch.setenv("BILLING_TABLE", "billing-dev")
+    monkeypatch.delenv("APP_URL_PARAM", raising=False)
+    monkeypatch.setenv("APP_URL", "http://localhost:5173")
+    assert container.get_billing_service().provider.return_url == "http://localhost:5173/billing"

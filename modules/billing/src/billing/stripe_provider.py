@@ -68,12 +68,16 @@ def new_client(api_key: str) -> stripe.StripeClient:
 
 class StripePaymentProvider:
     def __init__(self, client: Callable[[], stripe.StripeClient], config: Callable[[], StripeConfig],
-                 webhook_secret: Callable[[], str], app_url: str):
+                 webhook_secret: Callable[[], str], app_url: Callable[[], str]):
         # Functions, so each value is read from SSM only when it's needed.
         self.client = client
         self.config = config
         self.webhook_secret = webhook_secret
-        self.return_url = f"{app_url}/billing"   # the billing page waits for the webhook
+        self.app_url = app_url
+
+    @property
+    def return_url(self) -> str:
+        return f"{self.app_url()}/billing"   # the billing page waits for the webhook
 
     def create_checkout(self, sub: Subscription, plan: str, customer_email: str) -> str:
         price = self.config().prices.get(plan)
