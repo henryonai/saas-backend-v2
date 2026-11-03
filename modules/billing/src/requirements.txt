@@ -7,7 +7,7 @@ idna==3.20
     # via requests
 requests==2.34.2
     # via stripe
-stripe==16.0.0
+stripe==16.0.1
     # via saas-billing
 typing-extensions==4.16.0
     # via stripe
