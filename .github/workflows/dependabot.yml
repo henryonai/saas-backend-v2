@@ -42,7 +42,7 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           persist-credentials: false   # the export below runs without the token
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
         if: steps.metadata.outputs.package-ecosystem == 'uv'
       - name: Regenerate requirements.txt from uv.lock
         if: steps.metadata.outputs.package-ecosystem == 'uv'

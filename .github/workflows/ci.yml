@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.2   # no major tags since v8: pin a release
+      - uses: astral-sh/setup-uv@v10.3.3   # no major tags since v8: pin a release
       - name: Install (fails if uv.lock is out of date)
         run: uv sync --all-packages --locked
       - name: Tests
@@ -32,7 +32,7 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
@@ -65,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
